@@ -1,0 +1,14 @@
+{
+  "name": "@track/web",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@track/shared": "workspace:*",
+    "vue": "^3.5.13"
+  }
+}

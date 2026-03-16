@@ -1,0 +1,37 @@
+{
+  "name": "track",
+  "private": true,
+  "packageManager": "bun@1.2.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run build:shared && bun run build:core && bun run build:api && bun run build:web && bun run build:cli",
+    "build:shared": "bun run --cwd packages/shared build",
+    "build:core": "bun run --cwd packages/core build",
+    "build:api": "bun run --cwd apps/api build",
+    "build:web": "bun run --cwd apps/web build",
+    "build:cli": "bun run --cwd apps/cli build",
+    "dev:api": "bun run --cwd apps/api dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "dev:cli": "bun run --cwd apps/cli dev",
+    "typecheck": "bun run typecheck:shared && bun run typecheck:core && bun run typecheck:api && bun run typecheck:web && bun run typecheck:cli",
+    "typecheck:shared": "bun run --cwd packages/shared typecheck",
+    "typecheck:core": "bun run --cwd packages/core typecheck",
+    "typecheck:api": "bun run --cwd apps/api typecheck",
+    "typecheck:web": "bun run --cwd apps/web typecheck",
+    "typecheck:cli": "bun run --cwd apps/cli typecheck",
+    "test": "bun run --cwd packages/shared test && bun run --cwd packages/core test && bun run --cwd apps/api test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.2",
+    "vue-tsc": "^2.2.8"
+  }
+}
