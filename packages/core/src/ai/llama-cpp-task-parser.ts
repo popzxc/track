@@ -6,6 +6,14 @@ import { TrackError } from '../errors'
 import type { AiTaskParser } from './provider'
 import { buildLlamaCppPrompt } from './task-parser-prompt'
 
+// =============================================================================
+// llama.cpp Adapter
+// =============================================================================
+//
+// This adapter exists because the local-model path speaks in terms of a CLI
+// process, not an SDK. We keep the process boundary explicit so tests can stub
+// it cleanly and the rest of the app still sees the same parser interface.
+//
 export interface LlamaCppCommandResult {
   exitCode: number | null
   stderr: string
@@ -21,6 +29,8 @@ async function runLlamaCppCommand(input: {
   args: string[]
   binaryPath: string
 }): Promise<LlamaCppCommandResult> {
+  // The command runner is separated from the parser so tests can validate the
+  // parsing logic without needing a real local model binary on disk.
   return new Promise((resolve, reject) => {
     const childProcess = spawn(input.binaryPath, input.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -49,6 +59,8 @@ async function runLlamaCppCommand(input: {
 }
 
 function extractJsonFromModelOutput(output: string): string {
+  // Local models sometimes wrap JSON in extra narration or code fences, so we
+  // salvage the structured payload when it is still recoverable.
   const trimmedOutput = output.trim()
   if (trimmedOutput.length === 0) {
     throw new TrackError('AI_PARSE_FAILED', 'AI parse failure. The local model returned an empty response.')
@@ -98,6 +110,8 @@ export class LlamaCppTaskParser implements AiTaskParser {
     const requestTimestamp = new Date().toISOString()
     const prompt = buildLlamaCppPrompt(input)
 
+    // We choose deterministic sampling here because this path is a parser, not
+    // a creative assistant. Predictability matters more than expressiveness.
     // TODO: Surface additional llama.cpp inference knobs only if real local-model tuning needs emerge.
     const args = [
       '-m',
@@ -116,6 +130,8 @@ export class LlamaCppTaskParser implements AiTaskParser {
         args,
       })
 
+      // A CLI exit failure is different from a schema failure, but both should
+      // collapse into the same user-facing "parse failed" outcome.
       if (result.exitCode !== 0) {
         throw new TrackError(
           'AI_PARSE_FAILED',

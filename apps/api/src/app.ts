@@ -10,6 +10,14 @@ import { registerHealthRoutes } from './routes/health'
 import { registerProjectRoutes } from './routes/projects'
 import { registerTaskRoutes } from './routes/tasks'
 
+// =============================================================================
+// Unified Server Surface
+// =============================================================================
+//
+// Even though the backend is primarily a JSON API, the deployed app uses this
+// same process to serve the built frontend so Docker can expose a single port.
+// That keeps local hosting and container hosting aligned.
+//
 export interface AppDependencies {
   configService: ConfigService
   projectService: ProjectService
@@ -51,6 +59,8 @@ function jsonErrorResponse(error: unknown) {
 }
 
 async function serveStaticAsset(requestPath: string, staticRoot: string) {
+  // Single-page-app routing means unknown frontend paths should still fall back
+  // to `index.html` as long as the built asset directory exists.
   const normalizedPath = normalize(requestPath).replace(/^(\.\.(\/|\\|$))+/, '')
   const relativePath = normalizedPath === '/' ? 'index.html' : normalizedPath.replace(/^\/+/, '')
   const assetPath = join(staticRoot, relativePath)
@@ -68,6 +78,8 @@ async function serveStaticAsset(requestPath: string, staticRoot: string) {
 }
 
 export function createDefaultDependencies(): AppDependencies {
+  // The default dependency graph stays tiny on purpose so tests can swap in
+  // temp-directory repositories without booting the entire application stack.
   const configService = new ConfigService()
   const projectService = new ProjectService()
   const taskRepository = new FileTaskRepository()

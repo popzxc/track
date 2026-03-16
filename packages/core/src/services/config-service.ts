@@ -5,6 +5,16 @@ import { trackConfigSchema, type TrackConfig } from '@track/shared'
 import { TrackError } from '../errors'
 import { collapseHomePath, getConfigPath, resolvePathFromConfig } from '../utils/path-utils'
 
+// =============================================================================
+// Config Normalization
+// =============================================================================
+//
+// The config file is the shared contract between the CLI and the API, so this
+// service does more than just "read JSON":
+// - it turns user-facing paths like `~/...` into absolute runtime paths
+// - it resolves the selected AI provider into a concrete discriminated shape
+// - it fails early with user-friendly messages before the rest of the app starts
+//
 function resolveOptionalCommandPath(pathValue: string | undefined): string | undefined {
   if (!pathValue) {
     return undefined
@@ -31,6 +41,8 @@ export class ConfigService {
   async loadConfig(): Promise<TrackConfig> {
     let rawConfig: string
 
+    // First, we load the raw file and preserve a "config not found" error that
+    // points to the human-facing path the user is expected to edit.
     try {
       rawConfig = await readFile(this.configPath, 'utf8')
     } catch (error) {
@@ -61,6 +73,9 @@ export class ConfigService {
       throw new TrackError('INVALID_CONFIG', 'Config file does not match the expected format.')
     }
 
+    // Finally, we normalize the config into the runtime representation used by
+    // the rest of the app. The goal is that downstream services never need to
+    // remember path-expansion rules or provider-specific compatibility aliases.
     return {
       projectRoots: parsedConfig.data.projectRoots
         .map((projectRoot) => projectRoot.trim())

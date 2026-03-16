@@ -8,6 +8,14 @@ import TaskList from '../components/TaskList.vue'
 import Toolbar from '../components/Toolbar.vue'
 import type { ProjectInfo, Task } from '../types/task'
 
+// =============================================================================
+// Main Task View State
+// =============================================================================
+//
+// This page intentionally keeps state close to the screen instead of adding a
+// global store. The app is small, and having fetches, filters, and mutation
+// refreshes together makes the user flow easier to trace.
+//
 const tasks = ref<Task[]>([])
 const projects = ref<ProjectInfo[]>([])
 const showClosed = ref(false)
@@ -45,6 +53,8 @@ async function refreshAll() {
   errorMessage.value = ''
   refreshing.value = true
 
+  // The toolbar counts and filters depend on both projects and tasks, so the
+  // initial refresh loads them together instead of risking partial first paint.
   try {
     await Promise.all([loadProjects(), loadTasks()])
   } catch (error) {
@@ -59,6 +69,8 @@ async function updateTaskStatus(task: Task, status: Task['status']) {
   saving.value = true
   errorMessage.value = ''
 
+  // We refresh from the server after every mutation because the backend owns
+  // the canonical sort order and the filesystem-backed truth.
   try {
     await updateTask(task.id, { status })
     await loadTasks()
@@ -136,6 +148,8 @@ watch([showClosed, selectedProject], () => {
     return
   }
 
+  // Filter changes should feel immediate, but they still re-fetch from the API
+  // so the UI always reflects the backend's current view of the filesystem.
   void loadTasks().catch(setFriendlyError)
 })
 

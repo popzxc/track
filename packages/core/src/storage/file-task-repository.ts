@@ -19,6 +19,15 @@ import { TrackError } from '../errors'
 import { getDataDir } from '../utils/path-utils'
 import { buildUniqueTaskId } from '../utils/task-id'
 
+// =============================================================================
+// Filesystem Repository
+// =============================================================================
+//
+// The repository treats Markdown files as the source of truth on disk. That is
+// why the code favors explicit file reads and rewrites over clever incremental
+// updates: a human should be able to open a task file, understand it, edit it,
+// and trust that the app will honor those edits.
+//
 interface TaskFileRecord {
   filePath: string
   task: Task
@@ -46,6 +55,8 @@ function normalizeFrontmatterValue(value: unknown): string | undefined {
 }
 
 function extractTaskDescription(parsedFile: matter.GrayMatterFile<string>): string | undefined {
+  // The body is the most natural place for a human to edit the task text, so we
+  // intentionally prefer it over the mirrored frontmatter copy when reading.
   const bodyDescription = parsedFile.content.trim()
   if (bodyDescription.length > 0) {
     return bodyDescription
@@ -70,6 +81,8 @@ export class FileTaskRepository {
       return []
     }
 
+    // Listing is deliberately forgiving because manual editing is part of the
+    // product story. One broken file should not hide every healthy task.
     const projects = filters?.project ? [filters.project] : await this.listProjectDirectories()
     const statuses: Status[] = filters?.includeClosed ? ['open', 'closed'] : ['open']
     const tasks: Task[] = []
@@ -108,6 +121,8 @@ export class FileTaskRepository {
     const parsedInput = taskCreateInputSchema.parse(input)
     const now = new Date()
 
+    // We create the project folders on demand so a new task can be the first
+    // artifact under a discovered project without any separate setup step.
     await this.ensureProjectDirectories(parsedInput.project)
 
     const destinationDirectory = this.getStatusDirectory(parsedInput.project, 'open')
@@ -138,6 +153,8 @@ export class FileTaskRepository {
     const parsedInput = taskUpdateInputSchema.parse(input)
     const existingRecord = await this.findTaskById(id)
 
+    // Status changes are expressed as regular updates so the caller does not
+    // need separate "close" and "reopen" repository concepts.
     const nextStatus = parsedInput.status ?? existingRecord.task.status
     const updatedTask: Task = {
       ...existingRecord.task,
@@ -171,6 +188,9 @@ export class FileTaskRepository {
       throw new TrackError('TASK_NOT_FOUND', `Task ${id} was not found.`, { status: 404 })
     }
 
+    // IDs are filename stems, so we can recover a task from the filesystem
+    // without forcing the frontend to remember project and status as extra
+    // mutation parameters.
     const projectDirectories = await this.listProjectDirectories()
     for (const project of projectDirectories) {
       for (const status of ['open', 'closed'] as const) {
@@ -207,6 +227,9 @@ export class FileTaskRepository {
   private async readTaskFile(filePath: string): Promise<TaskFileRecord> {
     const rawFile = await readFile(filePath, 'utf8')
     const parsedFile = matter(rawFile)
+
+    // Reading normalizes the editable Markdown shape back into the stricter task
+    // schema used by the app and API responses.
     const parsedTask = taskSchema.parse({
       id: normalizeFrontmatterValue(parsedFile.data.id),
       project: normalizeFrontmatterValue(parsedFile.data.project),
@@ -236,6 +259,9 @@ export class FileTaskRepository {
       ...(task.source ? { source: task.source } : {}),
     }
 
+    // We intentionally mirror the description into both frontmatter and body:
+    // frontmatter keeps metadata scanners simple, while the body keeps the file
+    // pleasant to read and edit in a text editor.
     const serializedTask = matter.stringify(task.description.trim(), frontmatter).trimEnd() + '\n'
 
     // The temp-file rename keeps edits best-effort atomic without introducing

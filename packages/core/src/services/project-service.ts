@@ -4,6 +4,14 @@ import { basename, join } from 'node:path'
 
 import type { ProjectInfo, TrackConfig } from '@track/shared'
 
+// =============================================================================
+// Project Discovery
+// =============================================================================
+//
+// The tracker intentionally discovers projects from the filesystem on demand.
+// That keeps the mental model simple for a single-user tool: if a repo exists
+// under a configured root right now, it is eligible right now.
+//
 const IGNORED_DIRECTORIES = new Set([
   '.git',
   'node_modules',
@@ -28,6 +36,9 @@ export class ProjectService {
   async discoverProjects(config: TrackConfig): Promise<ProjectInfo[]> {
     const discoveredProjects = new Map<string, ProjectInfo>()
 
+    // We gather canonical names from the filesystem first, then layer aliases
+    // on top. That prevents aliases from inventing projects that do not
+    // actually exist under the configured roots.
     for (const projectRoot of config.projectRoots) {
       const repos = await this.scanForGitRepos(projectRoot)
 
@@ -67,6 +78,8 @@ export class ProjectService {
     const discoveredRepos: string[] = []
     const pendingDirectories = [rootPath]
 
+    // A simple breadth-first-ish scan is enough at this scale and is easier to
+    // reason about than caching or git subprocess orchestration.
     while (pendingDirectories.length > 0) {
       const currentDirectory = pendingDirectories.pop()
       if (!currentDirectory) {

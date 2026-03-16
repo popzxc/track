@@ -6,6 +6,14 @@ import { ConfigService } from './config-service'
 import { ProjectService } from './project-service'
 import { FileTaskRepository } from '../storage/file-task-repository'
 
+// =============================================================================
+// Parsed Project Validation
+// =============================================================================
+//
+// The model is allowed to infer, but not to invent. This guard turns the model
+// output back into an application decision by proving that the chosen project is
+// both high-confidence and present in the discovered project set.
+//
 function normalizeCanonicalProject(
   candidate: ParsedTaskCandidate,
   allowedProjects: ProjectInfo[],
@@ -52,6 +60,16 @@ export class TaskCaptureService {
       throw new TrackError('EMPTY_INPUT', 'Please provide a task description.')
     }
 
+    // =============================================================================
+    // Capture Flow
+    // =============================================================================
+    //
+    // We keep creation intentionally linear:
+    // 1. load the shared config
+    // 2. discover real projects from disk
+    // 3. ask the AI to choose only from that set
+    // 4. validate the AI result before any file write happens
+    //
     // The capture flow favors correctness over clever shortcuts:
     // discover the current project set, ask the parser to choose from it,
     // then persist only after the choice has been validated.

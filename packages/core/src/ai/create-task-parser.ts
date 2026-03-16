@@ -3,6 +3,13 @@ import { LlamaCppTaskParser, type LlamaCppCommandRunner } from './llama-cpp-task
 import { OpenAiTaskParser as OpenAiTaskParserImplementation } from './openai-task-parser'
 import type OpenAI from 'openai'
 
+// =============================================================================
+// Provider Selection
+// =============================================================================
+//
+// The rest of the app depends on a narrow parser interface. This factory is the
+// only place that knows how config selects a concrete provider implementation.
+//
 export function createTaskParser(
   config: TrackConfig,
   options?: {
@@ -10,6 +17,8 @@ export function createTaskParser(
     openAiClient?: OpenAI
   },
 ) {
+  // This branching stays intentionally small so swapping providers later does
+  // not ripple through the CLI capture flow or the repository logic.
   if (config.ai.provider === 'llama-cpp') {
     return new LlamaCppTaskParser({
       modelPath: config.ai.llamaCpp.modelPath,

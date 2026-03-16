@@ -1,3 +1,11 @@
+// =============================================================================
+// Shared Prompt Contract
+// =============================================================================
+//
+// Both providers receive the same business rules so provider choice changes the
+// transport, not the parsing semantics. Keeping the prompt contract in one file
+// makes that parity easier to preserve over time.
+//
 export const TASK_PARSER_SYSTEM_PROMPT = [
   'You convert short CLI issue notes into structured task data.',
   'Return only fields supported by the schema.',
@@ -21,6 +29,8 @@ export function buildTaskParserPayload(input: {
     aliases: string[]
   }>
 }) {
+  // The model gets the allowed project set explicitly so it can infer from a
+  // constrained lookup table instead of hallucinating arbitrary repo names.
   return {
     rawText: input.rawText,
     allowedProjects: input.allowedProjects,
@@ -41,6 +51,8 @@ export function buildLlamaCppPrompt(input: {
     aliases: string[]
   }>
 }) {
+  // llama.cpp gets a flattened prompt because we do not have the structured
+  // chat API affordances that the OpenAI path uses.
   return [
     TASK_PARSER_SYSTEM_PROMPT,
     TASK_PARSER_DEVELOPER_PROMPT,
