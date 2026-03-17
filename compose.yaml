@@ -1,0 +1,24 @@
+services:
+  track-web:
+    image: track-web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # The API writes into a host bind mount under ~/.track/issues. Running the
+    # container as the host user keeps those files editable from the CLI too,
+    # instead of leaving them owned by the container's root-mapped UID.
+    user: "${TRACK_UID:-1000}:${TRACK_GID:-1000}"
+    ports:
+      - "${TRACK_WEB_PORT:-3210}:3210"
+    environment:
+      PORT: "3210"
+      TRACK_DATA_DIR: /data/issues
+      TRACK_CONFIG_PATH: /config/config.json
+    volumes:
+      - type: bind
+        source: ${HOME}/.track/issues
+        target: /data/issues
+      - type: bind
+        source: ${HOME}/.config/track/config.json
+        target: /config/config.json
+        read_only: true

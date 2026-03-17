@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  color: #ebdbb2;
+  background: #1d2021;
+  font-family: IBM Plex Mono, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace;
+}
+
+html {
+  min-height: 100%;
+  background: #1d2021;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: #ebdbb2;
+  background:
+    linear-gradient(180deg, rgba(29, 32, 33, 0.98), rgba(29, 32, 33, 1)),
+    repeating-linear-gradient(0deg, rgba(251, 241, 199, 0.035) 0, rgba(251, 241, 199, 0.035) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, rgba(251, 241, 199, 0.03) 0, rgba(251, 241, 199, 0.03) 1px, transparent 1px, transparent 32px),
+    #1d2021;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top, rgba(250, 189, 47, 0.11), transparent 34%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.3));
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color-scheme: dark;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+textarea {
+  resize: vertical;
+}
+
+:focus-visible {
+  outline: 1px solid #8ec07c;
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #665c54 #1d2021;
+}
+
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #1d2021;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #504945;
+  border: 2px solid #1d2021;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #665c54;
+}
+
+::selection {
+  background: rgba(250, 189, 47, 0.3);
+  color: #fbf1c7;
+}

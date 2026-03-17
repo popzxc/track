@@ -1,0 +1,62 @@
+use std::fmt;
+
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    EmptyInput,
+    ConfigNotFound,
+    InvalidConfig,
+    InvalidConfigInput,
+    InvalidJson,
+    InvalidTaskUpdate,
+    InteractiveRequired,
+    NoProjectRoots,
+    NoProjectsDiscovered,
+    InvalidProjectSelection,
+    AiParseFailed,
+    TaskNotFound,
+    TaskWriteFailed,
+}
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct TrackError {
+    pub code: ErrorCode,
+    message: String,
+}
+
+impl TrackError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let code = match self {
+            ErrorCode::EmptyInput => "EMPTY_INPUT",
+            ErrorCode::ConfigNotFound => "CONFIG_NOT_FOUND",
+            ErrorCode::InvalidConfig => "INVALID_CONFIG",
+            ErrorCode::InvalidConfigInput => "INVALID_CONFIG_INPUT",
+            ErrorCode::InvalidJson => "INVALID_JSON",
+            ErrorCode::InvalidTaskUpdate => "INVALID_TASK_UPDATE",
+            ErrorCode::InteractiveRequired => "INTERACTIVE_REQUIRED",
+            ErrorCode::NoProjectRoots => "NO_PROJECT_ROOTS",
+            ErrorCode::NoProjectsDiscovered => "NO_PROJECTS_DISCOVERED",
+            ErrorCode::InvalidProjectSelection => "INVALID_PROJECT_SELECTION",
+            ErrorCode::AiParseFailed => "AI_PARSE_FAILED",
+            ErrorCode::TaskNotFound => "TASK_NOT_FOUND",
+            ErrorCode::TaskWriteFailed => "TASK_WRITE_FAILED",
+        };
+
+        formatter.write_str(code)
+    }
+}

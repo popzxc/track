@@ -1,38 +1,37 @@
-FROM oven/bun:1.2 AS base
+FROM oven/bun:1.3 AS frontend-build
+WORKDIR /app/frontend
+
+COPY frontend/package.json ./
+COPY frontend/bun.lock ./
+RUN bun install --frozen-lockfile
+
+COPY frontend/ ./
+RUN bun run build
+
+FROM rust:1.88-slim AS rust-build
 WORKDIR /app
 
-COPY package.json tsconfig.base.json ./
-COPY apps/api/package.json apps/api/package.json
-COPY apps/cli/package.json apps/cli/package.json
-COPY apps/web/package.json apps/web/package.json
-COPY packages/shared/package.json packages/shared/package.json
-COPY packages/core/package.json packages/core/package.json
+COPY Cargo.toml Cargo.lock rust-toolchain.toml deny.toml ./
+COPY .config/nextest.toml .config/nextest.toml
+COPY crates/track-core/Cargo.toml crates/track-core/Cargo.toml
+COPY crates/track-cli/Cargo.toml crates/track-cli/Cargo.toml
+COPY crates/track-api/Cargo.toml crates/track-api/Cargo.toml
+COPY crates/track-core/src crates/track-core/src
+COPY crates/track-cli/src crates/track-cli/src
+COPY crates/track-cli/tests crates/track-cli/tests
+COPY crates/track-api/src crates/track-api/src
 
-RUN bun install
+RUN cargo build --release -p track-api
 
-FROM base AS build
-COPY . .
-RUN bun run build:shared
-RUN bun run build:core
-RUN bun run build:web
-RUN bun run build:api
-
-FROM oven/bun:1.2-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
-ENV NODE_ENV=production
 ENV PORT=3210
+ENV TRACK_STATIC_ROOT=/app/frontend/dist
 
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/api/dist ./apps/api/dist
-COPY --from=build /app/apps/api/package.json ./apps/api/package.json
-COPY --from=build /app/apps/web/dist ./apps/api/public
-COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
-COPY --from=build /app/packages/shared/dist ./packages/shared/dist
-COPY --from=build /app/packages/core/package.json ./packages/core/package.json
-COPY --from=build /app/packages/core/dist ./packages/core/dist
+COPY --from=rust-build /app/target/release/track-api /usr/local/bin/track-api
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 EXPOSE 3210
 
-CMD ["bun", "apps/api/dist/server.js"]
+CMD ["track-api"]

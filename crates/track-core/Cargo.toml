@@ -1,0 +1,19 @@
+[package]
+name = "track-core"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+dialoguer = { workspace = true }
+owo-colors = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+slug = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true, features = ["formatting", "macros", "parsing"] }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

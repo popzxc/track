@@ -6,30 +6,33 @@ This file gives future coding agents a quick working model for `track`.
 
 `track` is a small local issue tracker with two user-facing workflows:
 
-1. capture tasks quickly from the CLI
+1. capture tasks quickly from the Rust CLI
 2. manage tasks in a local web UI
 
-The system is intentionally simple. Tasks are plain Markdown files on disk, and
-the rest of the codebase exists to help create, read, and mutate those files
-reliably.
+Tasks are plain Markdown files on disk. The rest of the codebase exists to help
+create, read, and mutate those files reliably.
 
 ## How The System Is Organized
 
-Think about the project in three layers:
+Think about the project as one Rust backend split into crates plus one frontend.
 
-- `packages/shared`
-  Common schemas and types. Start here when the shape of data changes.
-- `packages/core`
-  Business logic and runtime behavior. Start here when capture flow, storage
-  behavior, config loading, AI provider selection, or project discovery changes.
-- `apps/*`
-  Adapters and entrypoints:
-  - CLI for task capture
-  - API for JSON endpoints and static asset serving
-  - Web for the browser UI
+- `crates/track-core`
+  Shared backend behavior. Start here when config loading, project discovery,
+  task storage, sorting, or `llama-completion` integration changes.
+- `crates/track-cli`
+  CLI entrypoint and user-facing capture output.
+- `crates/track-api`
+  Axum routes, HTTP error mapping, and static frontend serving.
+- `frontend/`
+  Vue/Vite UI only.
 
-The apps should stay thin. If logic starts to matter to more than one app, it
-probably belongs in `core` or `shared`.
+The stable shared contract is:
+
+- `~/.config/track/config.json`
+- Markdown task files under `~/.track/issues`
+- the JSON API exposed by `track-api`
+
+If you change those contracts, update every layer that depends on them.
 
 ## Important Runtime Invariants
 
@@ -38,6 +41,7 @@ Keep these behaviors stable unless the change is intentional:
 - The filesystem is the source of truth.
 - Tasks live under the configured data directory, grouped by project and then
   by status (`open` / `closed`).
+- A task's identity comes from its file path, not duplicated YAML fields.
 - Closing and reopening a task physically moves the file between folders.
 - The Markdown body is the preferred human-editable task description when
   reading a task file.
@@ -46,71 +50,55 @@ Keep these behaviors stable unless the change is intentional:
 - AI parsing may infer, but it must not invent arbitrary projects. The chosen
   project must come from the discovered project set.
 
-## AI Provider Model
+## Local Model Contract
 
-The AI layer is intentionally behind a small interface.
+The backend supports local parsing only.
 
-Current providers:
+- `llama.cpp` is invoked through the `llama-completion` binary.
+- `llamaCpp.modelPath` is required in config.
+- `llamaCpp.llamaCompletionPath` is optional; if it is absent, the CLI uses
+  `llama-completion` from `$PATH`.
 
-- OpenAI
-- `llama.cpp` via `llama-cli`
+Do not reintroduce hosted-model assumptions without an explicit user request.
 
-Config selects the provider. Provider choice should change the integration edge,
-not the business rules. Both providers should receive the same parsing contract:
+## API And Frontend Relationship
 
-- choose only from discovered projects and aliases
-- normalize the description
-- default priority sensibly
-- fail safely when project selection is ambiguous
-
-If you add another provider, keep the interface narrow and reuse the shared
-prompt contract when possible.
-
-## Config And Data Paths
-
-Default locations:
-
-- config: `~/.config/track/config.json`
-- data: `~/.track/issues`
-
-Config is shared between the CLI and API. If you change config semantics, keep
-that shared contract coherent and update both docs and tests.
-
-For `llama.cpp`, `ai.llamaCpp.llamaCliPath` may point at an absolute binary path
-outside `$PATH`. `binaryPath` exists only as a backward-compatible alias.
-
-## API And UI Relationship
-
-The backend is not API-only in the deployed shape. It also serves built frontend
-assets so the Docker image can expose one port for both the REST API and the UI.
+`track-api` is not API-only in the deployed shape. It also serves the built
+frontend assets so Docker can expose one port for both the REST API and the UI.
 
 Important implication:
 
-- `apps/api/public/index.html` is only a placeholder/fallback
-- the Docker build copies `apps/web/dist` into `apps/api/public`
-
-Do not treat the placeholder HTML as the real frontend.
+- frontend development stays separate under `frontend/`
+- production serving happens from `track-api`
+- Docker copies `frontend/dist` into the runtime image and `track-api` serves it
 
 ## Development Commands
 
 From the repo root:
 
-- `bun install`
-- `bun run test`
-- `bun run typecheck`
-- `bun run build`
+- `cargo test --workspace`
+- `cargo build --release -p track-cli`
+- `cargo build --release -p track-api`
+- `cargo run -p track-api`
+- `cd frontend && bun install`
+- `cd frontend && bun run dev`
+- `cd frontend && bun run typecheck`
+- `cd frontend && bun run build`
 
-Use these as the default verification steps after meaningful changes.
+Use Cargo for backend work. Use Bun only inside `frontend/`.
 
 ## Testing Guidance
 
 Favor small, high-signal tests.
 
 - Prefer real filesystem tests over mocks for repository behavior.
-- Mock only the AI boundary or external process boundary when needed.
-- If you change storage or task parsing behavior, add or update tests in
-  `packages/core`.
-- If you change shared schemas, update `packages/shared` tests too.
+- Mock only the external process boundary when needed, or use tiny fake
+  `llama-completion` scripts in temp directories.
+- If you change config shape, capture behavior, or storage semantics,
+  update Rust tests in `track-core` or `track-cli`.
+- If you change the API surface, add or update Rust HTTP tests in `track-api`.
+- If you change the frontend contract, keep the frontend types aligned with the
+  Rust API responses.
 
 ## Documentation Style
 
@@ -123,8 +111,8 @@ When adding comments:
 - place comments immediately before the block they clarify
 - avoid low-signal comments that restate obvious syntax
 
-Do not blanket the codebase with boilerplate commentary. Concentrate on the
-parts where future readers would otherwise have to reconstruct intent.
+Concentrate comments where future readers would otherwise have to reconstruct
+intent.
 
 ## Build Artifacts And Workspace Hygiene
 
@@ -132,20 +120,8 @@ Do not commit local build leftovers or generated files in source directories.
 
 In particular:
 
-- `dist/` directories are local build artifacts
-- stray generated `.js`, `.d.ts`, or `.d.ts.map` files under `src/` are usually
-  accidental leftovers and should be removed
-- `bun.lockb` is intentional and should stay
-
-If you run builds locally, keep the workspace clean afterward unless the user
-explicitly wants built artifacts present.
-
-## When You Are Unsure
-
-Choose the simpler design that keeps these properties intact:
-
-- plain files remain easy to inspect and edit
-- app layers remain thin
-- AI remains replaceable
-- failure modes stay understandable
-- behavior is covered by a small number of meaningful tests
+- `target/` and `dist/` directories are local build artifacts
+- stray generated `.js`, `.d.ts`, or `.d.ts.map` files under source directories
+  are accidental leftovers and should be removed
+- `Cargo.lock` is intentional and should stay
+- Bun lockfiles, if present under `frontend/`, are intentional and should stay

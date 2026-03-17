@@ -1,78 +1,74 @@
 # Architecture
 
-`track` is a small local system built around one idea: tasks are plain files on disk, and every other part of the project exists to help create, read, and manage those files safely.
+`track` is a small local system built around one stable idea: tasks are plain
+files on disk, and every part of the project exists to either create those
+files or help a person manage them safely.
 
 ## System Shape
 
-The project has four main parts:
+The project now has one Rust backend and one TypeScript frontend.
 
-- The CLI captures a free-form task description.
-- The AI parser turns that free-form text into structured task data.
-- The API reads and mutates the task files.
-- The web UI talks to the API to display and manage tasks.
+- `crates/track-core`
+  Shared Rust domain logic: config loading, project discovery, `llama-completion`
+  parsing, task storage, and sorting.
+- `crates/track-cli`
+  The CLI adapter over `track-core`.
+- `crates/track-api`
+  The Axum server over `track-core`.
+- `frontend/`
+  The Vue/Vite UI.
 
-Two shared layers support those parts:
+The backend and frontend do not share implementation code directly. They share
+the on-disk data model and the HTTP contract.
 
-- `@track/shared` defines the common schemas and types used across the project.
-- `@track/core` holds the reusable application logic: config loading, project discovery, AI provider selection, task capture rules, and filesystem-backed storage.
+## Capture Flow
 
-That split keeps the outer apps thin. The CLI, API, and web app are mostly entrypoints and adapters around the same core behavior.
+Task creation lives in the Rust CLI.
 
-## Core Runtime Flow
+The CLI:
 
-There are two important user flows.
+1. loads config
+2. discovers git repositories under configured roots
+3. asks `llama-completion` to normalize the raw text
+4. validates that the chosen project really exists
+5. writes a Markdown task file to disk
 
-### Creating a task
+The local model is advisory, not authoritative. It may infer from discovered
+projects, but it is not allowed to invent arbitrary destinations.
 
-The CLI loads the shared config, discovers available projects from configured filesystem roots, and asks the configured AI provider to choose a project, priority, and normalized description from the user’s raw text.
+## Management Flow
 
-If the AI result is valid and the project choice is trusted, the task is persisted as a Markdown file with YAML frontmatter under the data directory. The filesystem is the source of truth, so task creation is complete once that file exists.
+Task management lives in the Rust API plus the frontend.
 
-### Managing tasks
+The API reads task files from disk, applies sorting and mutation rules, and
+exposes a small JSON surface. The frontend talks to that API and treats the
+filesystem-backed state as canonical.
 
-The API reads tasks from the filesystem, applies sorting and update rules, and exposes a small JSON surface for the web UI. The UI does not manage its own domain state independently; it refreshes from the API so the filesystem-backed state remains canonical.
+This keeps the frontend thin and lets the CLI and UI converge on the same task
+model without duplicating backend rules.
 
 ## Storage Model
 
-Tasks live under the configured data directory, grouped by project and then by status:
+Tasks live under the configured data directory, grouped by project and then by
+status:
 
 - `project/open/...`
 - `project/closed/...`
 
-Closing or reopening a task is implemented as a file move between those folders plus a metadata update. Editing a task rewrites the Markdown file. Deleting a task removes the file permanently.
+Closing or reopening a task is a file move plus metadata update. Editing a task
+rewrites the Markdown file. Deleting a task removes the file.
 
-This design is intentionally simple: a person can inspect the data with normal shell tools or edit a task in a text editor without needing a database or migration layer.
-
-## Provider Boundary
-
-AI parsing is treated as a replaceable edge, not as the center of the system. The rest of the application depends on a small parser interface, and configuration decides which implementation to use.
-
-Today there are two provider paths:
-
-- OpenAI for hosted parsing
-- `llama.cpp` via `llama-cli` for local parsing
-
-Both providers receive the same high-level parsing contract: choose only from discovered projects, normalize the description, and fail safely when project selection is ambiguous.
+Task identity lives in the filesystem path. The Markdown body is the
+human-editable description. Frontmatter is reserved for metadata such as
+priority and timestamps.
 
 ## Deployment Model
 
-The project is developed as separate apps, but deployed as one local web stack.
+The deployed web stack is still a single local server process.
 
-The backend serves both:
+`track-api` serves both:
 
-- `/api/*` for JSON APIs
-- frontend static assets for the browser UI
+- `/api/*` for JSON endpoints
+- built frontend assets for the browser UI
 
-That allows the Docker image to expose a single port while still keeping the frontend and backend codebases separate during development.
-
-## How To Orient Yourself
-
-When reading the code, it helps to think in this order:
-
-1. `shared` defines the data contract.
-2. `core` defines the behavior of the system.
-3. `cli`, `api`, and `web` adapt that behavior for different entrypoints.
-
-If you are changing business rules, start in `core`.
-If you are changing data shape, start in `shared`.
-If you are changing user experience, start in the app layer that owns that interaction.
+That keeps Docker simple: one image, one process, one port.
