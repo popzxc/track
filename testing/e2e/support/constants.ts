@@ -27,3 +27,5 @@ export const E2E_PR_URL = 'https://github.com/acme/project-a/pull/42'
 
 export const DISPATCH_TASK_TITLE = 'Dispatch browser smoke test'
 export const FOLLOW_UP_TASK_TITLE = 'Continue browser smoke test'
+export const ORPHAN_CLEANUP_TASK_ID = '20260323-120500-clean-browser-orphans'
+export const ORPHAN_CLEANUP_DISPATCH_ID = 'dispatch-browser-orphan-cleanup'

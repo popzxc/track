@@ -237,6 +237,20 @@ pub struct TaskDispatchRecord {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteCleanupSummary {
+    #[serde(rename = "closedTasksCleaned")]
+    pub closed_tasks_cleaned: usize,
+    #[serde(rename = "missingTasksCleaned")]
+    pub missing_tasks_cleaned: usize,
+    #[serde(rename = "localDispatchHistoriesRemoved")]
+    pub local_dispatch_histories_removed: usize,
+    #[serde(rename = "remoteWorktreesRemoved")]
+    pub remote_worktrees_removed: usize,
+    #[serde(rename = "remoteRunDirectoriesRemoved")]
+    pub remote_run_directories_removed: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAgentRuntimeConfig {
     pub host: String,

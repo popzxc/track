@@ -7,6 +7,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import {
   DISPATCH_TASK_TITLE,
   E2E_GIT_URL,
+  ORPHAN_CLEANUP_DISPATCH_ID,
+  ORPHAN_CLEANUP_TASK_ID,
   E2E_PR_URL,
   E2E_PROJECT_NAME,
   E2E_REPO_URL,
@@ -127,6 +129,12 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
 
   await waitForHealth(`${apiBaseUrl}/health`, apiLogPath)
   await seedApplicationData(apiBaseUrl)
+  await seedOrphanedCleanupArtifacts({
+    fixturePort,
+    keyPath: keyPrefix,
+    issuesRoot,
+    runtimeRoot,
+  })
 
   saveFrontendE2EState({
     apiBaseUrl,
@@ -160,6 +168,34 @@ function ensureFixtureImage(): void {
 
 function runFixtureCtl(args: string[]): void {
   runCommand('python3', [FIXTURECTL_PATH, ...args], { cwd: REPO_ROOT })
+}
+
+function runRemoteCommand(
+  options: { fixturePort: number; keyPath: string; knownHostsPath: string },
+  script: string,
+): void {
+  runCommand(
+    'ssh',
+    [
+      '-i',
+      options.keyPath,
+      '-p',
+      String(options.fixturePort),
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'IdentitiesOnly=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      `UserKnownHostsFile=${options.knownHostsPath}`,
+      `${FIXTURE_USER}@${FIXTURE_HOST}`,
+      'bash',
+      '-lc',
+      script,
+    ],
+    { cwd: REPO_ROOT },
+  )
 }
 
 function runCommand(
@@ -290,6 +326,57 @@ async function seedApplicationData(apiBaseUrl: string): Promise<void> {
   await createTask(apiBaseUrl, DISPATCH_TASK_TITLE)
   await updateProjectMetadata(apiBaseUrl)
   await createTask(apiBaseUrl, FOLLOW_UP_TASK_TITLE)
+}
+
+async function seedOrphanedCleanupArtifacts(options: {
+  fixturePort: number
+  keyPath: string
+  issuesRoot: string
+  runtimeRoot: string
+}): Promise<void> {
+  const orphanDispatchDirectory = path.join(
+    options.issuesRoot,
+    '.dispatches',
+    ORPHAN_CLEANUP_TASK_ID,
+  )
+  await mkdir(orphanDispatchDirectory, { recursive: true })
+
+  const orphanWorktreePath =
+    `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/worktrees/${ORPHAN_CLEANUP_DISPATCH_ID}`
+  const orphanRunDirectory =
+    `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
+
+  await writeFile(
+    path.join(orphanDispatchDirectory, `${ORPHAN_CLEANUP_DISPATCH_ID}.json`),
+    `${JSON.stringify({
+      dispatchId: ORPHAN_CLEANUP_DISPATCH_ID,
+      taskId: ORPHAN_CLEANUP_TASK_ID,
+      project: E2E_PROJECT_NAME,
+      status: 'succeeded',
+      createdAt: '2026-03-23T12:05:00.000Z',
+      updatedAt: '2026-03-23T12:06:00.000Z',
+      finishedAt: '2026-03-23T12:06:00.000Z',
+      remoteHost: FIXTURE_HOST,
+      branchName: `track/${ORPHAN_CLEANUP_DISPATCH_ID}`,
+      worktreePath: orphanWorktreePath,
+      summary: 'Left behind on purpose for the browser cleanup e2e.',
+    }, null, 2)}\n`,
+    'utf-8',
+  )
+
+  runRemoteCommand(
+    {
+      fixturePort: options.fixturePort,
+      keyPath: options.keyPath,
+      knownHostsPath: path.join(options.runtimeRoot, 'known_hosts'),
+    },
+    `
+      set -eu
+      mkdir -p "${orphanWorktreePath}" "${orphanRunDirectory}"
+      printf 'orphaned worktree\\n' > "${orphanWorktreePath}/README.txt"
+      printf 'completed\\n' > "${orphanRunDirectory}/status.txt"
+    `,
+  )
 }
 
 async function updateProjectMetadata(apiBaseUrl: string): Promise<void> {

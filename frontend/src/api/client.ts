@@ -4,6 +4,8 @@ import type {
   ProjectInfo,
   ProjectMetadataUpdateInput,
   ProjectsResponse,
+  RemoteCleanupResponse,
+  RemoteCleanupSummary,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   RunRecord,
@@ -70,6 +72,14 @@ export async function updateRemoteAgentSettings(
     method: 'PATCH',
     body: JSON.stringify(input),
   })
+}
+
+export async function cleanupRemoteAgentArtifacts(): Promise<RemoteCleanupSummary> {
+  const response = await readJson<RemoteCleanupResponse>('/api/remote-agent/cleanup', {
+    method: 'POST',
+  })
+
+  return response.summary
 }
 
 export async function fetchTasks(options: { includeClosed: boolean; project?: string }): Promise<Task[]> {

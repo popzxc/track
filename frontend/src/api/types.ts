@@ -25,6 +25,18 @@ export interface RemoteAgentSettings {
   shellPrelude?: string
 }
 
+export interface RemoteCleanupSummary {
+  closedTasksCleaned: number
+  missingTasksCleaned: number
+  localDispatchHistoriesRemoved: number
+  remoteWorktreesRemoved: number
+  remoteRunDirectoriesRemoved: number
+}
+
+export interface RemoteCleanupResponse {
+  summary: RemoteCleanupSummary
+}
+
 export interface TaskChangeVersionResponse {
   version: number
 }

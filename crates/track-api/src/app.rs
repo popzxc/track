@@ -20,7 +20,9 @@ use track_core::remote_agent::RemoteDispatchService;
 use track_core::task_repository::FileTaskRepository;
 use track_core::task_sort::sort_tasks;
 use track_core::time_utils::now_utc;
-use track_core::types::{Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput};
+use track_core::types::{
+    RemoteCleanupSummary, Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -163,6 +165,11 @@ struct RemoteAgentSettingsResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct RemoteCleanupResponse {
+    summary: RemoteCleanupSummary,
+}
+
+#[derive(Debug, Serialize)]
 struct TaskChangeVersionResponse {
     version: u64,
 }
@@ -248,6 +255,27 @@ async fn patch_remote_agent_settings(
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(remote_agent_settings_response(Some(remote_agent))))
+}
+
+async fn cleanup_remote_agent_artifacts(
+    State(state): State<AppState>,
+) -> Result<Json<RemoteCleanupResponse>, ApiError> {
+    let cleanup_state = state.clone();
+    let summary = tokio::task::spawn_blocking(move || {
+        let dispatch_service = RemoteDispatchService {
+            config_service: &cleanup_state.config_service,
+            dispatch_repository: &cleanup_state.dispatch_repository,
+            project_repository: &cleanup_state.project_repository,
+            task_repository: &cleanup_state.task_repository,
+        };
+
+        dispatch_service.cleanup_unused_remote_artifacts()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Remote cleanup task failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(RemoteCleanupResponse { summary }))
 }
 
 async fn patch_project(
@@ -402,10 +430,21 @@ async fn patch_task(
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
     let validated_input = input.validate().map_err(ApiError::from_track_error)?;
 
-    let updated_task = state
-        .task_repository
-        .update_task(&id, validated_input)
-        .map_err(ApiError::from_track_error)?;
+    let patch_state = state.clone();
+    let task_id = id.clone();
+    let updated_task = tokio::task::spawn_blocking(move || {
+        let dispatch_service = RemoteDispatchService {
+            config_service: &patch_state.config_service,
+            dispatch_repository: &patch_state.dispatch_repository,
+            project_repository: &patch_state.project_repository,
+            task_repository: &patch_state.task_repository,
+        };
+
+        dispatch_service.update_task(&task_id, validated_input)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Patch task failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
     bump_task_change_version(&state);
 
     Ok(Json(updated_task))
@@ -437,10 +476,21 @@ async fn delete_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
-    state
-        .task_repository
-        .delete_task(&id)
-        .map_err(ApiError::from_track_error)?;
+    let delete_state = state.clone();
+    let task_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        let dispatch_service = RemoteDispatchService {
+            config_service: &delete_state.config_service,
+            dispatch_repository: &delete_state.dispatch_repository,
+            project_repository: &delete_state.project_repository,
+            task_repository: &delete_state.task_repository,
+        };
+
+        dispatch_service.delete_task(&task_id)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Delete task failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
     bump_task_change_version(&state);
 
     Ok(Json(DeleteTaskResponse { ok: true }))
@@ -601,6 +651,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             "/remote-agent",
             get(get_remote_agent_settings).patch(patch_remote_agent_settings),
         )
+        .route("/remote-agent/cleanup", post(cleanup_remote_agent_artifacts))
         .route("/dispatches", get(list_dispatches))
         .route("/runs", get(list_runs))
         .route("/tasks", get(list_tasks).post(create_task))

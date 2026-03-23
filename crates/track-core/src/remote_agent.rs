@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -18,7 +18,8 @@ use crate::task_description::{append_follow_up_request, parse_task_description};
 use crate::task_repository::FileTaskRepository;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use crate::types::{
-    DispatchStatus, RemoteAgentDispatchOutcome, TaskDispatchRecord, TaskUpdateInput,
+    DispatchStatus, RemoteAgentDispatchOutcome, RemoteCleanupSummary, Status,
+    TaskDispatchRecord, TaskUpdateInput,
 };
 
 const REMOTE_STATUS_FILE_NAME: &str = "status.txt";
@@ -41,6 +42,20 @@ struct RemoteDispatchSnapshot {
     result: Option<String>,
     stderr: Option<String>,
     finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RemoteArtifactCleanupCounts {
+    worktrees_removed: usize,
+    run_directories_removed: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteArtifactCleanupReport {
+    #[serde(rename = "worktreesRemoved")]
+    worktrees_removed: usize,
+    #[serde(rename = "runDirectoriesRemoved")]
+    run_directories_removed: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,10 +493,152 @@ impl<'a> RemoteDispatchService<'a> {
         // Discard intentionally clears the entire visible dispatch history for
         // the task so the card goes back to an undecorated state. That matches
         // the UI intent of "let me try this task again from a clean slate".
+        // TODO: This currently leaves remote worktrees and dispatch directories
+        // alone on purpose. Product policy only asked for remote cleanup on
+        // task close/delete, not on discard.
         // TODO: If users later want audit history, replace this hard delete
         // with an explicit archived-history concept instead of reviving older
         // dispatch records automatically.
         self.dispatch_repository.delete_dispatch_history_for_task(task_id)
+    }
+
+    // =============================================================================
+    // Task Lifecycle Cleanup
+    // =============================================================================
+    //
+    // Remote Codex work leaves behind two different kinds of state:
+    //
+    // 1. lightweight metadata we want to keep for run history and follow-ups
+    // 2. heavyweight worktrees that can accumulate large Rust build outputs
+    //
+    // Closing a task should therefore keep dispatch history but release the
+    // worktree space. Deleting a task goes further and removes both the local
+    // dispatch history and the remote run directories as well.
+    // We intentionally leave branches and the shared project checkout in
+    // place. The heavy cost is in per-task worktrees and their build outputs,
+    // while branches and the reusable checkout are comparatively cheap and
+    // valuable for follow-up work.
+    pub fn update_task(&self, task_id: &str, input: TaskUpdateInput) -> Result<crate::types::Task, TrackError> {
+        let validated_input = input.validate()?;
+
+        if validated_input.status == Some(crate::types::Status::Closed) {
+            let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
+            if !dispatch_history.is_empty() {
+                self.cleanup_task_remote_artifacts(
+                    task_id,
+                    &dispatch_history,
+                    RemoteTaskCleanupMode::CloseTask,
+                )?;
+                self.mark_active_dispatches_canceled(
+                    &dispatch_history,
+                    "Canceled because the task was closed.",
+                )?;
+            }
+        }
+
+        self.task_repository.update_task(task_id, validated_input)
+    }
+
+    pub fn delete_task(&self, task_id: &str) -> Result<(), TrackError> {
+        let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
+        if !dispatch_history.is_empty() {
+            self.cleanup_task_remote_artifacts(
+                task_id,
+                &dispatch_history,
+                RemoteTaskCleanupMode::DeleteTask,
+            )?;
+
+            // We intentionally remove the local dispatch history before the
+            // task file itself. If the final file delete fails, the user still
+            // sees the task and can retry, rather than ending up with invisible
+            // orphaned runs in the UI.
+            self.dispatch_repository
+                .delete_dispatch_history_for_task(task_id)?;
+        }
+
+        self.task_repository.delete_task(task_id)
+    }
+
+    // =============================================================================
+    // Manual Remote Cleanup
+    // =============================================================================
+    //
+    // The lifecycle hooks on close/delete protect new work from leaking
+    // worktrees forever, but users may already have historical leftovers from
+    // before that policy existed. Manual cleanup replays the same rules across
+    // the whole tracker state:
+    //
+    // - open task: keep referenced worktrees and dispatch metadata
+    // - closed task: remove worktrees, keep dispatch metadata
+    // - missing task: remove remote artifacts and local dispatch history
+    //
+    // After reconciling every saved task history, we also sweep the remote
+    // workspace for orphaned `dispatch-*` worktrees and run directories that
+    // no longer have any local record at all.
+    pub fn cleanup_unused_remote_artifacts(&self) -> Result<RemoteCleanupSummary, TrackError> {
+        let remote_agent = self.load_remote_agent_for_global_cleanup()?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let task_ids_with_history = self.dispatch_repository.task_ids_with_history()?;
+
+        let mut summary = RemoteCleanupSummary::default();
+        let mut kept_worktree_paths = BTreeSet::new();
+        let mut kept_run_directories = BTreeSet::new();
+
+        for task_id in task_ids_with_history {
+            let dispatch_history = self.dispatch_repository.dispatches_for_task(&task_id)?;
+            if dispatch_history.is_empty() {
+                continue;
+            }
+
+            match self.task_repository.get_task(&task_id) {
+                Ok(task) if task.status == Status::Open => {
+                    kept_worktree_paths.extend(unique_worktree_paths(&dispatch_history));
+                    kept_run_directories
+                        .extend(unique_run_directories(&dispatch_history, &remote_agent));
+                }
+                Ok(task) if task.status == Status::Closed => {
+                    let cleanup_counts = self.cleanup_task_remote_artifacts(
+                        &task.id,
+                        &dispatch_history,
+                        RemoteTaskCleanupMode::CloseTask,
+                    )?;
+                    self.mark_active_dispatches_canceled(
+                        &dispatch_history,
+                        "Canceled because the task was closed.",
+                    )?;
+                    kept_run_directories
+                        .extend(unique_run_directories(&dispatch_history, &remote_agent));
+                    summary.closed_tasks_cleaned += 1;
+                    summary.remote_worktrees_removed += cleanup_counts.worktrees_removed;
+                    summary.remote_run_directories_removed += cleanup_counts.run_directories_removed;
+                }
+                Err(error) if error.code == ErrorCode::TaskNotFound => {
+                    let cleanup_counts = self.cleanup_task_remote_artifacts(
+                        &task_id,
+                        &dispatch_history,
+                        RemoteTaskCleanupMode::DeleteTask,
+                    )?;
+                    self.dispatch_repository
+                        .delete_dispatch_history_for_task(&task_id)?;
+                    summary.missing_tasks_cleaned += 1;
+                    summary.local_dispatch_histories_removed += 1;
+                    summary.remote_worktrees_removed += cleanup_counts.worktrees_removed;
+                    summary.remote_run_directories_removed += cleanup_counts.run_directories_removed;
+                }
+                Err(error) => return Err(error),
+                Ok(_) => unreachable!("tasks should only be open or closed"),
+            }
+        }
+
+        let orphan_cleanup_counts = ssh_client.cleanup_orphaned_dispatch_artifacts(
+            &remote_agent.workspace_root,
+            &kept_worktree_paths.into_iter().collect::<Vec<_>>(),
+            &kept_run_directories.into_iter().collect::<Vec<_>>(),
+        )?;
+        summary.remote_worktrees_removed += orphan_cleanup_counts.worktrees_removed;
+        summary.remote_run_directories_removed += orphan_cleanup_counts.run_directories_removed;
+
+        Ok(summary)
     }
 
     pub fn latest_dispatches_for_tasks(
@@ -679,6 +836,130 @@ impl<'a> RemoteDispatchService<'a> {
         )
     }
 
+    fn cleanup_task_remote_artifacts(
+        &self,
+        task_id: &str,
+        dispatch_history: &[TaskDispatchRecord],
+        cleanup_mode: RemoteTaskCleanupMode,
+    ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+        if dispatch_history.is_empty() {
+            return Ok(RemoteArtifactCleanupCounts::default());
+        }
+
+        let remote_agent = self.load_remote_agent_for_cleanup(task_id)?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let checkout_path = self.resolve_project_checkout_path(
+            &ssh_client,
+            &remote_agent,
+            &dispatch_history[0].project,
+        )?;
+        let worktree_paths = unique_worktree_paths(dispatch_history);
+        let run_directories = unique_run_directories(dispatch_history, &remote_agent);
+
+        ssh_client.cleanup_task_artifacts(
+            &checkout_path,
+            &worktree_paths,
+            &run_directories,
+            cleanup_mode,
+        )
+    }
+
+    fn mark_active_dispatches_canceled(
+        &self,
+        dispatch_history: &[TaskDispatchRecord],
+        summary: &str,
+    ) -> Result<(), TrackError> {
+        for dispatch_record in dispatch_history {
+            if !dispatch_record.status.is_active() {
+                continue;
+            }
+
+            let mut canceled_record = dispatch_record.clone();
+            canceled_record.status = DispatchStatus::Canceled;
+            canceled_record.updated_at = now_utc();
+            canceled_record.finished_at = Some(canceled_record.updated_at);
+            canceled_record.summary = Some(summary.to_owned());
+            canceled_record.notes = None;
+            canceled_record.error_message = None;
+            self.dispatch_repository.save_dispatch(&canceled_record)?;
+        }
+
+        Ok(())
+    }
+
+    fn load_remote_agent_for_cleanup(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
+        let config = self.config_service.load_runtime_config()?;
+        let remote_agent = config.remote_agent.ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Task {task_id} has remote dispatch history, but remote-agent configuration is missing so cleanup cannot run."
+                ),
+            )
+        })?;
+
+        if !remote_agent.managed_key_path.exists() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task {task_id}.",
+                    collapse_home_path(&remote_agent.managed_key_path)
+                ),
+            ));
+        }
+
+        Ok(remote_agent)
+    }
+
+    fn load_remote_agent_for_global_cleanup(
+        &self,
+    ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
+        let config = self.config_service.load_runtime_config()?;
+        let remote_agent = config.remote_agent.ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                "Remote cleanup cannot run because remote-agent configuration is missing.",
+            )
+        })?;
+
+        if !remote_agent.managed_key_path.exists() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before running cleanup.",
+                    collapse_home_path(&remote_agent.managed_key_path)
+                ),
+            ));
+        }
+
+        Ok(remote_agent)
+    }
+
+    fn resolve_project_checkout_path(
+        &self,
+        ssh_client: &SshClient,
+        remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+        project_name: &str,
+    ) -> Result<String, TrackError> {
+        let remote_registry = load_remote_registry(ssh_client, &remote_agent.projects_registry_path)?;
+
+        Ok(remote_registry
+            .projects
+            .get(project_name)
+            .map(|entry| entry.checkout_path.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/{}/{}",
+                    remote_agent.workspace_root.trim_end_matches('/'),
+                    project_name,
+                    project_name
+                )
+            }))
+    }
+
     fn load_dispatch_prerequisites(
         &self,
         task_id: &str,
@@ -729,6 +1010,12 @@ impl<'a> RemoteDispatchService<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteTaskCleanupMode {
+    CloseTask,
+    DeleteTask,
+}
+
 fn first_follow_up_line(follow_up_request: &str) -> String {
     follow_up_request
         .lines()
@@ -767,6 +1054,30 @@ fn latest_pull_request_for_branch(
                     .is_some()
         })
         .and_then(|record| record.pull_request_url.clone())
+}
+
+fn unique_worktree_paths(dispatch_history: &[TaskDispatchRecord]) -> Vec<String> {
+    dispatch_history
+        .iter()
+        .filter_map(|record| record.worktree_path.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn unique_run_directories(
+    dispatch_history: &[TaskDispatchRecord],
+    remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+) -> Vec<String> {
+    dispatch_history
+        .iter()
+        .filter_map(|record| derive_remote_run_directory_for_record(record, remote_agent))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn validate_project_metadata_for_dispatch(metadata: &ProjectMetadata) -> Result<(), TrackError> {
@@ -836,6 +1147,28 @@ fn derive_remote_run_directory(
                 "Could not derive the remote run directory from the worktree path.",
             )
         })
+}
+
+fn derive_remote_run_directory_for_record(
+    record: &TaskDispatchRecord,
+    remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+) -> Option<String> {
+    if let Some(worktree_path) = record.worktree_path.as_deref() {
+        if let Ok(run_directory) = derive_remote_run_directory(worktree_path, &record.dispatch_id) {
+            return Some(run_directory);
+        }
+    }
+
+    if record.project.trim().is_empty() || remote_agent.workspace_root.trim().is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "{}/{}/dispatches/{}",
+        remote_agent.workspace_root.trim_end_matches('/'),
+        record.project,
+        record.dispatch_id
+    ))
 }
 
 fn build_remote_dispatch_prompt(
@@ -1586,6 +1919,278 @@ date -u +%Y-%m-%dT%H:%M:%SZ > "$FINISHED_AT_FILE"
         Ok(())
     }
 
+    fn cleanup_task_artifacts(
+        &self,
+        checkout_path: &str,
+        worktree_paths: &[String],
+        run_directories: &[String],
+        cleanup_mode: RemoteTaskCleanupMode,
+    ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+        let cleanup_remote_dispatch_directories = cleanup_mode == RemoteTaskCleanupMode::DeleteTask;
+        let cleanup_script = format!(
+            r#"
+set -eu
+{path_helpers}
+CHECKOUT_PATH="$(expand_remote_path "$1")"
+shift
+
+WORKTREE_PATHS=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--" ]; then
+    shift
+    break
+  fi
+
+  WORKTREE_PATHS+=("$1")
+  shift
+done
+
+RUN_DIRECTORIES=("$@")
+WORKTREES_REMOVED=0
+RUN_DIRECTORIES_REMOVED=0
+
+kill_if_running() {{
+  PID="$1"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID" 2>/dev/null || true
+  fi
+}}
+
+worktree_is_registered() {{
+  TARGET_WORKTREE="$1"
+  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $TARGET_WORKTREE" >/dev/null 2>&1
+}}
+
+for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
+  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
+  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
+  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
+  STATUS_FILE="$RUN_DIR/{status_file}"
+  FINISHED_AT_FILE="$RUN_DIR/{finished_at_file}"
+  CURRENT_STATUS="$(tr -d '[:space:]' < "$STATUS_FILE" 2>/dev/null || true)"
+
+  if [ -f "$LAUNCHER_PID_FILE" ]; then
+    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
+    kill_if_running "$LAUNCHER_PID"
+  fi
+
+  if [ -f "$CODEX_PID_FILE" ]; then
+    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
+    kill_if_running "$CODEX_PID"
+  fi
+
+  if [ -d "$RUN_DIR" ] && {{ [ "$CURRENT_STATUS" = "preparing" ] || [ "$CURRENT_STATUS" = "running" ]; }}; then
+    printf 'canceled\n' > "$STATUS_FILE"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$FINISHED_AT_FILE"
+  fi
+done
+
+for RAW_WORKTREE_PATH in "${{WORKTREE_PATHS[@]}}"; do
+  WORKTREE_PATH="$(expand_remote_path "$RAW_WORKTREE_PATH")"
+  HAD_WORKTREE_PATH="false"
+  if [ -e "$WORKTREE_PATH" ]; then
+    HAD_WORKTREE_PATH="true"
+  fi
+
+  if [ -d "$CHECKOUT_PATH/.git" ] && worktree_is_registered "$WORKTREE_PATH"; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+  fi
+
+  if [ -e "$WORKTREE_PATH" ]; then
+    rm -rf "$WORKTREE_PATH"
+  fi
+
+  if [ "$HAD_WORKTREE_PATH" = "true" ] && [ ! -e "$WORKTREE_PATH" ]; then
+    WORKTREES_REMOVED=$((WORKTREES_REMOVED + 1))
+  fi
+done
+
+if [ -d "$CHECKOUT_PATH/.git" ]; then
+  git -C "$CHECKOUT_PATH" worktree prune >&2 || true
+fi
+
+if [ "{cleanup_remote_dispatch_directories}" = "true" ]; then
+  for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
+    RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
+    HAD_RUN_DIRECTORY="false"
+    if [ -e "$RUN_DIR" ]; then
+      HAD_RUN_DIRECTORY="true"
+    fi
+    if [ -e "$RUN_DIR" ]; then
+      rm -rf "$RUN_DIR"
+    fi
+    if [ "$HAD_RUN_DIRECTORY" = "true" ] && [ ! -e "$RUN_DIR" ]; then
+      RUN_DIRECTORIES_REMOVED=$((RUN_DIRECTORIES_REMOVED + 1))
+    fi
+  done
+fi
+
+printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
+  "$WORKTREES_REMOVED" \
+  "$RUN_DIRECTORIES_REMOVED"
+"#,
+            path_helpers = remote_path_helpers_shell(),
+            cleanup_remote_dispatch_directories = if cleanup_remote_dispatch_directories {
+                "true"
+            } else {
+                "false"
+            },
+            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
+            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
+            status_file = REMOTE_STATUS_FILE_NAME,
+            finished_at_file = REMOTE_FINISHED_AT_FILE_NAME,
+        );
+
+        let mut arguments = vec![checkout_path.to_owned()];
+        arguments.extend(worktree_paths.iter().cloned());
+        arguments.push("--".to_owned());
+        arguments.extend(run_directories.iter().cloned());
+        let report = self.run_script(&cleanup_script, &arguments)?;
+        parse_remote_cleanup_counts(&report)
+    }
+
+    fn cleanup_orphaned_dispatch_artifacts(
+        &self,
+        workspace_root: &str,
+        kept_worktree_paths: &[String],
+        kept_run_directories: &[String],
+    ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+        // The remote workspace layout is currently automation-owned:
+        // `<workspace>/<project>/<project>` for the checkout plus sibling
+        // `worktrees/` and `dispatches/` directories. That lets a broad sweep
+        // remove forgotten `dispatch-*` artifacts without needing a second
+        // local registry of every worktree ever created.
+        // TODO: If the checkout layout ever becomes user-configurable, replace
+        // this directory derivation with a registry-backed lookup.
+        let cleanup_script = format!(
+            r#"
+set -eu
+{path_helpers}
+WORKSPACE_ROOT="$(expand_remote_path "$1")"
+shift
+
+KEEP_WORKTREE_PATHS=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--" ]; then
+    shift
+    break
+  fi
+
+  KEEP_WORKTREE_PATHS+=("$(expand_remote_path "$1")")
+  shift
+done
+
+KEEP_RUN_DIRECTORIES=()
+for RAW_RUN_DIR in "$@"; do
+  KEEP_RUN_DIRECTORIES+=("$(expand_remote_path "$RAW_RUN_DIR")")
+done
+
+WORKTREES_REMOVED=0
+RUN_DIRECTORIES_REMOVED=0
+
+path_is_kept() {{
+  TARGET_PATH="$1"
+  shift
+
+  for KEPT_PATH in "$@"; do
+    if [ "$KEPT_PATH" = "$TARGET_PATH" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}}
+
+kill_if_running() {{
+  PID="$1"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID" 2>/dev/null || true
+  fi
+}}
+
+remove_run_directory() {{
+  RUN_DIR="$1"
+  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
+  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
+
+  if [ -f "$LAUNCHER_PID_FILE" ]; then
+    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
+    kill_if_running "$LAUNCHER_PID"
+  fi
+
+  if [ -f "$CODEX_PID_FILE" ]; then
+    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
+    kill_if_running "$CODEX_PID"
+  fi
+
+  if [ -e "$RUN_DIR" ]; then
+    rm -rf "$RUN_DIR"
+  fi
+
+  if [ ! -e "$RUN_DIR" ]; then
+    RUN_DIRECTORIES_REMOVED=$((RUN_DIRECTORIES_REMOVED + 1))
+  fi
+}}
+
+remove_worktree_path() {{
+  WORKTREE_PATH="$1"
+  PROJECT_DIRECTORY="$(dirname "$(dirname "$WORKTREE_PATH")")"
+  PROJECT_NAME="$(basename "$PROJECT_DIRECTORY")"
+  CHECKOUT_PATH="$PROJECT_DIRECTORY/$PROJECT_NAME"
+
+  if [ -d "$CHECKOUT_PATH/.git" ]; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+    git -C "$CHECKOUT_PATH" worktree prune >&2 || true
+  fi
+
+  if [ -e "$WORKTREE_PATH" ]; then
+    rm -rf "$WORKTREE_PATH"
+  fi
+
+  if [ ! -e "$WORKTREE_PATH" ]; then
+    WORKTREES_REMOVED=$((WORKTREES_REMOVED + 1))
+  fi
+}}
+
+for PROJECT_DIRECTORY in "$WORKSPACE_ROOT"/*; do
+  [ -d "$PROJECT_DIRECTORY" ] || continue
+
+  for RUN_DIR in "$PROJECT_DIRECTORY"/dispatches/dispatch-*; do
+    [ -e "$RUN_DIR" ] || continue
+    if path_is_kept "$RUN_DIR" "${{KEEP_RUN_DIRECTORIES[@]}}"; then
+      continue
+    fi
+
+    remove_run_directory "$RUN_DIR"
+  done
+
+  for WORKTREE_PATH in "$PROJECT_DIRECTORY"/worktrees/dispatch-*; do
+    [ -e "$WORKTREE_PATH" ] || continue
+    if path_is_kept "$WORKTREE_PATH" "${{KEEP_WORKTREE_PATHS[@]}}"; then
+      continue
+    fi
+
+    remove_worktree_path "$WORKTREE_PATH"
+  done
+done
+
+printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
+  "$WORKTREES_REMOVED" \
+  "$RUN_DIRECTORIES_REMOVED"
+"#,
+            path_helpers = remote_path_helpers_shell(),
+            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
+            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
+        );
+
+        let mut arguments = vec![workspace_root.to_owned()];
+        arguments.extend(kept_worktree_paths.iter().cloned());
+        arguments.push("--".to_owned());
+        arguments.extend(kept_run_directories.iter().cloned());
+        let report = self.run_script(&cleanup_script, &arguments)?;
+        parse_remote_cleanup_counts(&report)
+    }
+
     fn read_remote_file(&self, remote_path: &str) -> Result<Option<String>, TrackError> {
         let read_remote_file_script = format!(
             r#"
@@ -1922,6 +2527,22 @@ fn parse_dispatch_snapshot_report(report: &str) -> Result<Vec<RemoteDispatchSnap
     }
 
     Ok(snapshots)
+}
+
+fn parse_remote_cleanup_counts(report: &str) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+    let parsed_report = serde_json::from_str::<RemoteArtifactCleanupReport>(report.trim()).map_err(
+        |error| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Could not parse the remote cleanup report: {error}"),
+            )
+        },
+    )?;
+
+    Ok(RemoteArtifactCleanupCounts {
+        worktrees_removed: parsed_report.worktrees_removed,
+        run_directories_removed: parsed_report.run_directories_removed,
+    })
 }
 
 fn decode_hex_string(hex: &str) -> Result<String, TrackError> {

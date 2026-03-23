@@ -1,9 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { chromium, type Browser, type Page } from '@playwright/test'
 
 import {
   DISPATCH_TASK_TITLE,
   FOLLOW_UP_TASK_TITLE,
+  FIXTURE_HOST,
+  FIXTURE_USER,
+  ORPHAN_CLEANUP_DISPATCH_ID,
+  ORPHAN_CLEANUP_TASK_ID,
+  E2E_PROJECT_NAME,
+  FIXTURE_WORKSPACE_ROOT,
 } from '../../testing/e2e/support/constants'
 import { loadFrontendE2EState } from '../../testing/e2e/support/state'
 import { setupFrontendE2EEnvironment } from '../../testing/e2e/global.setup'
@@ -72,6 +81,49 @@ async function waitForRunHistoryLabel(
   )
 }
 
+function orphanDispatchHistoryPath() {
+  const state = loadFrontendE2EState()
+  return path.join(state.tempRoot, 'track', 'issues', '.dispatches', ORPHAN_CLEANUP_TASK_ID)
+}
+
+function orphanWorktreePath() {
+  return `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/worktrees/${ORPHAN_CLEANUP_DISPATCH_ID}`
+}
+
+function orphanRunDirectory() {
+  return `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
+}
+
+function remotePathExists(remotePath: string): boolean {
+  const state = loadFrontendE2EState()
+  const result = spawnSync(
+    'ssh',
+    [
+      '-i',
+      path.join(state.tempRoot, 'fixture-key', 'id_ed25519'),
+      '-p',
+      String(state.fixturePort),
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'IdentitiesOnly=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      `UserKnownHostsFile=${path.join(state.runtimeRoot, 'known_hosts')}`,
+      `${FIXTURE_USER}@${FIXTURE_HOST}`,
+      'test',
+      '-e',
+      remotePath,
+    ],
+    {
+      encoding: 'utf-8',
+    },
+  )
+
+  return result.status === 0
+}
+
 describe('remote dispatch smoke flow', () => {
   test('dispatches from the UI and continues with a follow-up request', async () => {
     const { apiBaseUrl } = loadFrontendE2EState()
@@ -110,6 +162,35 @@ describe('remote dispatch smoke flow', () => {
       expect(await runHistoryItems.first().textContent()).toContain('Latest')
       expect(await runHistoryItems.first().textContent()).toContain('Follow-up')
       expect(await page.getByRole('button', { name: 'View PR' }).count()).toBeGreaterThan(0)
+    } finally {
+      await page.close()
+    }
+  }, 120_000)
+
+  test('cleans up orphaned remote artifacts from Settings', async () => {
+    const { apiBaseUrl } = loadFrontendE2EState()
+    const page = await browser.newPage()
+
+    try {
+      expect(fs.existsSync(orphanDispatchHistoryPath())).toBe(true)
+      expect(remotePathExists(orphanWorktreePath())).toBe(true)
+      expect(remotePathExists(orphanRunDirectory())).toBe(true)
+
+      await page.goto(apiBaseUrl)
+      await page.getByRole('button', { name: 'Settings' }).click()
+      await page.getByTestId('settings-cleanup-button').click()
+      await page.getByTestId('confirm-dialog').waitFor()
+      await page.getByTestId('confirm-submit').click()
+      await page.getByTestId('cleanup-summary').waitFor()
+
+      const cleanupSummaryText = await page.getByTestId('cleanup-summary').textContent()
+      expect(cleanupSummaryText).toContain('Missing tasks')
+      expect(cleanupSummaryText).toContain('1')
+      expect(cleanupSummaryText).toContain('Local histories')
+
+      expect(fs.existsSync(orphanDispatchHistoryPath())).toBe(false)
+      expect(remotePathExists(orphanWorktreePath())).toBe(false)
+      expect(remotePathExists(orphanRunDirectory())).toBe(false)
     } finally {
       await page.close()
     }

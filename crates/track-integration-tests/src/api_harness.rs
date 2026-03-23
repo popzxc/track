@@ -17,7 +17,7 @@ use track_core::config::{
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::project_repository::{ProjectMetadata, ProjectRepository};
 use track_core::task_repository::FileTaskRepository;
-use track_core::types::{Priority, Task, TaskCreateInput, TaskSource};
+use track_core::types::{Priority, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput};
 
 use crate::fixture::RemoteFixture;
 
@@ -33,6 +33,7 @@ pub struct ApiHarness {
     app: axum::Router,
     project_repository: Arc<ProjectRepository>,
     task_repository: Arc<FileTaskRepository>,
+    dispatches_dir: PathBuf,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
 }
@@ -85,7 +86,8 @@ impl ApiHarness {
                 .expect("dispatch repository should resolve"),
         );
         let project_repository = Arc::new(
-            ProjectRepository::new(Some(issues_dir)).expect("project repository should resolve"),
+            ProjectRepository::new(Some(issues_dir.clone()))
+                .expect("project repository should resolve"),
         );
 
         let app = build_app(
@@ -103,6 +105,7 @@ impl ApiHarness {
             app,
             project_repository,
             task_repository,
+            dispatches_dir: issues_dir.join(".dispatches"),
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
         }
@@ -182,6 +185,89 @@ impl ApiHarness {
         self.task_repository
             .get_task(task_id)
             .expect("task should load from the repository")
+    }
+
+    pub fn task_exists(&self, task_id: &str) -> bool {
+        self.task_repository.get_task(task_id).is_ok()
+    }
+
+    pub fn dispatch_history_exists(&self, task_id: &str) -> bool {
+        self.dispatches_dir.join(task_id).exists()
+    }
+
+    pub async fn update_task_status(&self, task_id: &str, status: &str) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/tasks/{task_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "status": status }))
+                            .expect("task status update should serialize"),
+                    ))
+                    .expect("task status update request should build"),
+            )
+            .await
+            .expect("task status update request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response_json(response).await
+    }
+
+    pub async fn delete_task(&self, task_id: &str) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/tasks/{task_id}"))
+                    .body(Body::empty())
+                    .expect("task delete request should build"),
+            )
+            .await
+            .expect("task delete request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    pub async fn cleanup_remote_agent_artifacts(&self) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/remote-agent/cleanup")
+                    .body(Body::empty())
+                    .expect("remote cleanup request should build"),
+            )
+            .await
+            .expect("remote cleanup request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response_json(response).await
+    }
+
+    pub fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
+        self.task_repository
+            .update_task(
+                task_id,
+                TaskUpdateInput {
+                    description: None,
+                    priority: None,
+                    status: Some(Status::Closed),
+                },
+            )
+            .expect("task should close directly in the repository")
+    }
+
+    pub fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
+        self.task_repository
+            .delete_task(task_id)
+            .expect("task file should delete directly in the repository");
     }
 
     pub async fn poll_dispatch_until_terminal(

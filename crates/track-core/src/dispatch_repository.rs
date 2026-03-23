@@ -264,6 +264,64 @@ impl DispatchRepository {
         Ok(records)
     }
 
+    // =============================================================================
+    // Dispatch History Discovery
+    // =============================================================================
+    //
+    // Manual cleanup needs to reason about task ids that still have saved
+    // dispatch state even when the task file itself is gone. Surfacing that
+    // scan here keeps the filesystem traversal rules in one place instead of
+    // duplicating "what counts as a task history directory?" in higher layers.
+    pub fn task_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
+        if !self.dispatches_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let entries = fs::read_dir(&self.dispatches_dir).map_err(|error| {
+            TrackError::new(
+                ErrorCode::DispatchWriteFailed,
+                format!(
+                    "Could not read the dispatch root at {}: {error}",
+                    path_to_string(&self.dispatches_dir)
+                ),
+            )
+        })?;
+
+        let mut task_ids = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                TrackError::new(
+                    ErrorCode::DispatchWriteFailed,
+                    format!(
+                        "Could not read a task dispatch directory under {}: {error}",
+                        path_to_string(&self.dispatches_dir)
+                    ),
+                )
+            })?;
+
+            if !entry
+                .file_type()
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::DispatchWriteFailed,
+                        format!(
+                            "Could not inspect a dispatch history entry under {}: {error}",
+                            path_to_string(&self.dispatches_dir)
+                        ),
+                    )
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+
+            task_ids.push(entry.file_name().to_string_lossy().into_owned());
+        }
+
+        task_ids.sort();
+        Ok(task_ids)
+    }
+
     pub fn get_dispatch(
         &self,
         task_id: &str,

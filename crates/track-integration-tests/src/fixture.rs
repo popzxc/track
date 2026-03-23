@@ -199,6 +199,35 @@ impl RemoteFixture {
             .map(|line| serde_json::from_str(line).expect("fixture log line should be valid JSON"))
             .collect()
     }
+
+    pub fn remote_path_exists(&self, remote_path: &str) -> bool {
+        let output = Command::new("ssh")
+            .arg("-i")
+            .arg(self.private_key_path())
+            .arg("-p")
+            .arg(self.port.to_string())
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+            ])
+            .arg(format!(
+                "UserKnownHostsFile={}",
+                self.runtime_dir.path().join("known_hosts").to_string_lossy()
+            ))
+            .arg(format!("{FIXTURE_USER}@{FIXTURE_HOST}"))
+            .arg("test")
+            .arg("-e")
+            .arg(remote_path)
+            .output()
+            .expect("remote path existence command should start");
+
+        output.status.success()
+    }
 }
 
 impl Drop for RemoteFixture {

@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ApiClientError,
   cancelDispatch,
+  cleanupRemoteAgentArtifacts,
   createTask,
   deleteTask,
   discardDispatch,
@@ -46,6 +47,7 @@ import {
 import type {
   ProjectInfo,
   ProjectMetadataUpdateInput,
+  RemoteCleanupSummary,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   RunRecord,
@@ -103,6 +105,9 @@ const editingRemoteAgentSetup = ref(false)
 const followingUpTask = ref<Task | null>(null)
 const taskPendingDeletion = ref<Task | null>(null)
 const taskPendingRunnerSetup = ref<Task | null>(null)
+const cleanupPendingConfirmation = ref(false)
+const cleaningUpRemoteArtifacts = ref(false)
+const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
 
 let taskChangePollTimer: number | null = null
 let taskChangePollInFlight = false
@@ -495,6 +500,21 @@ async function saveRemoteAgentSetup(payload: RemoteAgentSettingsUpdateInput) {
   }
 }
 
+async function confirmRemoteCleanup() {
+  cleaningUpRemoteArtifacts.value = true
+  errorMessage.value = ''
+
+  try {
+    cleanupSummary.value = await cleanupRemoteAgentArtifacts()
+    cleanupPendingConfirmation.value = false
+    await refreshAll()
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    cleaningUpRemoteArtifacts.value = false
+  }
+}
+
 async function confirmDelete() {
   if (!taskPendingDeletion.value) {
     return
@@ -679,6 +699,14 @@ function queueTaskDeletion(task: Task) {
 
 function clearPendingDeletion() {
   taskPendingDeletion.value = null
+}
+
+function openRemoteCleanupConfirmation() {
+  cleanupPendingConfirmation.value = true
+}
+
+function clearPendingRemoteCleanup() {
+  cleanupPendingConfirmation.value = false
 }
 
 // =============================================================================
@@ -1473,6 +1501,86 @@ onBeforeUnmount(() => {
                     <pre class="mt-4 overflow-x-auto whitespace-pre-wrap text-sm leading-7 text-fg1">{{ remoteAgentSettings?.shellPrelude || 'No shell prelude has been saved yet.' }}</pre>
                   </section>
                 </div>
+
+                <section class="mt-4 border border-fg2/15 bg-bg0/60 p-4">
+                  <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div class="min-w-0">
+                      <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                        Manual cleanup
+                      </p>
+                      <div class="mt-4 space-y-4 text-sm leading-7 text-fg1">
+                        <p>
+                          Sweep the remote workspace for stale task artifacts that are no longer needed.
+                        </p>
+                        <p>
+                          Open tasks keep their tracked worktrees. Closed tasks keep metadata but release worktrees. Missing tasks lose both remote artifacts and their saved local dispatch history.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      data-testid="settings-cleanup-button"
+                      class="border border-orange/30 bg-orange/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-orange transition hover:bg-orange/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      :disabled="cleaningUpRemoteArtifacts || !remoteAgentSettings?.configured"
+                      @click="openRemoteCleanupConfirmation"
+                    >
+                      {{ cleaningUpRemoteArtifacts ? 'Cleaning up...' : 'Clean up remote artifacts' }}
+                    </button>
+                  </div>
+
+                  <div
+                    v-if="cleanupSummary"
+                    data-testid="cleanup-summary"
+                    class="mt-4 border border-fg2/15 bg-bg1/70 p-4"
+                  >
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                      Last cleanup result
+                    </p>
+                    <dl class="mt-4 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-5">
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Closed tasks
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ cleanupSummary.closedTasksCleaned }}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Missing tasks
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ cleanupSummary.missingTasksCleaned }}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Local histories
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ cleanupSummary.localDispatchHistoriesRemoved }}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Worktrees
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ cleanupSummary.remoteWorktreesRemoved }}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Run dirs
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ cleanupSummary.remoteRunDirectoriesRemoved }}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </section>
               </section>
             </section>
           </template>
@@ -1827,11 +1935,28 @@ onBeforeUnmount(() => {
 
     <ConfirmDialog
       :busy="saving"
+      confirm-busy-label="Deleting..."
+      confirm-label="Delete forever"
+      confirm-variant="danger"
       :description="taskPendingDeletion ? `Delete ${taskTitle(taskPendingDeletion)} permanently? This cannot be undone.` : ''"
+      eyebrow="Destructive action"
       :open="taskPendingDeletion !== null"
       title="Delete task"
       @cancel="clearPendingDeletion"
       @confirm="confirmDelete"
+    />
+
+    <ConfirmDialog
+      :busy="cleaningUpRemoteArtifacts"
+      confirm-busy-label="Cleaning up..."
+      confirm-label="Run cleanup"
+      confirm-variant="primary"
+      description="Sweep the remote workspace and remove stale worktrees plus orphaned dispatch artifacts using the same rules as task close/delete."
+      eyebrow="Maintenance action"
+      :open="cleanupPendingConfirmation"
+      title="Clean up remote artifacts"
+      @cancel="clearPendingRemoteCleanup"
+      @confirm="confirmRemoteCleanup"
     />
   </main>
 </template>

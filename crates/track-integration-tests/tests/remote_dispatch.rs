@@ -188,6 +188,252 @@ async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
     assert_eq!(remote_status.trim(), "completed");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_task_removes_local_and_remote_dispatch_artifacts() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&success_codex_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex completed the task and opened a PR.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Delete the remote-agent artifacts with the task itself",
+    );
+
+    let dispatch_response = harness.dispatch_task(&task.id).await;
+    let dispatch_id = dispatch_response["dispatchId"]
+        .as_str()
+        .expect("dispatch response should include a dispatch id")
+        .to_owned();
+    let terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(terminal_dispatch["status"], "succeeded");
+
+    let worktree_path = terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("terminal dispatch should include a worktree path")
+        .to_owned();
+    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
+    assert!(fixture.remote_path_exists(&worktree_path));
+    assert!(fixture.remote_path_exists(&remote_run_directory));
+    assert!(harness.dispatch_history_exists(&task.id));
+
+    harness.delete_task(&task.id).await;
+
+    assert!(!harness.task_exists(&task.id));
+    assert!(!harness.dispatch_history_exists(&task.id));
+    assert!(!fixture.remote_path_exists(&worktree_path));
+    assert!(!fixture.remote_path_exists(&remote_run_directory));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_task_releases_the_worktree_but_keeps_history_for_reopen() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&success_codex_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex completed the task and opened a PR.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Close the task, then recreate the worktree on reopen",
+    );
+
+    let first_dispatch = harness.dispatch_task(&task.id).await;
+    let first_dispatch_id = first_dispatch["dispatchId"]
+        .as_str()
+        .expect("first dispatch response should include a dispatch id")
+        .to_owned();
+    let first_terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(first_terminal_dispatch["status"], "succeeded");
+
+    let original_worktree_path = first_terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("terminal dispatch should include a worktree path")
+        .to_owned();
+    let original_remote_run_directory =
+        format!("/home/track/workspace/project-a/dispatches/{first_dispatch_id}");
+    assert!(fixture.remote_path_exists(&original_worktree_path));
+    assert!(fixture.remote_path_exists(&original_remote_run_directory));
+    assert!(harness.dispatch_history_exists(&task.id));
+
+    let closed_task = harness.update_task_status(&task.id, "closed").await;
+    assert_eq!(closed_task["status"], "closed");
+    assert!(!fixture.remote_path_exists(&original_worktree_path));
+    assert!(fixture.remote_path_exists(&original_remote_run_directory));
+    assert!(harness.dispatch_history_exists(&task.id));
+
+    let reopened_task = harness.update_task_status(&task.id, "open").await;
+    assert_eq!(reopened_task["status"], "open");
+
+    fixture.write_codex_state(&success_codex_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex completed the follow-up after the worktree was restored.",
+    ));
+
+    let follow_up_dispatch = harness
+        .follow_up_task(&task.id, "Continue from the existing PR after reopening the task.")
+        .await;
+    let follow_up_dispatch_id = follow_up_dispatch["dispatchId"]
+        .as_str()
+        .expect("follow-up response should include a dispatch id")
+        .to_owned();
+    let second_terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+
+    assert_eq!(second_terminal_dispatch["status"], "succeeded");
+    assert_eq!(
+        second_terminal_dispatch["worktreePath"],
+        first_terminal_dispatch["worktreePath"]
+    );
+    assert_eq!(
+        second_terminal_dispatch["pullRequestUrl"],
+        first_terminal_dispatch["pullRequestUrl"]
+    );
+
+    let follow_up_worktree_path = second_terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("follow-up terminal dispatch should include a worktree path")
+        .to_owned();
+    let follow_up_run_directory =
+        format!("/home/track/workspace/project-a/dispatches/{follow_up_dispatch_id}");
+    assert!(fixture.remote_path_exists(&follow_up_worktree_path));
+    assert!(fixture.remote_path_exists(&follow_up_run_directory));
+    assert!(fixture.remote_path_exists(&original_remote_run_directory));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_cleanup_reconciles_closed_and_missing_task_artifacts() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&success_codex_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex completed the cleanup scenario.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let closed_task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Close this task later and keep only its metadata",
+    );
+    let missing_task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Delete this task file and let manual cleanup remove everything",
+    );
+
+    let closed_dispatch = harness.dispatch_task(&closed_task.id).await;
+    let closed_dispatch_id = closed_dispatch["dispatchId"]
+        .as_str()
+        .expect("closed dispatch should include a dispatch id")
+        .to_owned();
+    let closed_terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&closed_task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(closed_terminal_dispatch["status"], "succeeded");
+
+    let missing_dispatch = harness.dispatch_task(&missing_task.id).await;
+    let missing_dispatch_id = missing_dispatch["dispatchId"]
+        .as_str()
+        .expect("missing dispatch should include a dispatch id")
+        .to_owned();
+    let missing_terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&missing_task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(missing_terminal_dispatch["status"], "succeeded");
+
+    let closed_worktree_path = closed_terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("closed task dispatch should include a worktree path")
+        .to_owned();
+    let missing_worktree_path = missing_terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("missing task dispatch should include a worktree path")
+        .to_owned();
+    let closed_run_directory =
+        format!("/home/track/workspace/project-a/dispatches/{closed_dispatch_id}");
+    let missing_run_directory =
+        format!("/home/track/workspace/project-a/dispatches/{missing_dispatch_id}");
+
+    harness.close_task_without_remote_cleanup(&closed_task.id);
+    harness.delete_task_file_without_remote_cleanup(&missing_task.id);
+
+    assert!(fixture.remote_path_exists(&closed_worktree_path));
+    assert!(fixture.remote_path_exists(&closed_run_directory));
+    assert!(harness.dispatch_history_exists(&closed_task.id));
+    assert!(fixture.remote_path_exists(&missing_worktree_path));
+    assert!(fixture.remote_path_exists(&missing_run_directory));
+    assert!(harness.dispatch_history_exists(&missing_task.id));
+
+    let cleanup_response = harness.cleanup_remote_agent_artifacts().await;
+    let summary = &cleanup_response["summary"];
+    assert_eq!(summary["closedTasksCleaned"], 1);
+    assert_eq!(summary["missingTasksCleaned"], 1);
+    assert_eq!(summary["localDispatchHistoriesRemoved"], 1);
+    assert_eq!(summary["remoteWorktreesRemoved"], 2);
+    assert_eq!(summary["remoteRunDirectoriesRemoved"], 1);
+
+    assert!(harness.task_exists(&closed_task.id));
+    assert!(!fixture.remote_path_exists(&closed_worktree_path));
+    assert!(fixture.remote_path_exists(&closed_run_directory));
+    assert!(harness.dispatch_history_exists(&closed_task.id));
+
+    assert!(!harness.task_exists(&missing_task.id));
+    assert!(!fixture.remote_path_exists(&missing_worktree_path));
+    assert!(!fixture.remote_path_exists(&missing_run_directory));
+    assert!(!harness.dispatch_history_exists(&missing_task.id));
+}
+
 // =============================================================================
 // Parallel Dispatch Tracking
 // =============================================================================
