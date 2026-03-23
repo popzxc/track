@@ -5,6 +5,8 @@ use crate::errors::{ErrorCode, TrackError};
 
 pub const DEFAULT_CONFIG_PATH: &str = "~/.config/track/config.json";
 pub const DEFAULT_DATA_DIR: &str = "~/.track/issues";
+pub const REMOTE_AGENT_DIRECTORY_NAME: &str = "remote-agent";
+pub const DISPATCH_DIRECTORY_NAME: &str = ".dispatches";
 
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
@@ -81,6 +83,27 @@ pub fn get_data_dir() -> Result<PathBuf, TrackError> {
     )
 }
 
+pub fn get_track_root_dir() -> Result<PathBuf, TrackError> {
+    let data_dir = get_data_dir()?;
+    Ok(data_dir.parent().map(Path::to_path_buf).unwrap_or(data_dir))
+}
+
+pub fn get_remote_agent_dir() -> Result<PathBuf, TrackError> {
+    Ok(get_track_root_dir()?.join(REMOTE_AGENT_DIRECTORY_NAME))
+}
+
+pub fn get_managed_remote_agent_key_path() -> Result<PathBuf, TrackError> {
+    Ok(get_remote_agent_dir()?.join("id_ed25519"))
+}
+
+pub fn get_managed_remote_agent_known_hosts_path() -> Result<PathBuf, TrackError> {
+    Ok(get_remote_agent_dir()?.join("known_hosts"))
+}
+
+pub fn get_dispatches_dir() -> Result<PathBuf, TrackError> {
+    Ok(get_data_dir()?.join(DISPATCH_DIRECTORY_NAME))
+}
+
 pub fn collapse_home_path(path: &Path) -> String {
     match home_dir() {
         Some(home) if path == home => "~".to_owned(),
@@ -117,21 +140,26 @@ fn resolve_path_from_base_dir(path_value: &str, base_dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::path::Path;
 
     use super::{collapse_home_path, collapse_path_value};
 
     #[test]
     fn collapses_home_relative_paths_with_a_slash() {
-        let rendered = collapse_home_path(Path::new("/home/popzxc/.track/issues"));
+        let home = env::var("HOME").expect("tests require HOME");
+        let rendered = collapse_home_path(Path::new(&home).join(".track/issues").as_path());
 
         assert_eq!(rendered, "~/.track/issues");
     }
 
     #[test]
     fn collapses_home_prefixed_string_values() {
+        let home = env::var("HOME").expect("tests require HOME");
+        let config_path = Path::new(&home).join(".config/track/config.json");
+
         assert_eq!(
-            collapse_path_value("/home/popzxc/.config/track/config.json"),
+            collapse_path_value(&config_path.to_string_lossy()),
             "~/.config/track/config.json"
         );
     }

@@ -45,6 +45,24 @@ pub enum TaskSource {
     Web,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DispatchStatus {
+    #[serde(alias = "queued")]
+    Preparing,
+    Running,
+    Succeeded,
+    Canceled,
+    Failed,
+    Blocked,
+}
+
+impl DispatchStatus {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Preparing | Self::Running)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -64,7 +82,9 @@ pub struct Task {
 pub struct ParsedTaskCandidate {
     pub project: Option<String>,
     pub priority: Priority,
-    pub description: String,
+    pub title: String,
+    #[serde(rename = "bodyMarkdown", default)]
+    pub body_markdown: Option<String>,
     pub confidence: Confidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -77,12 +97,39 @@ pub enum Confidence {
     Low,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskCreateInput {
     pub project: String,
     pub priority: Priority,
     pub description: String,
     pub source: Option<TaskSource>,
+}
+
+impl TaskCreateInput {
+    pub fn validate(self) -> Result<Self, crate::errors::TrackError> {
+        let validated = Self {
+            project: self.project.trim().to_owned(),
+            priority: self.priority,
+            description: self.description.trim().to_owned(),
+            source: self.source,
+        };
+
+        if validated.project.is_empty() {
+            return Err(crate::errors::TrackError::new(
+                crate::errors::ErrorCode::InvalidTaskUpdate,
+                "Please choose a project for the new task.",
+            ));
+        }
+
+        if validated.description.is_empty() {
+            return Err(crate::errors::TrackError::new(
+                crate::errors::ErrorCode::EmptyInput,
+                "Please provide a task description.",
+            ));
+        }
+
+        Ok(validated)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,10 +182,80 @@ pub struct LlamaCppRuntimeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiRuntimeConfig {
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAgentDispatchOutcome {
+    pub status: DispatchStatus,
+    pub summary: String,
+    #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
+    pub pull_request_url: Option<String>,
+    #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    #[serde(rename = "worktreePath")]
+    pub worktree_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskDispatchRecord {
+    #[serde(rename = "dispatchId")]
+    pub dispatch_id: String,
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub project: String,
+    pub status: DispatchStatus,
+    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    pub created_at: OffsetDateTime,
+    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    pub updated_at: OffsetDateTime,
+    #[serde(
+        rename = "finishedAt",
+        with = "optional_iso_8601_timestamp",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub finished_at: Option<OffsetDateTime>,
+    #[serde(rename = "remoteHost")]
+    pub remote_host: String,
+    #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
+    pub pull_request_url: Option<String>,
+    #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
+    pub follow_up_request: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAgentRuntimeConfig {
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub workspace_root: String,
+    pub projects_registry_path: String,
+    pub shell_prelude: Option<String>,
+    pub managed_key_path: PathBuf,
+    pub managed_known_hosts_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRuntimeConfig {
     pub project_roots: Vec<PathBuf>,
     pub project_aliases: BTreeMap<String, String>,
+    pub api: ApiRuntimeConfig,
     pub llama_cpp: LlamaCppRuntimeConfig,
+    pub remote_agent: Option<RemoteAgentRuntimeConfig>,
 }
 
 mod iso_8601_timestamp {
@@ -160,5 +277,35 @@ mod iso_8601_timestamp {
     {
         let value = String::deserialize(deserializer)?;
         parse_iso_8601_millis(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+mod optional_iso_8601_timestamp {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use time::OffsetDateTime;
+
+    use crate::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
+
+    pub fn serialize<S>(
+        value: &Option<OffsetDateTime>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_some(&format_iso_8601_millis(*value)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<OffsetDateTime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<String>::deserialize(deserializer)?;
+        value
+            .map(|value| parse_iso_8601_millis(&value).map_err(serde::de::Error::custom))
+            .transpose()
     }
 }

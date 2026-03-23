@@ -1,11 +1,16 @@
+pub mod api_notify;
 pub mod capture;
 pub mod config;
+pub mod dispatch_repository;
 pub mod errors;
 pub mod llama_cpp;
 pub mod paths;
 pub mod project_catalog;
 pub mod project_discovery;
+pub mod project_repository;
 pub mod prompt;
+pub mod remote_agent;
+pub mod task_description;
 pub mod task_id;
 pub mod task_repository;
 pub mod task_sort;

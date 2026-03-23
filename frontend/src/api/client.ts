@@ -1,8 +1,18 @@
 import type {
   DeleteTaskResponse,
+  DispatchesResponse,
   ProjectInfo,
+  ProjectMetadataUpdateInput,
   ProjectsResponse,
+  RemoteAgentSettings,
+  RemoteAgentSettingsUpdateInput,
+  RunRecord,
+  RunsResponse,
   Task,
+  TaskCreateInput,
+  TaskDispatch,
+  TaskFollowUpInput,
+  TaskChangeVersionResponse,
   TaskUpdateInput,
   TasksResponse,
 } from './types'
@@ -39,6 +49,29 @@ export async function fetchProjects(): Promise<ProjectInfo[]> {
   return response.projects
 }
 
+export async function updateProject(
+  canonicalName: string,
+  input: ProjectMetadataUpdateInput,
+): Promise<ProjectInfo> {
+  return readJson<ProjectInfo>(`/api/projects/${encodeURIComponent(canonicalName)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchRemoteAgentSettings(): Promise<RemoteAgentSettings> {
+  return readJson<RemoteAgentSettings>('/api/remote-agent')
+}
+
+export async function updateRemoteAgentSettings(
+  input: RemoteAgentSettingsUpdateInput,
+): Promise<RemoteAgentSettings> {
+  return readJson<RemoteAgentSettings>('/api/remote-agent', {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
 export async function fetchTasks(options: { includeClosed: boolean; project?: string }): Promise<Task[]> {
   const query = new URLSearchParams()
   if (options.includeClosed) {
@@ -54,6 +87,13 @@ export async function fetchTasks(options: { includeClosed: boolean; project?: st
   return response.tasks
 }
 
+export async function createTask(input: TaskCreateInput): Promise<Task> {
+  return readJson<Task>('/api/tasks', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 export async function updateTask(id: string, input: TaskUpdateInput): Promise<Task> {
   return readJson<Task>(`/api/tasks/${id}`, {
     method: 'PATCH',
@@ -65,6 +105,55 @@ export async function deleteTask(id: string): Promise<DeleteTaskResponse> {
   return readJson<DeleteTaskResponse>(`/api/tasks/${id}`, {
     method: 'DELETE',
   })
+}
+
+export async function dispatchTask(id: string): Promise<TaskDispatch> {
+  return readJson<TaskDispatch>(`/api/tasks/${id}/dispatch`, {
+    method: 'POST',
+  })
+}
+
+export async function followUpTask(id: string, input: TaskFollowUpInput): Promise<TaskDispatch> {
+  return readJson<TaskDispatch>(`/api/tasks/${id}/follow-up`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function cancelDispatch(id: string): Promise<TaskDispatch> {
+  return readJson<TaskDispatch>(`/api/tasks/${id}/dispatch/cancel`, {
+    method: 'POST',
+  })
+}
+
+export async function discardDispatch(id: string): Promise<DeleteTaskResponse> {
+  return readJson<DeleteTaskResponse>(`/api/tasks/${id}/dispatch`, {
+    method: 'DELETE',
+  })
+}
+
+export async function fetchDispatches(taskIds: string[]): Promise<TaskDispatch[]> {
+  if (taskIds.length === 0) {
+    return []
+  }
+
+  const query = new URLSearchParams()
+  for (const taskId of taskIds) {
+    query.append('taskId', taskId)
+  }
+
+  const response = await readJson<DispatchesResponse>(`/api/dispatches?${query.toString()}`)
+  return response.dispatches
+}
+
+export async function fetchRuns(limit = 200): Promise<RunRecord[]> {
+  const response = await readJson<RunsResponse>(`/api/runs?limit=${limit}`)
+  return response.runs
+}
+
+export async function fetchTaskChangeVersion(): Promise<number> {
+  const response = await readJson<TaskChangeVersionResponse>('/api/events/version')
+  return response.version
 }
 
 export { ApiClientError }

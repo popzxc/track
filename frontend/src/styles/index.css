@@ -50,6 +50,12 @@ textarea {
   color-scheme: dark;
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: #bdae93;
+  opacity: 1;
+}
+
 button,
 select {
   cursor: pointer;

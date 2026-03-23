@@ -4,4 +4,7 @@ dist
 .DS_Store
 .env
 *.log
+*.pyc
+__pycache__/
+frontend/test-results/
 target

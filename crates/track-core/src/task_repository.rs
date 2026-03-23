@@ -69,7 +69,12 @@ impl FileTaskRepository {
 
         let timestamp = now_utc();
         let destination_directory = self.get_status_directory(&input.project, Status::Open);
-        let id = build_unique_task_id(timestamp, &trimmed_description, |candidate| {
+        // Task bodies can contain extra captured context, but the filename
+        // should stay anchored to the concise title on the first non-empty
+        // line so paths remain readable and stable.
+        let slug_source =
+            first_non_empty_line(&trimmed_description).unwrap_or(&trimmed_description);
+        let id = build_unique_task_id(timestamp, slug_source, |candidate| {
             self.get_task_file_path(&input.project, Status::Open, candidate)
                 .exists()
         });
@@ -163,6 +168,10 @@ impl FileTaskRepository {
         }
 
         Ok(tasks)
+    }
+
+    pub fn get_task(&self, id: &str) -> Result<Task, TrackError> {
+        Ok(self.find_task_by_id(id)?.task)
     }
 
     pub fn update_task(&self, id: &str, input: TaskUpdateInput) -> Result<Task, TrackError> {
@@ -309,7 +318,12 @@ impl FileTaskRepository {
                 continue;
             }
 
-            projects.push(entry.file_name().to_string_lossy().into_owned());
+            let project_name = entry.file_name().to_string_lossy().into_owned();
+            if project_name.starts_with('.') {
+                continue;
+            }
+
+            projects.push(project_name);
         }
 
         Ok(projects)
@@ -521,6 +535,10 @@ fn required_body_description(value: String) -> Result<String, TrackError> {
     Ok(value)
 }
 
+fn first_non_empty_line(value: &str) -> Option<&str> {
+    value.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
 fn required_timestamp(
     value: Option<String>,
     field_name: &str,
@@ -661,6 +679,33 @@ mod tests {
         assert!(!raw_file.contains("project:"));
         assert!(!raw_file.contains("status:"));
         assert!(raw_file.contains("Fix a bug in module A"));
+    }
+
+    #[test]
+    fn uses_the_first_non_empty_line_for_the_task_slug() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = FileTaskRepository::new(Some(directory.path().join("issues")))
+            .expect("repository should resolve");
+
+        let stored = repository
+            .create_task(TaskCreateInput {
+                project: "project-x".to_owned(),
+                priority: Priority::High,
+                description:
+                    "Fix a bug in module A\n\nContext:\nmodule_a.rs -- https://example.com"
+                        .to_owned(),
+                source: Some(TaskSource::Cli),
+            })
+            .expect("task should be created");
+
+        let file_name = stored
+            .file_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("task file name should be readable");
+
+        assert!(file_name.contains("fix-a-bug-in-module-a"));
+        assert!(!file_name.contains("https-example-com"));
     }
 
     #[test]

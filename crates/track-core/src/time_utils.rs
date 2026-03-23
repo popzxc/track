@@ -4,6 +4,8 @@ use time::{OffsetDateTime, PrimitiveDateTime};
 
 static ISO_8601_MILLIS_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
+static ISO_8601_SECONDS_FORMAT: &[FormatItem<'static>] =
+    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
 static TASK_ID_TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year][month][day]-[hour][minute][second]");
@@ -22,6 +24,10 @@ pub fn format_iso_8601_millis(value: OffsetDateTime) -> String {
 
 pub fn parse_iso_8601_millis(value: &str) -> Result<OffsetDateTime, time::error::Parse> {
     PrimitiveDateTime::parse(value, ISO_8601_MILLIS_FORMAT).map(PrimitiveDateTime::assume_utc)
+}
+
+pub fn parse_iso_8601_seconds(value: &str) -> Result<OffsetDateTime, time::error::Parse> {
+    PrimitiveDateTime::parse(value, ISO_8601_SECONDS_FORMAT).map(PrimitiveDateTime::assume_utc)
 }
 
 pub fn format_task_id_timestamp(value: OffsetDateTime) -> String {

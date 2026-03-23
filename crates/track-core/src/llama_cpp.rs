@@ -44,6 +44,10 @@ impl LlamaCppTaskParser {
         // `--log-disable`: on the local build used for this project it suppresses
         // generated output, not just diagnostics.
         //
+        // The output budget is a little larger than before because the model
+        // now returns both a concise title and supporting Markdown inside the
+        // JSON payload instead of a single summary string.
+        //
         // TODO: surface model-specific tuning knobs if we end up supporting
         // multiple local prompt styles. Right now we optimize for one default
         // instruct model path instead of building a full prompt-template system.
@@ -58,7 +62,7 @@ impl LlamaCppTaskParser {
             "--single-turn".to_owned(),
             "--no-display-prompt".to_owned(),
             "-n".to_owned(),
-            "256".to_owned(),
+            "384".to_owned(),
             "--temp".to_owned(),
             "0".to_owned(),
         ];
@@ -311,17 +315,19 @@ Loading model...
   "expectedJsonShape": {
     "project": "project-name-or-alias-or-null",
     "priority": "high|medium|low",
-    "description": "Concise actionable sentence",
+    "title": "Concise actionable sentence",
+    "bodyMarkdown": "Optional supporting markdown, without repeating the title",
     "confidence": "high|low",
     "reason": "Optional short explanation"
   }
 }
 
 {
+  "bodyMarkdown": "- Run `cargo clippy --workspace` and fix the reported warnings.",
   "confidence": "high",
-  "description": "Resolve clippy warnings",
   "priority": "high",
   "project": "airbender",
+  "title": "Resolve clippy warnings",
   "reason": null
 }
 
@@ -337,7 +343,10 @@ Exiting...
             ParsedTaskCandidate {
                 project: Some("airbender".to_owned()),
                 priority: Priority::High,
-                description: "Resolve clippy warnings".to_owned(),
+                title: "Resolve clippy warnings".to_owned(),
+                body_markdown: Some(
+                    "- Run `cargo clippy --workspace` and fix the reported warnings.".to_owned(),
+                ),
                 confidence: Confidence::High,
                 reason: None,
             }
@@ -346,20 +355,20 @@ Exiting...
 
     #[test]
     fn keeps_balanced_json_objects_separate_when_prompt_echo_contains_json() {
-        let output = r#"prefix {"rawText":"example","expectedJsonShape":{"project":"name"}} suffix {"project":"project-x","priority":"high","description":"Fix a bug","confidence":"high"}"#;
+        let output = r#"prefix {"rawText":"example","expectedJsonShape":{"project":"name"}} suffix {"project":"project-x","priority":"high","title":"Fix a bug","bodyMarkdown":"","confidence":"high"}"#;
         let candidates = json_object_candidates(output);
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(
             candidates[1],
-            r#"{"project":"project-x","priority":"high","description":"Fix a bug","confidence":"high"}"#
+            r#"{"project":"project-x","priority":"high","title":"Fix a bug","bodyMarkdown":"","confidence":"high"}"#
         );
     }
 
     #[test]
     fn prefers_clean_stdout_over_noisy_stderr() {
         let candidate = parse_candidate_from_command_output(
-            br#"{"project":"project-x","priority":"high","description":"Fix a bug","confidence":"high"}"#,
+            br#"{"project":"project-x","priority":"high","title":"Fix a bug","bodyMarkdown":"","confidence":"high"}"#,
             b"memory stats...\n",
         )
         .expect("candidate should parse from stdout");
@@ -369,7 +378,8 @@ Exiting...
             ParsedTaskCandidate {
                 project: Some("project-x".to_owned()),
                 priority: Priority::High,
-                description: "Fix a bug".to_owned(),
+                title: "Fix a bug".to_owned(),
+                body_markdown: Some(String::new()),
                 confidence: Confidence::High,
                 reason: None,
             }

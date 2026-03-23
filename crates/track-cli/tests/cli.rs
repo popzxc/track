@@ -24,7 +24,7 @@ if [ "$HAS_SYSTEM_PROMPT" -ne 1 ] || [ "$HAS_CONVERSATION" -ne 1 ] || [ "$HAS_SI
   exit 7
 fi
 
-printf '%s\n' '{"project":"project-x","priority":"high","description":"Fix a bug in module A","confidence":"high"}'
+printf '%s\n' '{"project":"project-x","priority":"high","title":"Fix a bug in module A","bodyMarkdown":"- Inspect `module_a.rs`\n- Repro with the failing integration test","confidence":"high"}'
 "#,
     )
     .expect("fake llama-completion script should be written");
@@ -100,6 +100,7 @@ fn binary_creates_a_task_from_configured_local_parser() {
 
     let raw_task = fs::read_to_string(entries[0].path()).expect("task file should be readable");
     assert!(raw_task.contains("Fix a bug in module A"));
+    assert!(raw_task.contains("Inspect `module_a.rs`"));
     assert!(raw_task.contains("priority: high"));
     assert!(!raw_task.contains("project:"));
 }

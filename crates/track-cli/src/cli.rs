@@ -1,7 +1,11 @@
+use std::env;
+
+use track_core::api_notify::notify_task_changed;
 use track_core::capture::TaskCaptureService;
 use track_core::config::ConfigService;
 use track_core::errors::{ErrorCode, TrackError};
 use track_core::paths::collapse_home_path;
+use track_core::project_repository::ProjectRepository;
 use track_core::task_repository::FileTaskRepository;
 use track_core::terminal_ui::{format_summary, SummaryTone, ValueTone};
 use track_core::types::{StoredTask, TaskSource};
@@ -106,12 +110,19 @@ fn run_create_command_internal(
         ));
     }
 
+    let project_repository = ProjectRepository::new(data_dir_override.clone())?;
     let repository = FileTaskRepository::new(data_dir_override)?;
     let capture_service = TaskCaptureService {
         config_service,
+        project_repository: &project_repository,
         task_repository: &repository,
     };
     let stored_task = capture_service.create_task_from_text(&raw_text, Some(TaskSource::Cli))?;
+    if let Err(error) = notify_task_changed(&config.api) {
+        if env::var("TRACK_DEBUG_API_NOTIFY").ok().as_deref() == Some("1") {
+            eprintln!("Skipping API task-change notify: {error}");
+        }
+    }
 
     let created_task_output = format_created_task_output(&stored_task);
     match config_setup_output {
@@ -158,7 +169,7 @@ mod tests {
         let script_path = directory.path().join("llama-completion");
         fs::write(
             &script_path,
-            "#!/bin/sh\nprintf '%s\\n' '{\"project\":\"project-x\",\"priority\":\"high\",\"description\":\"Fix a bug in module A\",\"confidence\":\"high\"}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"project\":\"project-x\",\"priority\":\"high\",\"title\":\"Fix a bug in module A\",\"bodyMarkdown\":\"- Inspect `module_a.rs`\",\"confidence\":\"high\"}'\n",
         )
         .expect("fake llama-completion script should be written");
 
@@ -190,8 +201,10 @@ mod tests {
         let mut prompter = ScriptedPrompter::new(&[
             "~/.models/parser.gguf",
             fake_llama_completion.to_string_lossy().as_ref(),
+            "3210",
             project_root.to_string_lossy().as_ref(),
             "proj-x=project-x",
+            "",
         ]);
 
         let output = run_create_command_internal(
@@ -209,5 +222,12 @@ mod tests {
 
         assert!(output.contains("Config created"));
         assert!(output.contains("Created task"));
+        assert!(
+            directory
+                .path()
+                .join("issues/project-x/PROJECT.md")
+                .exists(),
+            "task creation should initialize project metadata alongside the task directory",
+        );
     }
 }

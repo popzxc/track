@@ -1,0 +1,19 @@
+{
+  "mode": "success",
+  "sleepSeconds": 0,
+  "status": "succeeded",
+  "summary": "Mock Codex completed the task and opened a PR.",
+  "pullRequestUrl": "https://github.com/acme/project-a/pull/42",
+  "branchName": null,
+  "worktreePath": null,
+  "notes": "Mock note for integration testing.",
+  "createCommit": {
+    "message": "fix: apply mocked codex change",
+    "files": [
+      {
+        "path": "MOCK_CODEX_CHANGE.md",
+        "contents": "# Mock change\n\nThis file was created by the Codex fixture.\n"
+      }
+    ]
+  }
+}

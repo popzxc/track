@@ -1,11 +1,19 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{self, IsTerminal};
 
 use dialoguer::{theme::ColorfulTheme, Input};
 
-use crate::config::{ConfigService, LlamaCppConfigFile, TrackConfigFile};
+use crate::config::{
+    ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
+    DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
+    DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+};
 use crate::errors::{ErrorCode, TrackError};
-use crate::paths::{collapse_home_path, collapse_path_value};
+use crate::paths::{
+    collapse_home_path, collapse_path_value, get_managed_remote_agent_key_path,
+    get_managed_remote_agent_known_hosts_path, resolve_path_from_invocation_dir,
+};
 use crate::terminal_ui::{
     format_note, format_prompt_label, format_summary, SummaryTone, ValueTone,
 };
@@ -106,10 +114,12 @@ fn create_default_config_file() -> TrackConfigFile {
     TrackConfigFile {
         project_roots: Vec::new(),
         project_aliases: BTreeMap::new(),
+        api: ApiConfigFile::default(),
         llama_cpp: LlamaCppConfigFile {
             model_path: String::new(),
             llama_completion_path: None,
         },
+        remote_agent: None,
     }
 }
 
@@ -203,6 +213,151 @@ fn prompt_project_aliases(
     }
 }
 
+fn prompt_api_port(prompter: &mut dyn Prompter, default_port: u16) -> Result<u16, TrackError> {
+    loop {
+        let response = prompt_with_default(
+            prompter,
+            "Local API port",
+            Some(&default_port.to_string()),
+            false,
+        )?;
+
+        match response.parse::<u16>() {
+            Ok(port) if port > 0 => return Ok(port),
+            _ => prompter.println("Please enter a valid TCP port."),
+        }
+    }
+}
+
+fn prompt_remote_agent_host(
+    prompter: &mut dyn Prompter,
+    default_host: Option<&str>,
+) -> Result<Option<String>, TrackError> {
+    let response = prompt_with_default(prompter, "Remote agent host", default_host, true)?;
+    let trimmed = response.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_owned()))
+    }
+}
+
+fn prompt_remote_agent_port(
+    prompter: &mut dyn Prompter,
+    default_port: u16,
+) -> Result<u16, TrackError> {
+    loop {
+        let response = prompt_with_default(
+            prompter,
+            "Remote SSH port",
+            Some(&default_port.to_string()),
+            false,
+        )?;
+
+        match response.parse::<u16>() {
+            Ok(port) if port > 0 => return Ok(port),
+            _ => prompter.println("Please enter a valid SSH port."),
+        }
+    }
+}
+
+fn managed_remote_agent_key_exists() -> Result<bool, TrackError> {
+    Ok(get_managed_remote_agent_key_path()?.exists())
+}
+
+fn install_managed_remote_agent_key(source_path: &str) -> Result<(), TrackError> {
+    let source_path = resolve_path_from_invocation_dir(source_path)?;
+    let managed_key_path = get_managed_remote_agent_key_path()?;
+    let known_hosts_path = get_managed_remote_agent_known_hosts_path()?;
+
+    let Some(parent_directory) = managed_key_path.parent() else {
+        return Err(TrackError::new(
+            ErrorCode::InvalidRemoteAgentConfig,
+            "Could not determine the managed remote-agent directory.",
+        ));
+    };
+
+    fs::create_dir_all(parent_directory).map_err(|error| {
+        TrackError::new(
+            ErrorCode::InvalidRemoteAgentConfig,
+            format!(
+                "Could not create the managed remote-agent directory at {}: {error}",
+                collapse_home_path(parent_directory)
+            ),
+        )
+    })?;
+
+    fs::copy(&source_path, &managed_key_path).map_err(|error| {
+        TrackError::new(
+            ErrorCode::InvalidRemoteAgentConfig,
+            format!(
+                "Could not copy the SSH private key from {} to {}: {error}",
+                collapse_home_path(&source_path),
+                collapse_home_path(&managed_key_path)
+            ),
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&managed_key_path, fs::Permissions::from_mode(0o600)).map_err(
+            |error| {
+                TrackError::new(
+                    ErrorCode::InvalidRemoteAgentConfig,
+                    format!(
+                        "Could not set permissions on the managed SSH private key at {}: {error}",
+                        collapse_home_path(&managed_key_path)
+                    ),
+                )
+            },
+        )?;
+    }
+
+    if !known_hosts_path.exists() {
+        fs::write(&known_hosts_path, "").map_err(|error| {
+            TrackError::new(
+                ErrorCode::InvalidRemoteAgentConfig,
+                format!(
+                    "Could not create the managed known_hosts file at {}: {error}",
+                    collapse_home_path(&known_hosts_path)
+                ),
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn prompt_remote_agent_key_import(
+    prompter: &mut dyn Prompter,
+    has_existing_managed_key: bool,
+) -> Result<(), TrackError> {
+    loop {
+        let label = if has_existing_managed_key {
+            "SSH private key to import"
+        } else {
+            "SSH private key to import"
+        };
+        let response = prompt_with_default(prompter, label, None, false)?;
+        let trimmed = response.trim();
+
+        if trimmed.is_empty() && has_existing_managed_key {
+            return Ok(());
+        }
+
+        if trimmed.is_empty() {
+            prompter.println(
+                "Please provide a private SSH key path or finish setup later by rerunning `track`.",
+            );
+            continue;
+        }
+
+        return install_managed_remote_agent_key(trimmed);
+    }
+}
+
 fn format_config_saved_output(
     config: &TrackConfigFile,
     config_path: &std::path::Path,
@@ -211,6 +366,16 @@ fn format_config_saved_output(
     let (binary_display, binary_tone) = match config.llama_cpp.llama_completion_path.as_deref() {
         Some(path) if !path.is_empty() => (collapse_path_value(path), ValueTone::Path),
         _ => ("PATH lookup".to_owned(), ValueTone::Plain),
+    };
+    let (remote_agent_display, remote_agent_tone) = match config.remote_agent.as_ref() {
+        Some(remote_agent) => (
+            format!(
+                "{}@{}:{}",
+                remote_agent.user, remote_agent.host, remote_agent.port
+            ),
+            ValueTone::Plain,
+        ),
+        None => ("disabled".to_owned(), ValueTone::Plain),
     };
 
     format_summary(
@@ -237,6 +402,8 @@ fn format_config_saved_output(
                 format!("{} configured", config.project_aliases.len()),
                 ValueTone::Plain,
             ),
+            ("API port", config.api.port.to_string(), ValueTone::Plain),
+            ("Remote", remote_agent_display, remote_agent_tone),
         ],
     )
 }
@@ -302,12 +469,72 @@ pub fn run_configure_command_with_prompter(
         llama_completion_default.as_deref(),
         true,
     )?;
+    let api_port = prompt_api_port(prompter, defaults.api.port)?;
     let project_roots = prompt_project_roots(prompter, &defaults.project_roots)?;
     let project_aliases = prompt_project_aliases(prompter, &defaults.project_aliases)?;
+    let remote_agent_host = prompt_remote_agent_host(
+        prompter,
+        defaults
+            .remote_agent
+            .as_ref()
+            .map(|remote_agent| remote_agent.host.as_str()),
+    )?;
+    let remote_agent = if let Some(host) = remote_agent_host {
+        let existing_remote_agent = defaults.remote_agent.as_ref();
+        let remote_user = prompt_required_value(
+            prompter,
+            "Remote agent user",
+            existing_remote_agent.map(|remote_agent| remote_agent.user.as_str()),
+        )?;
+        let remote_port = prompt_remote_agent_port(
+            prompter,
+            existing_remote_agent
+                .map(|remote_agent| remote_agent.port)
+                .unwrap_or(DEFAULT_REMOTE_AGENT_PORT),
+        )?;
+        let remote_workspace_root = prompt_required_value(
+            prompter,
+            "Remote workspace root",
+            existing_remote_agent
+                .map(|remote_agent| remote_agent.workspace_root.as_str())
+                .or(Some(DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT)),
+        )?;
+        let remote_projects_registry_path = prompt_required_value(
+            prompter,
+            "Remote projects registry path",
+            existing_remote_agent
+                .map(|remote_agent| remote_agent.projects_registry_path.as_str())
+                .or(Some(DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH)),
+        )?;
+        prompt_remote_agent_key_import(prompter, managed_remote_agent_key_exists()?)?;
+
+        Some(RemoteAgentConfigFile {
+            host,
+            user: remote_user,
+            port: remote_port,
+            workspace_root: remote_workspace_root,
+            projects_registry_path: remote_projects_registry_path,
+            // TODO: If people start preferring the terminal wizard for remote
+            // dispatch setup, add a multiline editor flow here. For now the
+            // shell prelude stays web-managed so the wizard preserves an
+            // existing value instead of trying to squeeze multiline shell
+            // setup into a single-line prompt.
+            shell_prelude: existing_remote_agent.and_then(|remote_agent| {
+                remote_agent.shell_prelude.clone()
+            }),
+        })
+    } else {
+        // TODO: Consider removing the managed SSH key when remote dispatch is
+        // disabled explicitly. We leave it in place for now so a temporary
+        // config change does not silently destroy a secret the user imported on
+        // purpose.
+        None
+    };
 
     let config = TrackConfigFile {
         project_roots,
         project_aliases,
+        api: ApiConfigFile { port: api_port },
         llama_cpp: LlamaCppConfigFile {
             model_path,
             llama_completion_path: if llama_completion_path.trim().is_empty() {
@@ -316,6 +543,7 @@ pub fn run_configure_command_with_prompter(
                 Some(llama_completion_path)
             },
         },
+        remote_agent,
     };
 
     config_service.save_config_file(&config)?;
@@ -395,8 +623,10 @@ mod tests {
         let mut prompter = ScriptedPrompter::new(&[
             "~/.models/parser.gguf",
             "~/temp_work/llama.cpp/build/bin/llama-completion",
+            "3210",
             "~/work, ~/oss",
             "proj-x=project-x",
+            "",
         ]);
 
         let output =
@@ -407,5 +637,6 @@ mod tests {
         let raw = std::fs::read_to_string(service.resolved_path()).expect("config should save");
         assert!(raw.contains("\"llamaCpp\""));
         assert!(raw.contains("\"projectRoots\""));
+        assert!(raw.contains("\"api\""));
     }
 }

@@ -17,19 +17,28 @@ create, read, and mutate those files reliably.
 Think about the project as one Rust backend split into crates plus one frontend.
 
 - `crates/track-core`
-  Shared backend behavior. Start here when config loading, project discovery,
-  task storage, sorting, or `llama-completion` integration changes.
+  Shared backend behavior. Start here when config loading, CLI-side project
+  discovery, project metadata persistence, task storage, sorting, or
+  `llama-completion` integration changes.
 - `crates/track-cli`
   CLI entrypoint and user-facing capture output.
 - `crates/track-api`
   Axum routes, HTTP error mapping, and static frontend serving.
+- `crates/track-integration-tests`
+  Live SSH-backed integration tests for remote dispatch flows. Use this when
+  you need real `ssh`/`scp` coverage with mocked `gh` and `codex`.
 - `frontend/`
   Vue/Vite UI only.
+- `testing/`
+  Shared test infrastructure, including the Docker SSH fixture and mock CLI
+  implementations used by the live integration tests.
 
 The stable shared contract is:
 
 - `~/.config/track/config.json`
 - Markdown task files under `~/.track/issues`
+- project metadata files at `~/.track/issues/<project>/PROJECT.md`
+- local dispatch records under `~/.track/issues/.dispatches`
 - the JSON API exposed by `track-api`
 
 If you change those contracts, update every layer that depends on them.
@@ -42,9 +51,19 @@ Keep these behaviors stable unless the change is intentional:
 - Tasks live under the configured data directory, grouped by project and then
   by status (`open` / `closed`).
 - A task's identity comes from its file path, not duplicated YAML fields.
+- Project metadata lives in `project/PROJECT.md` under the track data
+  directory.
+- The CLI initializes `PROJECT.md` because it can see host repositories.
+- The API and frontend list projects from the track data directory only.
+- Managed remote-agent SSH material lives under `~/.track/remote-agent`.
+- Hidden implementation directories under the track data root must not appear
+  as user projects.
 - Closing and reopening a task physically moves the file between folders.
 - The Markdown body is the preferred human-editable task description when
   reading a task file.
+- New CLI-created task bodies separate `## Summary` from `## Original note`
+  so local and remote automation can tell normalized context apart from the
+  raw user note.
 - Malformed task files should not break the whole task list; healthy tasks
   should still be visible.
 - AI parsing may infer, but it must not invent arbitrary projects. The chosen
@@ -60,6 +79,31 @@ The backend supports local parsing only.
   `llama-completion` from `$PATH`.
 
 Do not reintroduce hosted-model assumptions without an explicit user request.
+
+## Local API Contract
+
+- `api.port` controls where the CLI looks for the local API.
+- After CLI task creation, `track` sends a best-effort local notify call.
+- The frontend watches the API's task-change version so CLI-created tasks
+  appear automatically when the API is running.
+- The frontend also polls dispatch state for remote Codex runs.
+
+## Remote Agent Contract
+
+- `remoteAgent` in config is optional.
+- The config wizard copies the imported SSH key into a managed path under
+  `~/.track/remote-agent` instead of depending on `~/.ssh`.
+- `track-api` uses the system `ssh` and `scp` clients to communicate with the
+  remote machine.
+- `remoteAgent.shellPrelude` is a user-managed shell snippet that runs before
+  remote SSH commands so PATH/toolchain setup does not depend on interactive
+  shell startup.
+- The remote host is expected to already have `git`, `gh`, and `codex`.
+- The remote projects registry is JSON, not Markdown, because the automation
+  owns that file and benefits from deterministic parsing.
+- The remote prompt is uploaded as a file and piped into `codex exec` through
+  stdin. Do not switch back to long shell-escaped prompt arguments without a
+  strong reason.
 
 ## API And Frontend Relationship
 
@@ -80,6 +124,7 @@ From the repo root:
 - `cargo build --release -p track-cli`
 - `cargo build --release -p track-api`
 - `cargo run -p track-api`
+- `RUN_TRACK_INTEGRATION_TESTS=true cargo test -p track-integration-tests --test remote_dispatch -- --nocapture`
 - `cd frontend && bun install`
 - `cd frontend && bun run dev`
 - `cd frontend && bun run typecheck`
@@ -97,6 +142,18 @@ Favor small, high-signal tests.
 - If you change config shape, capture behavior, or storage semantics,
   update Rust tests in `track-core` or `track-cli`.
 - If you change the API surface, add or update Rust HTTP tests in `track-api`.
+- For remote-agent behavior that depends on real `ssh`/`scp`, prefer the live
+  tests in `crates/track-integration-tests` over trying to mock the transport.
+- The live integration tests require Docker plus
+  `RUN_TRACK_INTEGRATION_TESTS=true`. Without that env var they print a skip
+  message and exit successfully.
+- These live tests are intentionally expensive. Add or expand them only for
+  high-signal end-to-end flows where real remote behavior matters, such as
+  dispatch launch, follow-up reuse, or concurrent dispatch tracking.
+- Do not add live integration tests for minor behavior that is already covered
+  by unit tests or in-process API tests.
+- Before adding a new live integration test, prefer to ask the user whether
+  the extra fixture cost is worth it for the change at hand.
 - If you change the frontend contract, keep the frontend types aligned with the
   Rust API responses.
 

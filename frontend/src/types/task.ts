@@ -1,1 +1,15 @@
-export type { Priority, ProjectInfo, Task, TaskUpdateInput } from '../api/types'
+export type {
+  DispatchStatus,
+  Priority,
+  ProjectInfo,
+  ProjectMetadata,
+  ProjectMetadataUpdateInput,
+  RemoteAgentSettings,
+  RemoteAgentSettingsUpdateInput,
+  RunRecord,
+  Task,
+  TaskCreateInput,
+  TaskDispatch,
+  TaskFollowUpInput,
+  TaskUpdateInput,
+} from '../api/types'

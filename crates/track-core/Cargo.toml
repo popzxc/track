@@ -13,6 +13,7 @@ serde_yaml = { workspace = true }
 slug = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["formatting", "macros", "parsing"] }
+ureq = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]

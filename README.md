@@ -51,18 +51,32 @@ Then open <http://localhost:3210>.
 The Compose file will build the image if needed and will automatically mount:
 
 - `${HOME}/.track/issues` to `/data/issues`
+- `${HOME}/.track/remote-agent` to `/data/remote-agent`
 - `${HOME}/.config/track/config.json` to `/config/config.json`
 
-By default, the Compose service runs as `1000:1000`, which matches the common
-single-user Linux setup and keeps task files writable from both Docker and the
-CLI. If your host user uses a different UID or GID, start Compose with:
+The config mount stays writable because the web UI can update remote-runner
+settings such as `remoteAgent.shellPrelude`.
+
+By default, Compose builds the image for UID/GID `1000:1000`, which matches the
+common single-user Linux setup. The image creates a real in-container user with
+that same UID/GID so bind-mounted files stay writable from both Docker and the
+CLI, and the SSH client still sees a valid local user entry. If your host user
+uses a different UID or GID, start Compose with:
+
+```bash
+TRACK_UID=$(id -u) TRACK_GID=$(id -g) docker compose up --build -d
+```
+
+If you change `TRACK_UID` or `TRACK_GID`, rebuild the image so the in-container
+user matches the new values:
 
 ```bash
 TRACK_UID=$(id -u) TRACK_GID=$(id -g) docker compose up --build -d
 ```
 
 If you use the Docker UI together with the CLI, both use the same config file
-and task directory.
+and task directory. When the API is running, new tasks created from the CLI
+will appear in the browser automatically within a couple of seconds.
 
 To stop the stack:
 
@@ -87,6 +101,7 @@ The stable boundary between them is the filesystem contract:
 
 - `~/.config/track/config.json`
 - Markdown task files under `~/.track/issues`
+- project metadata files at `~/.track/issues/<project>/PROJECT.md`
 
 ## Developer Setup
 
@@ -107,9 +122,20 @@ The stable boundary between them is the filesystem contract:
     "proj-x": "project-x-repo",
     "ethproofs": "airbender-platform"
   },
+  "api": {
+    "port": 3210
+  },
   "llamaCpp": {
     "modelPath": "/home/user/models/task-parser.gguf",
     "llamaCompletionPath": "/opt/llama.cpp/bin/llama-completion"
+  },
+  "remoteAgent": {
+    "host": "192.0.2.25",
+    "user": "builder",
+    "port": 22,
+    "workspaceRoot": "~/workspace",
+    "projectsRegistryPath": "~/track-projects.json",
+    "shellPrelude": "export NVM_DIR=\"$HOME/.nvm\"\n[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"\n. \"$HOME/.cargo/env\""
   }
 }
 ```
@@ -117,9 +143,55 @@ The stable boundary between them is the filesystem contract:
 `llamaCompletionPath` is optional. If you omit it, `track` looks for
 `llama-completion` on `$PATH`.
 
+`api.port` controls where the CLI looks for the local API when it sends
+task-change notifications. `track-api` also uses that same port by default
+unless `PORT` is set in the environment.
+
 Relative paths inside `config.json` are resolved relative to the config file
 location, so the same config keeps working even when you run `track` from a
 different directory.
+
+## Remote agent dispatch
+
+`track` can also hand a task off to a remote Codex session from the web UI.
+
+The intended flow is:
+
+1. run `track` locally and configure `remoteAgent`
+2. import a dedicated SSH private key when the wizard asks for it
+3. open the web UI
+4. open `Runner setup` in the toolbar and paste the shell commands needed to prepare PATH and toolchains for the remote runner
+5. make sure the selected project has repo URL, git URL, and base branch filled in
+6. click `Dispatch` on a task card
+
+The config wizard copies the imported key into a managed location under
+`~/.track/remote-agent/` and creates a companion `known_hosts` file there. The
+Docker Compose setup mounts only that narrow directory into the API container,
+so the container does not need access to your full `~/.ssh` folder.
+
+Remote dispatch expects the remote machine to already have:
+
+- `git`
+- `gh`
+- `codex`
+- an authenticated `gh` session
+
+The current design assumes a dedicated SSH key without a passphrase so the API
+can launch unattended background jobs.
+
+On the remote machine, `track` keeps a small JSON registry of prepared project
+checkouts at `remoteAgent.projectsRegistryPath`. When you dispatch a task, the
+API uses that registry to either reuse an existing checkout or create a fork,
+clone it, update it, and prepare a fresh worktree before running Codex.
+
+The prompt is uploaded as a Markdown file and fed to `codex exec` through
+stdin. That avoids shell-escaping issues and keeps the prompt readable for
+debugging on the remote machine.
+
+The runner setup commands are stored in `remoteAgent.shellPrelude`. `track-api`
+executes that shell prelude before each remote command so the remote runner can
+initialize tools like `nvm`, `cargo`, or Foundry without depending on
+interactive shell startup.
 
 ## Common commands
 
@@ -143,8 +215,17 @@ For local frontend development, `frontend/vite.config.ts` proxies `/api` and
 ## Notes
 
 - Task files live under `~/.track/issues` by default.
+- Project metadata lives next to tasks in `~/.track/issues/<project>/PROJECT.md`.
+- The CLI initializes project metadata from the host repository when it creates
+  the first task for a project.
+- Remote-agent material lives under `~/.track/remote-agent`.
+- Remote dispatch records live under `~/.track/issues/.dispatches`.
+- The API and frontend list projects from the persisted track directory rather
+  than rediscovering host repositories.
 - The CLI only supports local parsing through `llama.cpp`.
 - `track` uses `llama-completion` for one-shot local parsing.
+- The CLI sends a best-effort local API notification after creating a task.
+- Remote dispatch uses the system `ssh` and `scp` clients from the API process.
 - The Rust API serves both JSON routes and the built frontend assets.
 - Task files keep identity in the filesystem path and keep human-editable text
   in the Markdown body; frontmatter is only for metadata.

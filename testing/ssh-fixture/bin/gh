@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export TRACK_TESTING_RUNTIME_DIR="${TRACK_TESTING_RUNTIME_DIR:-/srv/track-testing}"
+
+exec python3 /opt/track-testing/mocks/gh.py "$@"

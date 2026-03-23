@@ -1,0 +1,11 @@
+{
+  "login": "fixture-user",
+  "repositories": {
+    "https://github.com/acme/project-a": {
+      "name": "project-a",
+      "upstreamBarePath": "/srv/track-testing/git/upstream/project-a.git",
+      "forkOwner": "fixture-user",
+      "forkBarePath": "/srv/track-testing/git/fixture-user/project-a.git"
+    }
+  }
+}

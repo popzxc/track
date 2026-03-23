@@ -6,27 +6,56 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{
-    collapse_home_path, get_config_path, resolve_optional_command_path_from_config_file,
+    collapse_home_path, get_config_path, get_managed_remote_agent_key_path,
+    get_managed_remote_agent_known_hosts_path, resolve_optional_command_path_from_config_file,
     resolve_path_from_config_file,
 };
-use crate::types::{LlamaCppRuntimeConfig, TrackRuntimeConfig};
+use crate::types::{
+    ApiRuntimeConfig, LlamaCppRuntimeConfig, RemoteAgentRuntimeConfig, TrackRuntimeConfig,
+};
+
+pub const DEFAULT_API_PORT: u16 = 3210;
+pub const DEFAULT_REMOTE_AGENT_PORT: u16 = 22;
+pub const DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT: &str = "~/workspace";
+pub const DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH: &str = "~/track-projects.json";
 
 // =============================================================================
 // Config File Contract
 // =============================================================================
 //
-// The config format is intentionally small and explicit. Because the project is
-// still in active development, we prefer one clear supported shape over a pile
-// of upgrade-era compatibility branches.
-//
+// The config format stays intentionally small and explicit. Because the
+// project is still in active development, we prefer one clear supported shape
+// over compatibility branches or implicit migration logic.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackConfigFile {
     #[serde(rename = "projectRoots", default)]
     pub project_roots: Vec<String>,
     #[serde(rename = "projectAliases", default)]
     pub project_aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    pub api: ApiConfigFile,
     #[serde(rename = "llamaCpp")]
     pub llama_cpp: LlamaCppConfigFile,
+    #[serde(
+        rename = "remoteAgent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_agent: Option<RemoteAgentConfigFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiConfigFile {
+    #[serde(default = "default_api_port")]
+    pub port: u16,
+}
+
+impl Default for ApiConfigFile {
+    fn default() -> Self {
+        Self {
+            port: default_api_port(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +68,52 @@ pub struct LlamaCppConfigFile {
         skip_serializing_if = "Option::is_none"
     )]
     pub llama_completion_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAgentConfigFile {
+    pub host: String,
+    pub user: String,
+    #[serde(default = "default_remote_agent_port")]
+    pub port: u16,
+    #[serde(
+        rename = "workspaceRoot",
+        default = "default_remote_agent_workspace_root"
+    )]
+    pub workspace_root: String,
+    #[serde(
+        rename = "projectsRegistryPath",
+        default = "default_remote_projects_registry_path"
+    )]
+    pub projects_registry_path: String,
+    #[serde(
+        rename = "shellPrelude",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shell_prelude: Option<String>,
+}
+
+fn default_api_port() -> u16 {
+    DEFAULT_API_PORT
+}
+
+fn default_remote_agent_port() -> u16 {
+    DEFAULT_REMOTE_AGENT_PORT
+}
+
+fn default_remote_agent_workspace_root() -> String {
+    DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned()
+}
+
+fn default_remote_projects_registry_path() -> String {
+    DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned()
+}
+
+fn canonicalize_optional_multiline_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.replace("\r\n", "\n").trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, TrackError> {
@@ -70,13 +145,55 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
 
+    let api_port = config.api.port;
+    if api_port == 0 {
+        return Err(TrackError::new(
+            ErrorCode::InvalidConfig,
+            "Config file does not match the expected format.",
+        ));
+    }
+
+    let remote_agent = config
+        .remote_agent
+        .map(|remote_agent| {
+            let host = remote_agent.host.trim().to_owned();
+            let user = remote_agent.user.trim().to_owned();
+            let workspace_root = remote_agent.workspace_root.trim().to_owned();
+            let projects_registry_path = remote_agent.projects_registry_path.trim().to_owned();
+            let shell_prelude = canonicalize_optional_multiline_value(remote_agent.shell_prelude);
+
+            if host.is_empty()
+                || user.is_empty()
+                || workspace_root.is_empty()
+                || projects_registry_path.is_empty()
+                || remote_agent.port == 0
+            {
+                return Err(TrackError::new(
+                    ErrorCode::InvalidRemoteAgentConfig,
+                    "Remote agent config requires host, user, workspace root, projects registry path, and a valid SSH port.",
+                ));
+            }
+
+            Ok(RemoteAgentConfigFile {
+                host,
+                user,
+                port: remote_agent.port,
+                workspace_root,
+                projects_registry_path,
+                shell_prelude,
+            })
+        })
+        .transpose()?;
+
     Ok(TrackConfigFile {
         project_roots,
         project_aliases,
+        api: ApiConfigFile { port: api_port },
         llama_cpp: LlamaCppConfigFile {
             model_path,
             llama_completion_path,
         },
+        remote_agent,
     })
 }
 
@@ -171,22 +288,69 @@ impl ConfigService {
             .collect::<Result<Vec<_>, _>>()?;
 
         let project_aliases = config.project_aliases;
-
         let model_path =
             resolve_path_from_config_file(&config.llama_cpp.model_path, &self.config_path)?;
         let llama_completion_path = resolve_optional_command_path_from_config_file(
             config.llama_cpp.llama_completion_path.as_deref(),
             &self.config_path,
         )?;
+        let remote_agent = config
+            .remote_agent
+            .map(|remote_agent| {
+                Ok(RemoteAgentRuntimeConfig {
+                    host: remote_agent.host,
+                    user: remote_agent.user,
+                    port: remote_agent.port,
+                    workspace_root: remote_agent.workspace_root,
+                    projects_registry_path: remote_agent.projects_registry_path,
+                    shell_prelude: remote_agent.shell_prelude,
+                    managed_key_path: get_managed_remote_agent_key_path()?,
+                    managed_known_hosts_path: get_managed_remote_agent_known_hosts_path()?,
+                })
+            })
+            .transpose()?;
 
         Ok(TrackRuntimeConfig {
             project_roots,
             project_aliases,
+            api: ApiRuntimeConfig {
+                port: config.api.port,
+            },
             llama_cpp: LlamaCppRuntimeConfig {
                 model_path,
                 llama_completion_path,
             },
+            remote_agent,
         })
+    }
+
+    pub fn load_remote_agent_config(&self) -> Result<Option<RemoteAgentConfigFile>, TrackError> {
+        Ok(self.load_config_file()?.remote_agent)
+    }
+
+    pub fn save_remote_agent_shell_prelude(
+        &self,
+        shell_prelude: Option<String>,
+    ) -> Result<RemoteAgentConfigFile, TrackError> {
+        let mut config = self.load_config_file()?;
+        let Some(remote_agent) = config.remote_agent.as_mut() else {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+            ));
+        };
+
+        remote_agent.shell_prelude = canonicalize_optional_multiline_value(shell_prelude);
+        self.save_config_file(&config)?;
+
+        self.load_config_file()?
+            .remote_agent
+            .ok_or_else(|| {
+                TrackError::new(
+                    ErrorCode::RemoteAgentNotConfigured,
+                    "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+                )
+            })
     }
 }
 
@@ -197,7 +361,11 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{ConfigService, TrackConfigFile};
+    use super::{
+        ConfigService, RemoteAgentConfigFile, TrackConfigFile, DEFAULT_API_PORT,
+        DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
+        DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+    };
 
     fn temp_config_service() -> (TempDir, ConfigService) {
         let directory = TempDir::new().expect("tempdir should be created");
@@ -214,16 +382,29 @@ mod tests {
             .save_config_file(&TrackConfigFile {
                 project_roots: vec!["~/work".to_owned()],
                 project_aliases: BTreeMap::new(),
+                api: super::ApiConfigFile {
+                    port: DEFAULT_API_PORT,
+                },
                 llama_cpp: super::LlamaCppConfigFile {
                     model_path: "~/.models/parser.gguf".to_owned(),
                     llama_completion_path: None,
                 },
+                remote_agent: Some(RemoteAgentConfigFile {
+                    host: "192.0.2.25".to_owned(),
+                    user: "builder".to_owned(),
+                    port: DEFAULT_REMOTE_AGENT_PORT,
+                    workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
+                    projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                    shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
+                }),
             })
             .expect("config should save");
 
         let raw =
             fs::read_to_string(service.resolved_path()).expect("saved config should be readable");
         assert!(raw.contains("\"llamaCpp\""));
+        assert!(raw.contains("\"remoteAgent\""));
+        assert!(raw.contains("\"shellPrelude\""));
         assert!(!raw.contains("\"ai\""));
     }
 
@@ -238,10 +419,19 @@ mod tests {
             .save_config_file(&TrackConfigFile {
                 project_roots: vec!["../work".to_owned()],
                 project_aliases: BTreeMap::new(),
+                api: super::ApiConfigFile { port: 4210 },
                 llama_cpp: super::LlamaCppConfigFile {
                     model_path: "./models/parser.gguf".to_owned(),
                     llama_completion_path: Some("../bin/llama-completion".to_owned()),
                 },
+                remote_agent: Some(RemoteAgentConfigFile {
+                    host: "192.0.2.25".to_owned(),
+                    user: "builder".to_owned(),
+                    port: 2222,
+                    workspace_root: "~/workspace".to_owned(),
+                    projects_registry_path: "~/track-projects.json".to_owned(),
+                    shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
+                }),
             })
             .expect("config should save");
 
@@ -256,6 +446,7 @@ mod tests {
             runtime.project_roots,
             vec![config_directory.join("../work")]
         );
+        assert_eq!(runtime.api.port, 4210);
         assert_eq!(
             runtime.llama_cpp.model_path,
             config_directory.join("./models/parser.gguf")
@@ -268,6 +459,16 @@ mod tests {
                     .to_string_lossy()
                     .into_owned()
             )
+        );
+        let remote_agent = runtime
+            .remote_agent
+            .expect("remote agent runtime config should resolve");
+        assert_eq!(remote_agent.host, "192.0.2.25");
+        assert_eq!(remote_agent.user, "builder");
+        assert_eq!(remote_agent.port, 2222);
+        assert_eq!(
+            remote_agent.shell_prelude,
+            Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned())
         );
     }
 }
