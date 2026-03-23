@@ -5,6 +5,7 @@ export type {
   ProjectMetadata,
   ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
+  RemoteResetSummary,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   RunRecord,

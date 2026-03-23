@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use axum::http::StatusCode;
 use serde_json::{Value, json};
 use track_core::project_repository::ProjectMetadata;
 use track_integration_tests::api_harness::ApiHarness;
@@ -432,6 +433,144 @@ async fn manual_cleanup_reconciles_closed_and_missing_task_artifacts() {
     assert!(!fixture.remote_path_exists(&missing_worktree_path));
     assert!(!fixture.remote_path_exists(&missing_run_directory));
     assert!(!harness.dispatch_history_exists(&missing_task.id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&success_codex_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex completed the initial reset scenario.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Rebuild the remote workspace after a manual reset",
+    );
+
+    let first_dispatch = harness.dispatch_task(&task.id).await;
+    let first_dispatch_id = first_dispatch["dispatchId"]
+        .as_str()
+        .expect("first dispatch response should include a dispatch id")
+        .to_owned();
+    let first_terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(first_terminal_dispatch["status"], "succeeded");
+
+    let original_worktree_path = first_terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("first terminal dispatch should include a worktree path")
+        .to_owned();
+    let original_run_directory =
+        format!("/home/track/workspace/project-a/dispatches/{first_dispatch_id}");
+    assert!(fixture.remote_path_exists("/home/track/workspace/project-a"));
+    assert!(fixture.remote_path_exists(&original_worktree_path));
+    assert!(fixture.remote_path_exists(&original_run_directory));
+    assert!(fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
+    assert!(harness.task_exists(&task.id));
+    assert!(harness.dispatch_history_exists(&task.id));
+
+    let reset_response = harness.reset_remote_agent_workspace().await;
+    let reset_summary = &reset_response["summary"];
+    assert!(
+        reset_summary["workspaceEntriesRemoved"]
+            .as_u64()
+            .expect("reset summary should include workspaceEntriesRemoved")
+            >= 1
+    );
+    assert_eq!(reset_summary["registryRemoved"], true);
+
+    assert!(!fixture.remote_path_exists("/home/track/workspace/project-a"));
+    assert!(!fixture.remote_path_exists(&original_worktree_path));
+    assert!(!fixture.remote_path_exists(&original_run_directory));
+    assert!(!fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
+    assert!(harness.task_exists(&task.id));
+    assert!(harness.dispatch_history_exists(&task.id));
+
+    fixture.write_codex_state(&success_codex_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex completed the post-reset dispatch successfully.",
+    ));
+
+    let second_dispatch = harness.dispatch_task(&task.id).await;
+    let second_dispatch_id = second_dispatch["dispatchId"]
+        .as_str()
+        .expect("second dispatch response should include a dispatch id")
+        .to_owned();
+    let second_terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(second_terminal_dispatch["status"], "succeeded");
+    let second_worktree_path = second_terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("second terminal dispatch should include a worktree path")
+        .to_owned();
+    let second_run_directory =
+        format!("/home/track/workspace/project-a/dispatches/{second_dispatch_id}");
+
+    assert!(fixture.remote_path_exists("/home/track/workspace/project-a"));
+    assert!(fixture.remote_path_exists(&second_worktree_path));
+    assert!(fixture.remote_path_exists(&second_run_directory));
+    assert!(fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resetting_remote_workspace_refuses_while_a_dispatch_is_active() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&success_codex_state(
+        5,
+        Some("https://github.com/acme/project-a/pull/42"),
+        false,
+        "Mock Codex is still running while reset is attempted.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Refuse remote reset while a dispatch is still running",
+    );
+
+    let _first_dispatch = harness.dispatch_task(&task.id).await;
+
+    let reset_error = harness
+        .reset_remote_agent_workspace_expect_error(StatusCode::BAD_GATEWAY)
+        .await;
+    assert!(
+        reset_error["error"]["message"]
+            .as_str()
+            .expect("error response should include a message")
+            .contains("Stop active remote dispatches before resetting the remote workspace")
+    );
 }
 
 // =============================================================================

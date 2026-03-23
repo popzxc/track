@@ -251,6 +251,14 @@ pub struct RemoteCleanupSummary {
     pub remote_run_directories_removed: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteResetSummary {
+    #[serde(rename = "workspaceEntriesRemoved")]
+    pub workspace_entries_removed: usize,
+    #[serde(rename = "registryRemoved")]
+    pub registry_removed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAgentRuntimeConfig {
     pub host: String,

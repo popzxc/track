@@ -15,6 +15,7 @@ import {
   fetchTaskChangeVersion,
   fetchTasks,
   followUpTask,
+  resetRemoteAgentWorkspace,
   updateProject,
   updateRemoteAgentSettings,
   updateTask,
@@ -48,6 +49,7 @@ import type {
   ProjectInfo,
   ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
+  RemoteResetSummary,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   RunRecord,
@@ -108,6 +110,9 @@ const taskPendingRunnerSetup = ref<Task | null>(null)
 const cleanupPendingConfirmation = ref(false)
 const cleaningUpRemoteArtifacts = ref(false)
 const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
+const resetPendingConfirmation = ref(false)
+const resettingRemoteWorkspace = ref(false)
+const resetSummary = ref<RemoteResetSummary | null>(null)
 
 let taskChangePollTimer: number | null = null
 let taskChangePollInFlight = false
@@ -515,6 +520,21 @@ async function confirmRemoteCleanup() {
   }
 }
 
+async function confirmRemoteReset() {
+  resettingRemoteWorkspace.value = true
+  errorMessage.value = ''
+
+  try {
+    resetSummary.value = await resetRemoteAgentWorkspace()
+    resetPendingConfirmation.value = false
+    await refreshAll()
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    resettingRemoteWorkspace.value = false
+  }
+}
+
 async function confirmDelete() {
   if (!taskPendingDeletion.value) {
     return
@@ -707,6 +727,14 @@ function openRemoteCleanupConfirmation() {
 
 function clearPendingRemoteCleanup() {
   cleanupPendingConfirmation.value = false
+}
+
+function openRemoteResetConfirmation() {
+  resetPendingConfirmation.value = true
+}
+
+function clearPendingRemoteReset() {
+  resetPendingConfirmation.value = false
 }
 
 // =============================================================================
@@ -1581,6 +1609,68 @@ onBeforeUnmount(() => {
                     </dl>
                   </div>
                 </section>
+
+                <section class="mt-4 border border-fg2/15 bg-bg0/60 p-4">
+                  <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div class="min-w-0">
+                      <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                        Remote reset
+                      </p>
+                      <div class="mt-4 space-y-4 text-sm leading-7 text-fg1">
+                        <p>
+                          Remove the entire remote workspace managed by <code>track</code> and delete the remote projects registry, while keeping local tasks and local dispatch history intact.
+                        </p>
+                        <p>
+                          Use this when the remote VM has drifted into an ambiguous state and you want the next dispatch to rebuild everything from local tracker data.
+                        </p>
+                        <p
+                          v-if="activeRuns.length > 0"
+                          class="text-yellow"
+                        >
+                          Stop active runs before resetting the remote workspace.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      data-testid="settings-reset-button"
+                      class="border border-red/30 bg-red/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-red transition hover:bg-red/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      :disabled="resettingRemoteWorkspace || !remoteAgentSettings?.configured || activeRuns.length > 0"
+                      @click="openRemoteResetConfirmation"
+                    >
+                      {{ resettingRemoteWorkspace ? 'Resetting...' : 'Reset remote workspace' }}
+                    </button>
+                  </div>
+
+                  <div
+                    v-if="resetSummary"
+                    data-testid="reset-summary"
+                    class="mt-4 border border-fg2/15 bg-bg1/70 p-4"
+                  >
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                      Last reset result
+                    </p>
+                    <dl class="mt-4 grid gap-3 text-sm md:grid-cols-2">
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Workspace entries
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ resetSummary.workspaceEntriesRemoved }}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg3">
+                          Registry
+                        </dt>
+                        <dd class="mt-1 text-fg1">
+                          {{ resetSummary.registryRemoved ? 'Removed' : 'Already missing' }}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </section>
               </section>
             </section>
           </template>
@@ -1957,6 +2047,19 @@ onBeforeUnmount(() => {
       title="Clean up remote artifacts"
       @cancel="clearPendingRemoteCleanup"
       @confirm="confirmRemoteCleanup"
+    />
+
+    <ConfirmDialog
+      :busy="resettingRemoteWorkspace"
+      confirm-busy-label="Resetting..."
+      confirm-label="Reset workspace"
+      confirm-variant="danger"
+      description="Delete the entire remote workspace managed by track and remove the remote projects registry. Local tasks and local dispatch history will stay intact, but the next dispatch will need to rebuild the remote environment from scratch."
+      eyebrow="Destructive remote action"
+      :open="resetPendingConfirmation"
+      title="Reset remote workspace"
+      @cancel="clearPendingRemoteReset"
+      @confirm="confirmRemoteReset"
     />
   </main>
 </template>

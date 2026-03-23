@@ -251,6 +251,45 @@ impl ApiHarness {
         response_json(response).await
     }
 
+    pub async fn reset_remote_agent_workspace(&self) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/remote-agent/reset")
+                    .body(Body::empty())
+                    .expect("remote reset request should build"),
+            )
+            .await
+            .expect("remote reset request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response_json(response).await
+    }
+
+    pub async fn reset_remote_agent_workspace_expect_error(
+        &self,
+        expected_status: StatusCode,
+    ) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/remote-agent/reset")
+                    .body(Body::empty())
+                    .expect("remote reset request should build"),
+            )
+            .await
+            .expect("remote reset request should succeed");
+        assert_eq!(response.status(), expected_status);
+
+        response_json(response).await
+    }
+
     pub fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
         self.task_repository
             .update_task(

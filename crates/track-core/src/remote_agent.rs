@@ -18,7 +18,7 @@ use crate::task_description::{append_follow_up_request, parse_task_description};
 use crate::task_repository::FileTaskRepository;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use crate::types::{
-    DispatchStatus, RemoteAgentDispatchOutcome, RemoteCleanupSummary, Status,
+    DispatchStatus, RemoteAgentDispatchOutcome, RemoteCleanupSummary, RemoteResetSummary, Status,
     TaskDispatchRecord, TaskUpdateInput,
 };
 
@@ -56,6 +56,14 @@ struct RemoteArtifactCleanupReport {
     worktrees_removed: usize,
     #[serde(rename = "runDirectoriesRemoved")]
     run_directories_removed: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteWorkspaceResetReport {
+    #[serde(rename = "workspaceEntriesRemoved")]
+    workspace_entries_removed: usize,
+    #[serde(rename = "registryRemoved")]
+    registry_removed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,25 +116,7 @@ impl<'a> RemoteDispatchService<'a> {
     // terminal outcome.
     pub fn queue_dispatch(&self, task_id: &str) -> Result<TaskDispatchRecord, TrackError> {
         let (remote_agent, task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
-
-        // Before queueing a new dispatch, reconcile the latest record with the
-        // remote machine once more. This keeps stale local active records from
-        // blocking retries after the remote launcher already failed or finished
-        // while the API was offline.
-        if let Some(existing_dispatch) = self
-            .latest_dispatches_for_tasks(&[task_id.to_owned()])?
-            .into_iter()
-            .next()
-            .filter(|record| record.status.is_active())
-        {
-            return Err(TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!(
-                    "Task {task_id} already has an active remote dispatch ({})",
-                    existing_dispatch.dispatch_id
-                ),
-            ));
-        }
+        self.ensure_no_blocking_active_dispatch(task_id)?;
 
         let mut dispatch_record = self
             .dispatch_repository
@@ -167,20 +157,7 @@ impl<'a> RemoteDispatchService<'a> {
         }
 
         let (remote_agent, _task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
-        if let Some(existing_dispatch) = self
-            .latest_dispatches_for_tasks(&[task_id.to_owned()])?
-            .into_iter()
-            .next()
-            .filter(|record| record.status.is_active())
-        {
-            return Err(TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!(
-                    "Task {task_id} already has an active remote dispatch ({})",
-                    existing_dispatch.dispatch_id
-                ),
-            ));
-        }
+        self.ensure_no_blocking_active_dispatch(task_id)?;
 
         let dispatch_history = self
             .dispatch_repository
@@ -524,15 +501,35 @@ impl<'a> RemoteDispatchService<'a> {
         if validated_input.status == Some(crate::types::Status::Closed) {
             let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
             if !dispatch_history.is_empty() {
-                self.cleanup_task_remote_artifacts(
+                let cleanup_result = self.cleanup_task_remote_artifacts(
                     task_id,
                     &dispatch_history,
                     RemoteTaskCleanupMode::CloseTask,
-                )?;
-                self.mark_active_dispatches_canceled(
-                    &dispatch_history,
-                    "Canceled because the task was closed.",
-                )?;
+                );
+
+                // The tracker should stay usable even if the remote machine,
+                // SSH key, or remote config disappears. Closing the task is a
+                // local filesystem mutation first; remote cleanup is only a
+                // best-effort follow-up.
+                match cleanup_result {
+                    Ok(_) => self.finalize_active_dispatches_locally(
+                        &dispatch_history,
+                        DispatchStatus::Canceled,
+                        "Canceled because the task was closed.",
+                        None,
+                    )?,
+                    Err(error) => {
+                        eprintln!(
+                            "Skipping remote cleanup while closing task {task_id}: {error}"
+                        );
+                        self.finalize_active_dispatches_locally(
+                            &dispatch_history,
+                            DispatchStatus::Canceled,
+                            "Canceled because the task was closed locally. Remote cleanup was skipped.",
+                            Some(error.message()),
+                        )?;
+                    }
+                }
             }
         }
 
@@ -542,11 +539,19 @@ impl<'a> RemoteDispatchService<'a> {
     pub fn delete_task(&self, task_id: &str) -> Result<(), TrackError> {
         let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
         if !dispatch_history.is_empty() {
-            self.cleanup_task_remote_artifacts(
+            if let Err(error) = self.cleanup_task_remote_artifacts(
                 task_id,
                 &dispatch_history,
                 RemoteTaskCleanupMode::DeleteTask,
-            )?;
+            ) {
+                // Delete is the strongest local intent: once the user removes a
+                // task, stale remote artifacts must not veto that choice.
+                // TODO: We intentionally do not persist this warning locally
+                // because delete also removes the task's local dispatch history.
+                eprintln!(
+                    "Skipping remote cleanup while deleting task {task_id}: {error}"
+                );
+            }
 
             // We intentionally remove the local dispatch history before the
             // task file itself. If the final file delete fails, the user still
@@ -602,9 +607,11 @@ impl<'a> RemoteDispatchService<'a> {
                         &dispatch_history,
                         RemoteTaskCleanupMode::CloseTask,
                     )?;
-                    self.mark_active_dispatches_canceled(
+                    self.finalize_active_dispatches_locally(
                         &dispatch_history,
+                        DispatchStatus::Canceled,
                         "Canceled because the task was closed.",
+                        None,
                     )?;
                     kept_run_directories
                         .extend(unique_run_directories(&dispatch_history, &remote_agent));
@@ -639,6 +646,43 @@ impl<'a> RemoteDispatchService<'a> {
         summary.remote_run_directories_removed += orphan_cleanup_counts.run_directories_removed;
 
         Ok(summary)
+    }
+
+    // =============================================================================
+    // Full Remote Workspace Reset
+    // =============================================================================
+    //
+    // Manual cleanup reconciles remote state against local truth. Reset is the
+    // explicit escape hatch for the harder case where the remote machine is no
+    // longer trustworthy and the user wants to start that environment from
+    // scratch.
+    //
+    // We intentionally keep local task files and local dispatch history.
+    // Those remain the durable tracker state. The remote workspace root and
+    // the remote projects registry are treated as rebuildable cache.
+    pub fn reset_remote_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
+        let active_dispatches = self
+            .list_dispatches(None)?
+            .into_iter()
+            .filter(|record| record.status.is_active())
+            .map(|record| format!("{} ({})", record.task_id, record.dispatch_id))
+            .collect::<Vec<_>>();
+        if !active_dispatches.is_empty() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Stop active remote dispatches before resetting the remote workspace: {}.",
+                    active_dispatches.join(", ")
+                ),
+            ));
+        }
+
+        let remote_agent = self.load_remote_agent_for_global_cleanup()?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        ssh_client.reset_workspace(
+            &remote_agent.workspace_root,
+            &remote_agent.projects_registry_path,
+        )
     }
 
     pub fn latest_dispatches_for_tasks(
@@ -682,23 +726,47 @@ impl<'a> RemoteDispatchService<'a> {
                         | ErrorCode::InvalidRemoteAgentConfig
                 ) =>
             {
-                None
+                let error_message = error.to_string();
+                return self.release_active_dispatches_after_reconciliation_loss(
+                    records,
+                    "Remote reconciliation is unavailable locally, so active runs were released.",
+                    &error_message,
+                );
             }
             Err(error) => return Err(error),
         };
 
         let Some(remote_agent) = remote_agent else {
-            return Ok(records);
-            };
+            return self.release_active_dispatches_after_reconciliation_loss(
+                records,
+                "Remote reconciliation is unavailable locally, so active runs were released.",
+                "Remote agent configuration is missing locally.",
+            );
+        };
         if !remote_agent.managed_key_path.exists() {
-            return Ok(records);
+            let error_message = format!(
+                "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
+                collapse_home_path(&remote_agent.managed_key_path)
+            );
+            return self.release_active_dispatches_after_reconciliation_loss(
+                records,
+                "Remote reconciliation is unavailable locally, so active runs were released.",
+                &error_message,
+            );
         }
 
         let ssh_client = SshClient::new(&remote_agent)?;
         let snapshots_by_dispatch_id =
             match load_dispatch_snapshots_for_records(&ssh_client, &records) {
                 Ok(snapshots) => snapshots,
-                Err(_) => return Ok(records),
+                Err(error) => {
+                    let error_message = error.to_string();
+                    return self.release_active_dispatches_after_reconciliation_loss(
+                        records,
+                        "Remote reconciliation could not reach the remote machine, so active runs were released locally.",
+                        &error_message,
+                    );
+                }
             };
         let mut refreshed_records = Vec::with_capacity(records.len());
         for record in records {
@@ -712,14 +780,22 @@ impl<'a> RemoteDispatchService<'a> {
                     self.dispatch_repository.save_dispatch(&updated)?;
                     refreshed_records.push(updated);
                 } else {
-                    refreshed_records.push(record);
+                    let updated = self.finalize_dispatch_locally(
+                        &record,
+                        DispatchStatus::Blocked,
+                        "Remote reconciliation could not find this run anymore, so it was released locally.",
+                        Some("Remote dispatch snapshot is missing."),
+                    )?;
+                    refreshed_records.push(updated);
                 }
                 continue;
             };
 
             match refresh_dispatch_record_from_snapshot(record.clone(), snapshot) {
                 Ok(updated) => {
-                    self.dispatch_repository.save_dispatch(&updated)?;
+                    if updated != record {
+                        self.dispatch_repository.save_dispatch(&updated)?;
+                    }
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
@@ -729,9 +805,69 @@ impl<'a> RemoteDispatchService<'a> {
                         self.dispatch_repository.save_dispatch(&updated)?;
                         refreshed_records.push(updated);
                     } else {
-                        refreshed_records.push(record);
+                        let error_message = error.to_string();
+                        let updated = self.finalize_dispatch_locally(
+                            &record,
+                            DispatchStatus::Blocked,
+                            "Remote reconciliation could not confirm this run, so it was released locally.",
+                            Some(&error_message),
+                        )?;
+                        refreshed_records.push(updated);
                     }
                 }
+            }
+        }
+
+        Ok(refreshed_records)
+    }
+
+    // =============================================================================
+    // Local Recovery When Remote Control Disappears
+    // =============================================================================
+    //
+    // Remote Codex runs are helpful, but they are not the source of truth. The
+    // source of truth is still the local tracker on disk, and users need to be
+    // able to keep closing, deleting, and retrying tasks even after the remote
+    // machine has been replaced or the SSH setup has gone stale. These helpers
+    // therefore turn "we can no longer inspect or clean the remote side" into
+    // explicit local terminal records instead of leaving active dispatches stuck
+    // forever.
+    fn ensure_no_blocking_active_dispatch(&self, task_id: &str) -> Result<(), TrackError> {
+        if let Some(existing_dispatch) = self
+            .latest_dispatches_for_tasks(&[task_id.to_owned()])?
+            .into_iter()
+            .next()
+            .filter(|record| record.status.is_active())
+        {
+            return Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Task {task_id} already has an active remote dispatch ({})",
+                    existing_dispatch.dispatch_id
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn release_active_dispatches_after_reconciliation_loss(
+        &self,
+        records: Vec<TaskDispatchRecord>,
+        summary: &str,
+        error_message: &str,
+    ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
+        let mut refreshed_records = Vec::with_capacity(records.len());
+        for record in records {
+            if record.status.is_active() {
+                refreshed_records.push(self.finalize_dispatch_locally(
+                    &record,
+                    DispatchStatus::Blocked,
+                    summary,
+                    Some(error_message),
+                )?);
+            } else {
+                refreshed_records.push(record);
             }
         }
 
@@ -864,27 +1000,42 @@ impl<'a> RemoteDispatchService<'a> {
         )
     }
 
-    fn mark_active_dispatches_canceled(
+    fn finalize_active_dispatches_locally(
         &self,
         dispatch_history: &[TaskDispatchRecord],
+        status: DispatchStatus,
         summary: &str,
+        error_message: Option<&str>,
     ) -> Result<(), TrackError> {
         for dispatch_record in dispatch_history {
             if !dispatch_record.status.is_active() {
                 continue;
             }
 
-            let mut canceled_record = dispatch_record.clone();
-            canceled_record.status = DispatchStatus::Canceled;
-            canceled_record.updated_at = now_utc();
-            canceled_record.finished_at = Some(canceled_record.updated_at);
-            canceled_record.summary = Some(summary.to_owned());
-            canceled_record.notes = None;
-            canceled_record.error_message = None;
-            self.dispatch_repository.save_dispatch(&canceled_record)?;
+            self.finalize_dispatch_locally(dispatch_record, status, summary, error_message)?;
         }
 
         Ok(())
+    }
+
+    fn finalize_dispatch_locally(
+        &self,
+        dispatch_record: &TaskDispatchRecord,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Result<TaskDispatchRecord, TrackError> {
+        let mut updated_record = dispatch_record.clone();
+        let now = now_utc();
+        updated_record.status = status;
+        updated_record.updated_at = now;
+        updated_record.finished_at = Some(now);
+        updated_record.summary = Some(summary.to_owned());
+        updated_record.notes = None;
+        updated_record.error_message = error_message.map(ToOwned::to_owned);
+        self.dispatch_repository.save_dispatch(&updated_record)?;
+
+        Ok(updated_record)
     }
 
     fn load_remote_agent_for_cleanup(
@@ -2191,6 +2342,55 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
         parse_remote_cleanup_counts(&report)
     }
 
+    fn reset_workspace(
+        &self,
+        workspace_root: &str,
+        projects_registry_path: &str,
+    ) -> Result<RemoteResetSummary, TrackError> {
+        let reset_script = format!(
+            r#"
+set -eu
+{path_helpers}
+WORKSPACE_ROOT="$(expand_remote_path "$1")"
+REGISTRY_PATH="$(expand_remote_path "$2")"
+WORKSPACE_ENTRIES_REMOVED=0
+REGISTRY_REMOVED=false
+
+if [ -z "$WORKSPACE_ROOT" ] || [ "$WORKSPACE_ROOT" = "/" ] || [ "$WORKSPACE_ROOT" = "$HOME" ]; then
+  echo "Refusing to reset an unsafe remote workspace root at $WORKSPACE_ROOT." >&2
+  exit 1
+fi
+
+mkdir -p "$WORKSPACE_ROOT"
+
+for ENTRY in "$WORKSPACE_ROOT"/* "$WORKSPACE_ROOT"/.[!.]* "$WORKSPACE_ROOT"/..?*; do
+  [ -e "$ENTRY" ] || continue
+  rm -rf "$ENTRY"
+  if [ ! -e "$ENTRY" ]; then
+    WORKSPACE_ENTRIES_REMOVED=$((WORKSPACE_ENTRIES_REMOVED + 1))
+  fi
+done
+
+if [ -e "$REGISTRY_PATH" ]; then
+  rm -f "$REGISTRY_PATH"
+  if [ ! -e "$REGISTRY_PATH" ]; then
+    REGISTRY_REMOVED=true
+  fi
+fi
+
+printf '{{"workspaceEntriesRemoved":%s,"registryRemoved":%s}}\n' \
+  "$WORKSPACE_ENTRIES_REMOVED" \
+  "$REGISTRY_REMOVED"
+"#,
+            path_helpers = remote_path_helpers_shell(),
+        );
+        let report = self.run_script(
+            &reset_script,
+            &[workspace_root.to_owned(), projects_registry_path.to_owned()],
+        )?;
+        parse_remote_reset_summary(&report)
+    }
+
     fn read_remote_file(&self, remote_path: &str) -> Result<Option<String>, TrackError> {
         let read_remote_file_script = format!(
             r#"
@@ -2545,6 +2745,21 @@ fn parse_remote_cleanup_counts(report: &str) -> Result<RemoteArtifactCleanupCoun
     })
 }
 
+fn parse_remote_reset_summary(report: &str) -> Result<RemoteResetSummary, TrackError> {
+    let parsed_report =
+        serde_json::from_str::<RemoteWorkspaceResetReport>(report.trim()).map_err(|error| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Could not parse the remote reset report: {error}"),
+            )
+        })?;
+
+    Ok(RemoteResetSummary {
+        workspace_entries_removed: parsed_report.workspace_entries_removed,
+        registry_removed: parsed_report.registry_removed,
+    })
+}
+
 fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
     if hex.len() % 2 != 0 {
         return Err(TrackError::new(
@@ -2576,9 +2791,26 @@ fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    use tempfile::TempDir;
+
+    use crate::config::{
+        ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
+    };
+    use crate::dispatch_repository::DispatchRepository;
+    use crate::project_repository::{ProjectMetadata, ProjectRepository};
+    use crate::task_repository::FileTaskRepository;
     use crate::task_description::render_task_description;
     use crate::time_utils::now_utc;
-    use crate::types::TaskDispatchRecord;
+    use crate::types::{
+        DispatchStatus, Priority, Status, TaskCreateInput, TaskDispatchRecord, TaskSource,
+        TaskUpdateInput,
+    };
     use time::Duration;
 
     use super::{
@@ -2586,10 +2818,154 @@ mod tests {
         latest_pull_request_for_branch, parse_dispatch_snapshot_report, parse_github_repository_name,
         refresh_dispatch_record_from_snapshot, RemoteDispatchSnapshot,
         select_follow_up_base_dispatch,
+        RemoteDispatchService,
         render_remote_script_with_shell_prelude,
     };
-    use crate::project_repository::ProjectMetadata;
-    use crate::types::DispatchStatus;
+
+    struct TestContext {
+        _directory: TempDir,
+        data_dir: PathBuf,
+        config_service: ConfigService,
+        dispatch_repository: DispatchRepository,
+        project_repository: ProjectRepository,
+        task_repository: FileTaskRepository,
+    }
+
+    impl TestContext {
+        fn new(config: TrackConfigFile) -> Self {
+            let directory = TempDir::new().expect("tempdir should be created");
+            let config_path = directory.path().join("config.json");
+            let data_dir = directory.path().join("issues");
+            let dispatches_dir = data_dir.join(".dispatches");
+            let config_service =
+                ConfigService::new(Some(config_path)).expect("config service should resolve");
+            config_service
+                .save_config_file(&config)
+                .expect("config should save");
+
+            Self {
+                _directory: directory,
+                data_dir: data_dir.clone(),
+                config_service,
+                dispatch_repository: DispatchRepository::new(Some(dispatches_dir))
+                    .expect("dispatch repository should resolve"),
+                project_repository: ProjectRepository::new(Some(data_dir.clone()))
+                    .expect("project repository should resolve"),
+                task_repository: FileTaskRepository::new(Some(data_dir))
+                    .expect("task repository should resolve"),
+            }
+        }
+
+        fn service(&self) -> RemoteDispatchService<'_> {
+            RemoteDispatchService {
+                config_service: &self.config_service,
+                dispatch_repository: &self.dispatch_repository,
+                project_repository: &self.project_repository,
+                task_repository: &self.task_repository,
+            }
+        }
+
+        fn create_task(&self, project: &str, description: &str) -> crate::types::Task {
+            self.task_repository
+                .create_task(TaskCreateInput {
+                    project: project.to_owned(),
+                    priority: Priority::High,
+                    description: description.to_owned(),
+                    source: Some(TaskSource::Web),
+                })
+                .expect("task should be created")
+                .task
+        }
+
+        fn write_project_metadata(&self, project: &str) {
+            self.project_repository
+                .update_project_by_name(
+                    project,
+                    ProjectMetadata {
+                        repo_url: format!("https://github.com/acme/{project}"),
+                        git_url: format!("git@github.com:acme/{project}.git"),
+                        base_branch: "main".to_owned(),
+                        description: None,
+                    },
+                )
+                .expect("project metadata should save");
+        }
+
+        fn create_running_dispatch(&self, task: &crate::types::Task) -> TaskDispatchRecord {
+            let mut dispatch = self
+                .dispatch_repository
+                .create_dispatch(task, "198.51.100.10")
+                .expect("dispatch should be created");
+            dispatch.status = DispatchStatus::Running;
+            dispatch.branch_name = Some(format!("track/{}", dispatch.dispatch_id));
+            dispatch.worktree_path = Some(format!(
+                "~/workspace/{}/worktrees/{}",
+                task.project, dispatch.dispatch_id
+            ));
+            dispatch.summary = Some(
+                "The remote agent is working in the prepared environment.".to_owned(),
+            );
+            dispatch.updated_at = now_utc();
+            self.dispatch_repository
+                .save_dispatch(&dispatch)
+                .expect("dispatch should save");
+            dispatch
+        }
+    }
+
+    fn base_test_config(remote_agent: Option<RemoteAgentConfigFile>) -> TrackConfigFile {
+        TrackConfigFile {
+            project_roots: Vec::new(),
+            project_aliases: BTreeMap::new(),
+            api: ApiConfigFile { port: 3210 },
+            llama_cpp: LlamaCppConfigFile {
+                model_path: "/tmp/parser.gguf".to_owned(),
+                llama_completion_path: None,
+            },
+            remote_agent,
+        }
+    }
+
+    fn track_data_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous_value: Option<OsString>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous_value.take() {
+                Some(previous_value) => std::env::set_var(self.key, previous_value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: &Path) -> EnvVarGuard {
+        let previous_value = std::env::var_os(key);
+        std::env::set_var(key, value);
+
+        EnvVarGuard {
+            key,
+            previous_value,
+        }
+    }
+
+    fn install_dummy_managed_remote_agent_material(data_dir: &Path) {
+        let remote_agent_dir = data_dir
+            .parent()
+            .expect("data dir should have a parent")
+            .join("remote-agent");
+        fs::create_dir_all(&remote_agent_dir).expect("remote-agent dir should be created");
+        fs::write(remote_agent_dir.join("id_ed25519"), "not-a-real-private-key")
+            .expect("dummy SSH key should be written");
+        fs::write(remote_agent_dir.join("known_hosts"), "")
+            .expect("dummy known_hosts file should be written");
+    }
 
     #[test]
     fn builds_remote_prompt_with_both_summary_layers() {
@@ -2825,5 +3201,135 @@ mod tests {
             pull_request_url.as_deref(),
             Some("https://github.com/acme/project-a/pull/42")
         );
+    }
+
+    #[test]
+    fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
+        let context = TestContext::new(base_test_config(None));
+        let task = context.create_task("project-a", "Investigate a flaky remote cleanup");
+        let existing_dispatch = context.create_running_dispatch(&task);
+
+        let updated_task = context
+            .service()
+            .update_task(
+                &task.id,
+                TaskUpdateInput {
+                    status: Some(Status::Closed),
+                    ..TaskUpdateInput::default()
+                },
+            )
+            .expect("closing should still succeed locally");
+
+        let updated_dispatch = context
+            .dispatch_repository
+            .get_dispatch(&task.id, &existing_dispatch.dispatch_id)
+            .expect("dispatch lookup should succeed")
+            .expect("dispatch should still exist");
+
+        assert_eq!(updated_task.status, Status::Closed);
+        assert_eq!(updated_dispatch.status, DispatchStatus::Canceled);
+        assert_eq!(
+            updated_dispatch.summary.as_deref(),
+            Some("Canceled because the task was closed locally. Remote cleanup was skipped.")
+        );
+        assert!(
+            updated_dispatch
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("remote-agent configuration is missing"))
+        );
+    }
+
+    #[test]
+    fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
+        let context = TestContext::new(base_test_config(None));
+        let task = context.create_task("project-a", "Delete the task even without remote cleanup");
+        let _existing_dispatch = context.create_running_dispatch(&task);
+
+        context
+            .service()
+            .delete_task(&task.id)
+            .expect("delete should still succeed locally");
+
+        let task_error = context
+            .task_repository
+            .get_task(&task.id)
+            .expect_err("deleted task should be gone");
+        assert_eq!(task_error.code, crate::errors::ErrorCode::TaskNotFound);
+        assert!(
+            context
+                .dispatch_repository
+                .dispatches_for_task(&task.id)
+                .expect("dispatch lookup should succeed")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn refresh_releases_active_dispatches_when_remote_config_disappears() {
+        let context = TestContext::new(base_test_config(None));
+        let task = context.create_task("project-a", "Recover from a missing remote config");
+        let existing_dispatch = context.create_running_dispatch(&task);
+
+        let refreshed = context
+            .service()
+            .latest_dispatches_for_tasks(std::slice::from_ref(&task.id))
+            .expect("dispatch refresh should succeed");
+        let updated_dispatch = refreshed
+            .first()
+            .expect("latest dispatch should still be returned");
+
+        assert_eq!(updated_dispatch.dispatch_id, existing_dispatch.dispatch_id);
+        assert_eq!(updated_dispatch.status, DispatchStatus::Blocked);
+        assert_eq!(
+            updated_dispatch.summary.as_deref(),
+            Some("Remote reconciliation is unavailable locally, so active runs were released.")
+        );
+        assert_eq!(
+            updated_dispatch.error_message.as_deref(),
+            Some("Remote agent configuration is missing locally.")
+        );
+    }
+
+    #[test]
+    fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
+        let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
+            host: "127.0.0.1".to_owned(),
+            user: "builder".to_owned(),
+            port: 1,
+            workspace_root: "~/workspace".to_owned(),
+            projects_registry_path: "~/track-projects.json".to_owned(),
+            shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
+        })));
+        let task = context.create_task("project-a", "Retry after the previous remote run got stuck");
+        context.write_project_metadata(&task.project);
+        let existing_dispatch = context.create_running_dispatch(&task);
+
+        let _env_lock = track_data_env_lock()
+            .lock()
+            .expect("env lock should not be poisoned");
+        let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
+        install_dummy_managed_remote_agent_material(&context.data_dir);
+
+        let queued_dispatch = context
+            .service()
+            .queue_dispatch(&task.id)
+            .expect("queueing should release the stale active dispatch first");
+        let released_dispatch = context
+            .dispatch_repository
+            .get_dispatch(&task.id, &existing_dispatch.dispatch_id)
+            .expect("dispatch lookup should succeed")
+            .expect("previous dispatch should still exist");
+
+        assert_ne!(queued_dispatch.dispatch_id, existing_dispatch.dispatch_id);
+        assert_eq!(queued_dispatch.status, DispatchStatus::Preparing);
+        assert_eq!(released_dispatch.status, DispatchStatus::Blocked);
+        assert_eq!(
+            released_dispatch.summary.as_deref(),
+            Some(
+                "Remote reconciliation could not reach the remote machine, so active runs were released locally."
+            )
+        );
+        assert!(released_dispatch.error_message.is_some());
     }
 }

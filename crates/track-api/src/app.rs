@@ -21,7 +21,8 @@ use track_core::task_repository::FileTaskRepository;
 use track_core::task_sort::sort_tasks;
 use track_core::time_utils::now_utc;
 use track_core::types::{
-    RemoteCleanupSummary, Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
+    RemoteCleanupSummary, RemoteResetSummary, Task, TaskCreateInput, TaskDispatchRecord,
+    TaskSource, TaskUpdateInput,
 };
 
 #[derive(Clone)]
@@ -170,6 +171,11 @@ struct RemoteCleanupResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct RemoteResetResponse {
+    summary: RemoteResetSummary,
+}
+
+#[derive(Debug, Serialize)]
 struct TaskChangeVersionResponse {
     version: u64,
 }
@@ -276,6 +282,27 @@ async fn cleanup_remote_agent_artifacts(
     .map_err(ApiError::from_track_error)?;
 
     Ok(Json(RemoteCleanupResponse { summary }))
+}
+
+async fn reset_remote_agent_workspace(
+    State(state): State<AppState>,
+) -> Result<Json<RemoteResetResponse>, ApiError> {
+    let reset_state = state.clone();
+    let summary = tokio::task::spawn_blocking(move || {
+        let dispatch_service = RemoteDispatchService {
+            config_service: &reset_state.config_service,
+            dispatch_repository: &reset_state.dispatch_repository,
+            project_repository: &reset_state.project_repository,
+            task_repository: &reset_state.task_repository,
+        };
+
+        dispatch_service.reset_remote_workspace()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Remote reset task failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(RemoteResetResponse { summary }))
 }
 
 async fn patch_project(
@@ -652,6 +679,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             get(get_remote_agent_settings).patch(patch_remote_agent_settings),
         )
         .route("/remote-agent/cleanup", post(cleanup_remote_agent_artifacts))
+        .route("/remote-agent/reset", post(reset_remote_agent_workspace))
         .route("/dispatches", get(list_dispatches))
         .route("/runs", get(list_runs))
         .route("/tasks", get(list_tasks).post(create_task))

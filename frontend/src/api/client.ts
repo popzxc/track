@@ -6,6 +6,8 @@ import type {
   ProjectsResponse,
   RemoteCleanupResponse,
   RemoteCleanupSummary,
+  RemoteResetResponse,
+  RemoteResetSummary,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   RunRecord,
@@ -76,6 +78,14 @@ export async function updateRemoteAgentSettings(
 
 export async function cleanupRemoteAgentArtifacts(): Promise<RemoteCleanupSummary> {
   const response = await readJson<RemoteCleanupResponse>('/api/remote-agent/cleanup', {
+    method: 'POST',
+  })
+
+  return response.summary
+}
+
+export async function resetRemoteAgentWorkspace(): Promise<RemoteResetSummary> {
+  const response = await readJson<RemoteResetResponse>('/api/remote-agent/reset', {
     method: 'POST',
   })
 

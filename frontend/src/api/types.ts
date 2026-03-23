@@ -37,6 +37,15 @@ export interface RemoteCleanupResponse {
   summary: RemoteCleanupSummary
 }
 
+export interface RemoteResetSummary {
+  workspaceEntriesRemoved: number
+  registryRemoved: boolean
+}
+
+export interface RemoteResetResponse {
+  summary: RemoteResetSummary
+}
+
 export interface TaskChangeVersionResponse {
   version: number
 }
