@@ -22,7 +22,7 @@ Think about the project as one Rust backend split into crates plus one frontend.
   agent behavior changes.
 - `crates/track-capture`
   CLI capture and local-model parsing. Start here when prompt shaping,
-  model download, `llama-completion`, or `llama-cpp-2` integration changes.
+  model download, or `llama.cpp` binding integration changes.
 - `crates/track-cli`
   CLI entrypoint and user-facing capture output.
 - `crates/track-api`
@@ -76,15 +76,13 @@ Keep these behaviors stable unless the change is intentional:
 
 The backend supports local parsing only.
 
-- The default parser invokes `llama.cpp` through the `llama-completion` binary.
-- `TRACK_TASK_PARSER=llama-cpp-2` switches capture to the in-process Rust
-  bindings backend.
+- Capture uses in-process `llama.cpp` Rust bindings.
+- If `llamaCpp` is empty or missing model overrides, `track` uses the built-in
+  default Hugging Face model settings.
 - Config may provide either `llamaCpp.modelPath` or both
   `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
-- When Hugging Face config is present, the model is cached under
+- When Hugging Face config is active, the model is cached under
   `~/.track/models`.
-- `llamaCpp.llamaCompletionPath` is optional; if it is absent, the CLI uses
-  `llama-completion` from `$PATH`.
 
 Do not reintroduce hosted-model assumptions without an explicit user request.
 
@@ -145,8 +143,8 @@ Use Cargo for backend work. Use Bun only inside `frontend/`.
 Favor small, high-signal tests.
 
 - Prefer real filesystem tests over mocks for repository behavior.
-- Mock only the external process boundary when needed, or use tiny fake
-  `llama-completion` scripts in temp directories.
+- For CLI capture tests, prefer injecting fake parser results over trying to
+  emulate a real local model.
 - If you change config shape, capture behavior, or storage semantics,
   update Rust tests in `track-core` or `track-cli`.
 - If you change the API surface, add or update Rust HTTP tests in `track-api`.

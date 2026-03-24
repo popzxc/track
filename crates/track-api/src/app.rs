@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -751,17 +751,17 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::ServiceExt;
     use track_core::config::{
-        ApiConfigFile, ConfigService, DEFAULT_REMOTE_AGENT_PORT,
-        DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
-        LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
+        ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
+        DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
+        DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
     use track_core::dispatch_repository::DispatchRepository;
     use track_core::project_catalog::ProjectInfo;
@@ -769,7 +769,7 @@ mod tests {
     use track_core::task_repository::FileTaskRepository;
     use track_core::types::{DispatchStatus, Priority, TaskCreateInput, TaskSource};
 
-    use super::{AppState, build_app};
+    use super::{build_app, AppState};
 
     fn static_root(directory: &TempDir) -> std::path::PathBuf {
         let root = directory.path().join("static");
@@ -793,12 +793,7 @@ mod tests {
                 project_roots: vec![],
                 project_aliases: Default::default(),
                 api: ApiConfigFile::default(),
-                llama_cpp: LlamaCppConfigFile {
-                    model_path: Some("/tmp/model.gguf".to_owned()),
-                    model_hf_repo: None,
-                    model_hf_file: None,
-                    llama_completion_path: None,
-                },
+                llama_cpp: LlamaCppConfigFile::default(),
                 remote_agent: Some(RemoteAgentConfigFile {
                     host: "192.0.2.25".to_owned(),
                     user: "builder".to_owned(),
@@ -1154,13 +1149,11 @@ mod tests {
             serde_json::from_slice(&body).expect("task-runs response should be valid json");
 
         assert_eq!(json["runs"].as_array().map(Vec::len), Some(2));
-        assert!(
-            json["runs"]
-                .as_array()
-                .expect("runs should be an array")
-                .iter()
-                .all(|run| run["task"]["id"] == task.id)
-        );
+        assert!(json["runs"]
+            .as_array()
+            .expect("runs should be an array")
+            .iter()
+            .all(|run| run["task"]["id"] == task.id));
     }
 
     #[tokio::test]
@@ -1222,12 +1215,10 @@ mod tests {
             .expect("discard request should succeed");
         assert_eq!(response.status(), StatusCode::OK);
 
-        assert!(
-            dispatch_repository
-                .latest_dispatch_for_task(&task.id)
-                .expect("latest dispatch lookup should succeed")
-                .is_none()
-        );
+        assert!(dispatch_repository
+            .latest_dispatch_for_task(&task.id)
+            .expect("latest dispatch lookup should succeed")
+            .is_none());
 
         let list_response = app
             .oneshot(

@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{
     collapse_home_path, get_config_path, get_managed_remote_agent_key_path,
-    get_managed_remote_agent_known_hosts_path, resolve_optional_command_path_from_config_file,
-    resolve_path_from_config_file,
+    get_managed_remote_agent_known_hosts_path, resolve_path_from_config_file,
 };
 use crate::types::{
     ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, RemoteAgentRuntimeConfig,
@@ -37,7 +36,11 @@ pub struct TrackConfigFile {
     pub project_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub api: ApiConfigFile,
-    #[serde(rename = "llamaCpp")]
+    #[serde(
+        rename = "llamaCpp",
+        default,
+        skip_serializing_if = "LlamaCppConfigFile::is_empty"
+    )]
     pub llama_cpp: LlamaCppConfigFile,
     #[serde(
         rename = "remoteAgent",
@@ -65,16 +68,24 @@ impl Default for ApiConfigFile {
 pub struct LlamaCppConfigFile {
     #[serde(rename = "modelPath", default, skip_serializing_if = "Option::is_none")]
     pub model_path: Option<String>,
-    #[serde(rename = "modelHfRepo", default, skip_serializing_if = "Option::is_none")]
-    pub model_hf_repo: Option<String>,
-    #[serde(rename = "modelHfFile", default, skip_serializing_if = "Option::is_none")]
-    pub model_hf_file: Option<String>,
     #[serde(
-        rename = "llamaCompletionPath",
+        rename = "modelHfRepo",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub llama_completion_path: Option<String>,
+    pub model_hf_repo: Option<String>,
+    #[serde(
+        rename = "modelHfFile",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model_hf_file: Option<String>,
+}
+
+impl LlamaCppConfigFile {
+    fn is_empty(&self) -> bool {
+        self.model_path.is_none() && self.model_hf_repo.is_none() && self.model_hf_file.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +128,13 @@ fn default_remote_projects_registry_path() -> String {
     DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned()
 }
 
+fn default_llama_cpp_model_source() -> LlamaCppModelSource {
+    LlamaCppModelSource::HuggingFace {
+        repo: DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned(),
+        file: DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned(),
+    }
+}
+
 fn canonicalize_optional_multiline_value(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.replace("\r\n", "\n").trim().to_owned())
@@ -153,25 +171,12 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
         .model_hf_file
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    let has_hf_model = model_hf_repo.is_some() || model_hf_file.is_some();
-    if model_path.is_none() && !has_hf_model {
-        return Err(TrackError::new(
-            ErrorCode::InvalidConfig,
-            "Config file does not match the expected format.",
-        ));
-    }
     if model_hf_repo.is_some() != model_hf_file.is_some() {
         return Err(TrackError::new(
             ErrorCode::InvalidConfig,
             "Config file requires both `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile` when using a Hugging Face model.",
         ));
     }
-
-    let llama_completion_path = config
-        .llama_cpp
-        .llama_completion_path
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
 
     let api_port = config.api.port;
     if api_port == 0 {
@@ -221,7 +226,6 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
             model_path,
             model_hf_repo,
             model_hf_file,
-            llama_completion_path,
         },
         remote_agent,
     })
@@ -323,24 +327,14 @@ impl ConfigService {
             config.llama_cpp.model_hf_file.clone(),
         ) {
             LlamaCppModelSource::HuggingFace { repo, file }
+        } else if let Some(model_path) = config.llama_cpp.model_path.as_deref() {
+            LlamaCppModelSource::LocalPath(resolve_path_from_config_file(
+                model_path,
+                &self.config_path,
+            )?)
         } else {
-            let model_path = config
-                .llama_cpp
-                .model_path
-                .as_deref()
-                .ok_or_else(|| {
-                    TrackError::new(
-                        ErrorCode::InvalidConfig,
-                        "Config file does not match the expected format.",
-                    )
-                })
-                .and_then(|value| resolve_path_from_config_file(value, &self.config_path))?;
-            LlamaCppModelSource::LocalPath(model_path)
+            default_llama_cpp_model_source()
         };
-        let llama_completion_path = resolve_optional_command_path_from_config_file(
-            config.llama_cpp.llama_completion_path.as_deref(),
-            &self.config_path,
-        )?;
         let remote_agent = config
             .remote_agent
             .map(|remote_agent| {
@@ -363,10 +357,7 @@ impl ConfigService {
             api: ApiRuntimeConfig {
                 port: config.api.port,
             },
-            llama_cpp: LlamaCppRuntimeConfig {
-                model_source,
-                llama_completion_path,
-            },
+            llama_cpp: LlamaCppRuntimeConfig { model_source },
             remote_agent,
         })
     }
@@ -409,8 +400,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ConfigService, RemoteAgentConfigFile, TrackConfigFile, DEFAULT_API_PORT,
-        DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
+        default_llama_cpp_model_source, ConfigService, RemoteAgentConfigFile, TrackConfigFile,
+        DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
         DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
         DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
@@ -438,7 +429,6 @@ mod tests {
                     model_path: Some("~/.models/parser.gguf".to_owned()),
                     model_hf_repo: None,
                     model_hf_file: None,
-                    llama_completion_path: None,
                 },
                 remote_agent: Some(RemoteAgentConfigFile {
                     host: "192.0.2.25".to_owned(),
@@ -461,6 +451,27 @@ mod tests {
     }
 
     #[test]
+    fn omits_llama_cpp_block_when_no_manual_override_is_configured() {
+        let (_directory, service) = temp_config_service();
+
+        service
+            .save_config_file(&TrackConfigFile {
+                project_roots: vec!["~/work".to_owned()],
+                project_aliases: BTreeMap::new(),
+                api: super::ApiConfigFile {
+                    port: DEFAULT_API_PORT,
+                },
+                llama_cpp: super::LlamaCppConfigFile::default(),
+                remote_agent: None,
+            })
+            .expect("config should save");
+
+        let raw =
+            fs::read_to_string(service.resolved_path()).expect("saved config should be readable");
+        assert!(!raw.contains("\"llamaCpp\""));
+    }
+
+    #[test]
     fn resolves_relative_runtime_paths_from_the_config_file_location() {
         let directory = TempDir::new().expect("tempdir should be created");
         let config_path = directory.path().join(".config/track/config.json");
@@ -476,7 +487,6 @@ mod tests {
                     model_path: Some("./models/parser.gguf".to_owned()),
                     model_hf_repo: None,
                     model_hf_file: None,
-                    llama_completion_path: Some("../bin/llama-completion".to_owned()),
                 },
                 remote_agent: Some(RemoteAgentConfigFile {
                     host: "192.0.2.25".to_owned(),
@@ -505,15 +515,6 @@ mod tests {
             runtime.llama_cpp.model_source,
             LlamaCppModelSource::LocalPath(config_directory.join("./models/parser.gguf"))
         );
-        assert_eq!(
-            runtime.llama_cpp.llama_completion_path,
-            Some(
-                config_directory
-                    .join("../bin/llama-completion")
-                    .to_string_lossy()
-                    .into_owned()
-            )
-        );
         let remote_agent = runtime
             .remote_agent
             .expect("remote agent runtime config should resolve");
@@ -538,10 +539,9 @@ mod tests {
                     port: DEFAULT_API_PORT,
                 },
                 llama_cpp: super::LlamaCppConfigFile {
-                    model_path: Some("~/.models/legacy-parser.gguf".to_owned()),
+                    model_path: Some("~/.models/custom-parser.gguf".to_owned()),
                     model_hf_repo: Some(DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned()),
                     model_hf_file: Some(DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned()),
-                    llama_completion_path: None,
                 },
                 remote_agent: None,
             })
@@ -557,6 +557,32 @@ mod tests {
                 repo: DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned(),
                 file: DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn defaults_to_the_builtin_hugging_face_model_when_no_override_is_configured() {
+        let (_directory, service) = temp_config_service();
+
+        service
+            .save_config_file(&TrackConfigFile {
+                project_roots: vec!["~/work".to_owned()],
+                project_aliases: BTreeMap::new(),
+                api: super::ApiConfigFile {
+                    port: DEFAULT_API_PORT,
+                },
+                llama_cpp: super::LlamaCppConfigFile::default(),
+                remote_agent: None,
+            })
+            .expect("config should save");
+
+        let runtime = service
+            .load_runtime_config()
+            .expect("runtime config should resolve");
+
+        assert_eq!(
+            runtime.llama_cpp.model_source,
+            default_llama_cpp_model_source()
         );
     }
 }

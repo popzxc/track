@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
@@ -12,21 +11,16 @@ use track_core::types::{
     LlamaCppModelSource, LlamaCppRuntimeConfig, ParsedTaskCandidate, TrackRuntimeConfig,
 };
 
-use crate::llama_cpp::LlamaCppTaskParser;
 use crate::llama_cpp_2::LlamaCpp2TaskParser;
 
-pub const TRACK_TASK_PARSER_ENV_VAR: &str = "TRACK_TASK_PARSER";
-const DEFAULT_TASK_PARSER_BACKEND: &str = "llama-completion";
-const LLAMA_CPP_2_TASK_PARSER_BACKEND: &str = "llama-cpp-2";
-
 // =============================================================================
-// Task Parser Selection
+// Task Parser Construction
 // =============================================================================
 //
-// Capture should not need to know which local inference backend is active or
-// whether the configured model comes from a stable local file or a managed
-// Hugging Face cache. Centralizing that decision here keeps the rest of the
-// capture flow focused on task validation and persistence.
+// Capture should not need to know whether the configured model comes from a
+// stable local file or a managed Hugging Face cache. Centralizing that
+// decision here keeps the rest of the capture flow focused on task validation
+// and persistence.
 
 pub trait TaskParser {
     fn parse_task(
@@ -36,45 +30,23 @@ pub trait TaskParser {
     ) -> Result<ParsedTaskCandidate, TrackError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TaskParserBackend {
-    LlamaCompletion,
-    LlamaCpp2,
+pub trait TaskParserFactory {
+    fn create_parser(
+        &self,
+        config: &TrackRuntimeConfig,
+    ) -> Result<Box<dyn TaskParser + 'static>, TrackError>;
 }
 
-pub fn create_task_parser(
-    config: &TrackRuntimeConfig,
-) -> Result<Box<dyn TaskParser + 'static>, TrackError> {
-    let backend = selected_task_parser_backend()?;
-    let model_path = resolve_model_path(&config.llama_cpp)?;
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalTaskParserFactory;
 
-    Ok(match backend {
-        TaskParserBackend::LlamaCompletion => Box::new(LlamaCppTaskParser::new(
-            config.llama_cpp.llama_completion_path.clone(),
-            model_path,
-        )),
-        TaskParserBackend::LlamaCpp2 => Box::new(LlamaCpp2TaskParser::new(model_path)),
-    })
-}
-
-fn selected_task_parser_backend() -> Result<TaskParserBackend, TrackError> {
-    let Some(value) = env::var(TRACK_TASK_PARSER_ENV_VAR)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(TaskParserBackend::LlamaCompletion);
-    };
-
-    match value.as_str() {
-        DEFAULT_TASK_PARSER_BACKEND => Ok(TaskParserBackend::LlamaCompletion),
-        LLAMA_CPP_2_TASK_PARSER_BACKEND => Ok(TaskParserBackend::LlamaCpp2),
-        _ => Err(TrackError::new(
-            ErrorCode::InvalidConfigInput,
-            format!(
-                "Unsupported {TRACK_TASK_PARSER_ENV_VAR} value `{value}`. Expected `{DEFAULT_TASK_PARSER_BACKEND}` or `{LLAMA_CPP_2_TASK_PARSER_BACKEND}`."
-            ),
-        )),
+impl TaskParserFactory for LocalTaskParserFactory {
+    fn create_parser(
+        &self,
+        config: &TrackRuntimeConfig,
+    ) -> Result<Box<dyn TaskParser + 'static>, TrackError> {
+        let model_path = resolve_model_path(&config.llama_cpp)?;
+        Ok(Box::new(LlamaCpp2TaskParser::new(model_path)))
     }
 }
 
@@ -130,76 +102,5 @@ pub fn resolve_model_path(config: &LlamaCppRuntimeConfig) -> Result<PathBuf, Tra
                 )
             })
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
-
-    use super::{selected_task_parser_backend, TaskParserBackend, TRACK_TASK_PARSER_ENV_VAR};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct EnvVarGuard {
-        previous_value: Option<OsString>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.previous_value.take() {
-                Some(previous_value) => std::env::set_var(TRACK_TASK_PARSER_ENV_VAR, previous_value),
-                None => std::env::remove_var(TRACK_TASK_PARSER_ENV_VAR),
-            }
-        }
-    }
-
-    fn set_task_parser_env(value: Option<&str>) -> EnvVarGuard {
-        let previous_value = std::env::var_os(TRACK_TASK_PARSER_ENV_VAR);
-        match value {
-            Some(value) => std::env::set_var(TRACK_TASK_PARSER_ENV_VAR, value),
-            None => std::env::remove_var(TRACK_TASK_PARSER_ENV_VAR),
-        }
-
-        EnvVarGuard { previous_value }
-    }
-
-    #[test]
-    fn defaults_to_legacy_llama_completion_backend() {
-        let _lock = env_lock().lock().expect("env lock should be available");
-        let _guard = set_task_parser_env(None);
-
-        let backend =
-            selected_task_parser_backend().expect("default parser selection should succeed");
-
-        assert_eq!(backend, TaskParserBackend::LlamaCompletion);
-    }
-
-    #[test]
-    fn selects_llama_cpp_2_backend_from_env() {
-        let _lock = env_lock().lock().expect("env lock should be available");
-        let _guard = set_task_parser_env(Some("llama-cpp-2"));
-
-        let backend =
-            selected_task_parser_backend().expect("llama-cpp-2 parser selection should succeed");
-
-        assert_eq!(backend, TaskParserBackend::LlamaCpp2);
-    }
-
-    #[test]
-    fn rejects_unknown_task_parser_backend() {
-        let _lock = env_lock().lock().expect("env lock should be available");
-        let _guard = set_task_parser_env(Some("mystery-backend"));
-
-        let error =
-            selected_task_parser_backend().expect_err("unknown parser selection should fail");
-
-        assert!(error
-            .message()
-            .contains("Unsupported TRACK_TASK_PARSER value `mystery-backend`"));
     }
 }

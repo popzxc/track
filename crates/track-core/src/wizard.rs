@@ -110,41 +110,12 @@ fn format_project_roots_display(roots: &[String]) -> String {
         .join(", ")
 }
 
-fn collapse_optional_path_value(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .map(collapse_path_value)
-}
-
-fn format_model_source_display(config: &LlamaCppConfigFile) -> (String, ValueTone) {
-    // Prefer the Hugging Face reference when present because that is the
-    // active source once both are configured. The local path remains useful as
-    // an override or migration fallback, but the repo+file pair is what the
-    // downloader will consult first.
-    if let (Some(repo), Some(file)) = (
-        config.model_hf_repo.as_deref(),
-        config.model_hf_file.as_deref(),
-    ) {
-        return (format!("{repo}#{file}"), ValueTone::Plain);
-    }
-
-    match config.model_path.as_deref() {
-        Some(path) if !path.is_empty() => (collapse_path_value(path), ValueTone::Path),
-        _ => ("not configured".to_owned(), ValueTone::Plain),
-    }
-}
-
 fn create_default_config_file() -> TrackConfigFile {
     TrackConfigFile {
         project_roots: Vec::new(),
         project_aliases: BTreeMap::new(),
         api: ApiConfigFile::default(),
-        llama_cpp: LlamaCppConfigFile {
-            model_path: None,
-            model_hf_repo: Some(DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned()),
-            model_hf_file: Some(DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned()),
-            llama_completion_path: None,
-        },
+        llama_cpp: LlamaCppConfigFile::default(),
         remote_agent: None,
     }
 }
@@ -196,56 +167,6 @@ fn prompt_required_value(
         }
 
         prompter.println("Please enter a value.");
-    }
-}
-
-fn prompt_model_source(
-    prompter: &mut dyn Prompter,
-    defaults: &LlamaCppConfigFile,
-) -> Result<(Option<String>, Option<String>, Option<String>), TrackError> {
-    loop {
-        let model_path_default = collapse_optional_path_value(defaults.model_path.as_deref());
-        let model_hf_repo_default = defaults.model_hf_repo.as_ref().cloned();
-        let model_hf_file_default = defaults.model_hf_file.as_ref().cloned();
-        let model_path = prompt_with_default(
-            prompter,
-            "Model file (optional)",
-            model_path_default.as_deref(),
-            true,
-        )?;
-        let model_hf_repo = prompt_with_default(
-            prompter,
-            "HF model repo (optional)",
-            model_hf_repo_default.as_deref(),
-            true,
-        )?;
-        let model_hf_file = prompt_with_default(
-            prompter,
-            "HF model file (optional)",
-            model_hf_file_default.as_deref(),
-            true,
-        )?;
-
-        let model_path = (!model_path.trim().is_empty()).then_some(model_path);
-        let model_hf_repo = (!model_hf_repo.trim().is_empty()).then_some(model_hf_repo);
-        let model_hf_file = (!model_hf_file.trim().is_empty()).then_some(model_hf_file);
-        let has_hf_model = model_hf_repo.is_some() || model_hf_file.is_some();
-
-        if model_path.is_none() && !has_hf_model {
-            prompter.println(
-                "Please configure either a local model file or both Hugging Face model fields.",
-            );
-            continue;
-        }
-
-        if model_hf_repo.is_some() != model_hf_file.is_some() {
-            prompter.println(
-                "Please enter both Hugging Face model fields or clear both with `none`.",
-            );
-            continue;
-        }
-
-        return Ok((model_path, model_hf_repo, model_hf_file));
     }
 }
 
@@ -439,11 +360,6 @@ fn format_config_saved_output(
     config_path: &std::path::Path,
     reason: ConfigureReason,
 ) -> String {
-    let (model_display, model_tone) = format_model_source_display(&config.llama_cpp);
-    let (binary_display, binary_tone) = match config.llama_cpp.llama_completion_path.as_deref() {
-        Some(path) if !path.is_empty() => (collapse_path_value(path), ValueTone::Path),
-        _ => ("PATH lookup".to_owned(), ValueTone::Plain),
-    };
     let (remote_agent_display, remote_agent_tone) = match config.remote_agent.as_ref() {
         Some(remote_agent) => (
             format!(
@@ -455,7 +371,7 @@ fn format_config_saved_output(
         None => ("disabled".to_owned(), ValueTone::Plain),
     };
 
-    format_summary(
+    let summary = format_summary(
         match reason {
             ConfigureReason::FirstRun => "Config created",
             ConfigureReason::Manual => "Config updated",
@@ -463,8 +379,6 @@ fn format_config_saved_output(
         SummaryTone::Success,
         &[
             ("File", collapse_home_path(config_path), ValueTone::Path),
-            ("Model", model_display, model_tone),
-            ("Binary", binary_display, binary_tone),
             (
                 "Project roots",
                 format!("{} configured", config.project_roots.len()),
@@ -478,7 +392,46 @@ fn format_config_saved_output(
             ("API port", config.api.port.to_string(), ValueTone::Plain),
             ("Remote", remote_agent_display, remote_agent_tone),
         ],
+    );
+
+    let preserved_model_override_fields = preserved_model_override_fields(&config.llama_cpp);
+    if preserved_model_override_fields.is_empty() {
+        return summary;
+    }
+
+    format!(
+        "{summary}\n\n{}",
+        format_note(
+            "Advanced",
+            &format!(
+                "The following fields are set in {} but are not managed by the wizard: {}. Edit the file directly if you need to change them.",
+                collapse_home_path(config_path),
+                preserved_model_override_fields.join(", "),
+            ),
+        )
     )
+}
+
+fn preserved_model_override_fields(config: &LlamaCppConfigFile) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+
+    if config.model_path.is_some() {
+        fields.push("llamaCpp.modelPath");
+    }
+
+    if let (Some(repo), Some(file)) = (
+        config.model_hf_repo.as_deref(),
+        config.model_hf_file.as_deref(),
+    ) {
+        let uses_builtin_default =
+            repo == DEFAULT_LLAMACPP_MODEL_HF_REPO && file == DEFAULT_LLAMACPP_MODEL_HF_FILE;
+        if !uses_builtin_default {
+            fields.push("llamaCpp.modelHfRepo");
+            fields.push("llamaCpp.modelHfFile");
+        }
+    }
+
+    fields
 }
 
 pub fn run_configure_command(
@@ -502,8 +455,8 @@ pub fn run_configure_command_with_prompter(
     };
     let defaults = existing_config.unwrap_or_else(create_default_config_file);
 
-    // The wizard stays linear on purpose: choose the model-source inputs first,
-    // then define the filesystem roots that project discovery relies on.
+    // The wizard stays linear on purpose: establish the local filesystem and
+    // API settings first, then optionally layer in remote-agent details.
     let intro = match reason {
         ConfigureReason::FirstRun => format_summary(
             "Config setup",
@@ -528,20 +481,6 @@ pub fn run_configure_command_with_prompter(
     prompter.println(&format_note("Enter", "keep current values"));
     prompter.println(&format_note(NONE_SENTINEL, "clear optional values"));
 
-    let llama_completion_default = defaults
-        .llama_cpp
-        .llama_completion_path
-        .as_deref()
-        .map(collapse_path_value);
-
-    let (model_path, model_hf_repo, model_hf_file) =
-        prompt_model_source(prompter, &defaults.llama_cpp)?;
-    let llama_completion_path = prompt_with_default(
-        prompter,
-        "llama-completion binary",
-        llama_completion_default.as_deref(),
-        true,
-    )?;
     let api_port = prompt_api_port(prompter, defaults.api.port)?;
     let project_roots = prompt_project_roots(prompter, &defaults.project_roots)?;
     let project_aliases = prompt_project_aliases(prompter, &defaults.project_aliases)?;
@@ -592,9 +531,8 @@ pub fn run_configure_command_with_prompter(
             // shell prelude stays web-managed so the wizard preserves an
             // existing value instead of trying to squeeze multiline shell
             // setup into a single-line prompt.
-            shell_prelude: existing_remote_agent.and_then(|remote_agent| {
-                remote_agent.shell_prelude.clone()
-            }),
+            shell_prelude: existing_remote_agent
+                .and_then(|remote_agent| remote_agent.shell_prelude.clone()),
         })
     } else {
         // TODO: Consider removing the managed SSH key when remote dispatch is
@@ -608,16 +546,7 @@ pub fn run_configure_command_with_prompter(
         project_roots,
         project_aliases,
         api: ApiConfigFile { port: api_port },
-        llama_cpp: LlamaCppConfigFile {
-            model_path,
-            model_hf_repo,
-            model_hf_file,
-            llama_completion_path: if llama_completion_path.trim().is_empty() {
-                None
-            } else {
-                Some(llama_completion_path)
-            },
-        },
+        llama_cpp: defaults.llama_cpp.clone(),
         remote_agent,
     };
 
@@ -631,7 +560,7 @@ pub fn run_configure_command_with_prompter(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
 
     use tempfile::TempDir;
 
@@ -639,7 +568,10 @@ mod tests {
         parse_project_aliases_input, parse_project_roots_input,
         run_configure_command_with_prompter, ConfigureReason, Prompter,
     };
-    use crate::config::ConfigService;
+    use crate::config::{
+        ConfigService, LlamaCppConfigFile, TrackConfigFile, DEFAULT_LLAMACPP_MODEL_HF_FILE,
+        DEFAULT_LLAMACPP_MODEL_HF_REPO,
+    };
 
     struct ScriptedPrompter {
         answers: VecDeque<String>,
@@ -695,16 +627,8 @@ mod tests {
     #[test]
     fn writes_first_run_config() {
         let (_directory, service) = temp_config_service();
-        let mut prompter = ScriptedPrompter::new(&[
-            "",
-            "",
-            "",
-            "~/temp_work/llama.cpp/build/bin/llama-completion",
-            "3210",
-            "~/work, ~/oss",
-            "proj-x=project-x",
-            "",
-        ]);
+        let mut prompter =
+            ScriptedPrompter::new(&["3210", "~/work, ~/oss", "proj-x=project-x", ""]);
 
         let output =
             run_configure_command_with_prompter(&service, &mut prompter, ConfigureReason::FirstRun)
@@ -712,10 +636,59 @@ mod tests {
 
         assert!(output.contains("Config created"));
         let raw = std::fs::read_to_string(service.resolved_path()).expect("config should save");
-        assert!(raw.contains("\"llamaCpp\""));
-        assert!(raw.contains("\"modelHfRepo\""));
-        assert!(raw.contains("\"modelHfFile\""));
+        assert!(!raw.contains("\"llamaCpp\""));
         assert!(raw.contains("\"projectRoots\""));
         assert!(raw.contains("\"api\""));
+    }
+
+    #[test]
+    fn mentions_preserved_manual_model_overrides() {
+        let (_directory, service) = temp_config_service();
+        service
+            .save_config_file(&TrackConfigFile {
+                project_roots: vec!["~/work".to_owned()],
+                project_aliases: BTreeMap::new(),
+                api: crate::config::ApiConfigFile::default(),
+                llama_cpp: LlamaCppConfigFile {
+                    model_path: Some("~/.models/custom.gguf".to_owned()),
+                    model_hf_repo: None,
+                    model_hf_file: None,
+                },
+                remote_agent: None,
+            })
+            .expect("seed config should save");
+
+        let mut prompter = ScriptedPrompter::new(&["", "", "", ""]);
+        let output =
+            run_configure_command_with_prompter(&service, &mut prompter, ConfigureReason::Manual)
+                .expect("config wizard should succeed");
+
+        assert!(output.contains("llamaCpp.modelPath"));
+    }
+
+    #[test]
+    fn does_not_call_out_builtin_hugging_face_defaults() {
+        let (_directory, service) = temp_config_service();
+        service
+            .save_config_file(&TrackConfigFile {
+                project_roots: vec!["~/work".to_owned()],
+                project_aliases: BTreeMap::new(),
+                api: crate::config::ApiConfigFile::default(),
+                llama_cpp: LlamaCppConfigFile {
+                    model_path: None,
+                    model_hf_repo: Some(DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned()),
+                    model_hf_file: Some(DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned()),
+                },
+                remote_agent: None,
+            })
+            .expect("seed config should save");
+
+        let mut prompter = ScriptedPrompter::new(&["", "", "", ""]);
+        let output =
+            run_configure_command_with_prompter(&service, &mut prompter, ConfigureReason::Manual)
+                .expect("config wizard should succeed");
+
+        assert!(!output.contains("llamaCpp.modelHfRepo"));
+        assert!(!output.contains("llamaCpp.modelHfFile"));
     }
 }

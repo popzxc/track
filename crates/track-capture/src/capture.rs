@@ -9,7 +9,7 @@ use track_core::types::{
     Confidence, ParsedTaskCandidate, Priority, StoredTask, TaskCreateInput, TaskSource,
 };
 
-use crate::task_parser::create_task_parser;
+use crate::task_parser::TaskParserFactory;
 
 fn validate_parsed_task_candidate(
     candidate: ParsedTaskCandidate,
@@ -205,6 +205,7 @@ pub struct TaskCaptureService<'a> {
     pub config_service: &'a ConfigService,
     pub project_repository: &'a ProjectRepository,
     pub task_repository: &'a FileTaskRepository,
+    pub task_parser_factory: &'a dyn TaskParserFactory,
 }
 
 impl<'a> TaskCaptureService<'a> {
@@ -236,7 +237,7 @@ impl<'a> TaskCaptureService<'a> {
             ));
         }
 
-        let parser = create_task_parser(&config)?;
+        let parser = self.task_parser_factory.create_parser(&config)?;
         let candidate = parser.parse_task(raw_text, &project_catalog)?;
         let (project, priority, title, body_markdown) =
             validate_parsed_task_candidate(candidate, &project_catalog)?;

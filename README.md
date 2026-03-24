@@ -60,6 +60,10 @@ can create tasks from anywhere with commands like:
 track proj-x prio high fix a bug in module A
 ```
 
+The first capture run may download the default local model into
+`~/.track/models`. `track` will show a short notice and progress output while
+that happens.
+
 To reinstall after updating the repository:
 
 ```bash
@@ -122,7 +126,8 @@ variables.
 The repository has two top-level implementation areas:
 
 - `crates/`
-  Rust crates for the domain core, the CLI, and the HTTP API.
+  Rust crates for shared backend logic, CLI capture, the CLI entrypoint, and
+  the HTTP API.
 - `frontend/`
   The Vue/Vite frontend.
 
@@ -134,7 +139,7 @@ The stable boundary between them is the filesystem contract:
 
 ## Developer Setup
 
-1. Install [Rust](https://www.rust-lang.org/tools/install) and [Bun](https://bun.sh/).
+1. Install [Rust](https://www.rust-lang.org/tools/install), [Bun](https://bun.sh/), and the local native build tools needed by the CLI capture backend. See [SETUP.md](./SETUP.md).
 2. Run `cargo build -p track-cli`.
 3. Run `cd frontend && bun install`.
 4. Run `track` to generate `~/.config/track/config.json`, or create it manually.
@@ -154,11 +159,6 @@ The stable boundary between them is the filesystem contract:
   "api": {
     "port": 3210
   },
-  "llamaCpp": {
-    "modelHfRepo": "bartowski/Meta-Llama-3-8B-Instruct-GGUF",
-    "modelHfFile": "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
-    "llamaCompletionPath": "/opt/llama.cpp/bin/llama-completion"
-  },
   "remoteAgent": {
     "host": "192.0.2.25",
     "user": "builder",
@@ -170,17 +170,12 @@ The stable boundary between them is the filesystem contract:
 }
 ```
 
-`llamaCompletionPath` is optional. If you omit it, `track` looks for
-`llama-completion` on `$PATH`.
+By default, `track` uses the built-in Hugging Face model settings and downloads
+or reuses the model under `~/.track/models` on first capture.
 
-Configure either `llamaCpp.modelPath` or both `llamaCpp.modelHfRepo` and
-`llamaCpp.modelHfFile`. If the Hugging Face fields are present, `track`
-downloads or reuses the model under `~/.track/models` and uses that local file
-for inference.
-
-`TRACK_TASK_PARSER=llama-cpp-2` switches capture to the in-process Rust
-bindings backend. If the variable is unset, `track` keeps using the existing
-`llama-completion` subprocess flow.
+If you want to override that manually, add a `llamaCpp` block and set either
+`llamaCpp.modelPath` or both `llamaCpp.modelHfRepo` and
+`llamaCpp.modelHfFile` in `config.json`.
 
 `api.port` controls where the CLI looks for the local API when it sends
 task-change notifications. `track-api` also uses that same port by default
@@ -262,8 +257,8 @@ For local frontend development, `frontend/vite.config.ts` proxies `/api` and
 - Remote dispatch records live under `~/.track/issues/.dispatches`.
 - The API and frontend list projects from the persisted track directory rather
   than rediscovering host repositories.
-- The CLI only supports local parsing through `llama.cpp`.
-- `track` uses `llama-completion` for one-shot local parsing.
+- The CLI uses in-process `llama.cpp` bindings for local parsing.
+- The default local model is cached under `~/.track/models`.
 - The CLI sends a best-effort local API notification after creating a task.
 - Remote dispatch uses the system `ssh` and `scp` clients from the API process.
 - The Rust API serves both JSON routes and the built frontend assets.

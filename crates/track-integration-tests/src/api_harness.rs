@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -10,10 +10,8 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use track_api::{AppState, build_app};
-use track_core::config::{
-    ApiConfigFile, ConfigService, LlamaCppConfigFile, TrackConfigFile,
-};
+use track_api::{build_app, AppState};
+use track_core::config::{ApiConfigFile, ConfigService, LlamaCppConfigFile, TrackConfigFile};
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::project_repository::{ProjectMetadata, ProjectRepository};
 use track_core::task_repository::FileTaskRepository;
@@ -61,20 +59,14 @@ impl ApiHarness {
         .expect("managed SSH key should copy into the local track state");
         set_private_key_permissions(&managed_remote_agent_dir.join("id_ed25519"));
 
-        let config_service = Arc::new(
-            ConfigService::new(Some(config_path)).expect("config service should resolve"),
-        );
+        let config_service =
+            Arc::new(ConfigService::new(Some(config_path)).expect("config service should resolve"));
         config_service
             .save_config_file(&TrackConfigFile {
                 project_roots: vec![],
                 project_aliases: Default::default(),
                 api: ApiConfigFile::default(),
-                llama_cpp: LlamaCppConfigFile {
-                    model_path: Some("/tmp/model.gguf".to_owned()),
-                    model_hf_repo: None,
-                    model_hf_file: None,
-                    llama_completion_path: None,
-                },
+                llama_cpp: LlamaCppConfigFile::default(),
                 remote_agent: Some(fixture.remote_agent_config()),
             })
             .expect("remote-agent config should save");
@@ -157,11 +149,7 @@ impl ApiHarness {
         response_json(response).await
     }
 
-    pub async fn follow_up_task(
-        &self,
-        task_id: &str,
-        request: &str,
-    ) -> serde_json::Value {
+    pub async fn follow_up_task(&self, task_id: &str, request: &str) -> serde_json::Value {
         let response = self
             .app
             .clone()

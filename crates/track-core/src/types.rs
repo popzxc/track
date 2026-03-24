@@ -184,7 +184,6 @@ pub enum LlamaCppModelSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlamaCppRuntimeConfig {
     pub model_source: LlamaCppModelSource,
-    pub llama_completion_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,10 +313,7 @@ mod optional_iso_8601_timestamp {
 
     use crate::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
 
-    pub fn serialize<S>(
-        value: &Option<OffsetDateTime>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &Option<OffsetDateTime>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {

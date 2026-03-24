@@ -2,7 +2,7 @@
 
 This guide covers:
 
-- local task capture through `llama.cpp`
+- local task capture through in-process `llama.cpp` bindings
 - a local web UI running in Docker
 - a remote machine that can run `codex` autonomously and open PRs
 
@@ -178,38 +178,34 @@ Then open a new shell or load Cargo into your current one:
 . "$HOME/.cargo/env"
 ```
 
-### 2.2 Install `llama.cpp` locally
+### 2.2 Install local build prerequisites
 
-Repository:
-[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)
+`track-cli` builds the local `llama.cpp` backend through Rust bindings, so your
+machine needs the usual native build tooling plus `libclang`.
 
-For `track`, the important detail is that your build must include the
-`llama-completion` binary. The most reliable way to ensure that is to build
-from source.
-
-Example:
+On Debian or Ubuntu, a good baseline is:
 
 ```bash
-git clone https://github.com/ggml-org/llama.cpp ~/src/llama.cpp
-cd ~/src/llama.cpp
-cmake -B build -S .
-cmake --build build -j
-ls ~/src/llama.cpp/build/bin/llama-completion
+sudo apt update
+sudo apt install -y build-essential cmake clang libclang-dev pkg-config
 ```
 
-Write down the final absolute path to `llama-completion`. You will need it when
-configuring `track`.
+If you use another distro or macOS, install the equivalent C/C++ toolchain,
+CMake, and `libclang` package for your platform.
 
 ### 2.3 Choose a local model source
 
-`track` now supports two ways to provide a GGUF model:
+`track` uses a local GGUF model for task capture.
 
-1. Recommended: keep the default Hugging Face model settings in the config
-   wizard. `track` will download the model into `~/.track/models` on first use.
-2. Manual: download a GGUF yourself and set `llamaCpp.modelPath`.
-
-The default recommended model is:
+By default, it downloads this model into `~/.track/models` on first use:
 [Meta-Llama-3-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF?show_file_info=Meta-Llama-3-8B-Instruct-Q4_K_M.gguf)
+
+If you want to use a different model, `track` supports two manual override
+shapes in `~/.config/track/config.json`:
+
+1. Set `llamaCpp.modelPath` to a local GGUF file you manage yourself.
+2. Set both `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile` to a different
+   Hugging Face model file.
 
 If you prefer a manual local file, create a directory for models:
 
@@ -224,8 +220,8 @@ somewhere stable, for example:
 ~/.models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
 ```
 
-Write down the final absolute path. You will need it only if you plan to use
-`llamaCpp.modelPath` instead of the default Hugging Face-backed config.
+Write down the final absolute path. You will need it only if you plan to set
+`llamaCpp.modelPath` manually.
 
 ### 2.4 Clone this repository locally
 
@@ -262,10 +258,6 @@ The wizard will create `~/.config/track/config.json`.
 
 Here is what it will ask for and what you should provide:
 
-- `Model file`
-  Use the absolute path to your GGUF model.
-- `llama-completion binary`
-  Use the absolute path to your `llama-completion` binary.
 - `API port`
   `3210` is the default and is usually the right choice.
 - `Project roots`
@@ -287,6 +279,13 @@ Here is what it will ask for and what you should provide:
 - `SSH private key to import`
   Point this at the dedicated key you created earlier, for example
   `~/.ssh/track_remote_agent`.
+
+After the wizard finishes, the first task capture will download the default
+local model into `~/.track/models` if it is not already cached.
+
+If you want to override the model later, edit `~/.config/track/config.json`
+directly and set either `llamaCpp.modelPath` or both
+`llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
 
 When you import the key, `track` copies it into its managed automation
 directory under `~/.track/remote-agent/`. That is why the key must be dedicated

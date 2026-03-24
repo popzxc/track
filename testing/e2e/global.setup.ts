@@ -283,9 +283,7 @@ async function writeConfigFile(
       api: {
         port: apiPort,
       },
-      llamaCpp: {
-        modelPath: '/tmp/model.gguf',
-      },
+      llamaCpp: {},
       remoteAgent: {
         host: FIXTURE_HOST,
         user: FIXTURE_USER,

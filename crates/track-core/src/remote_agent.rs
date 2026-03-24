@@ -2898,8 +2898,8 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{
-        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
     };
 
     use tempfile::TempDir;
@@ -2919,11 +2919,11 @@ mod tests {
     use time::Duration;
 
     use super::{
-        RemoteDispatchService, RemoteDispatchSnapshot, build_remote_codex_launcher,
-        build_remote_dispatch_prompt, build_remote_dispatch_schema, latest_pull_request_for_branch,
-        parse_dispatch_snapshot_report, parse_github_repository_name,
-        refresh_dispatch_record_from_snapshot, render_remote_script_with_shell_prelude,
-        select_follow_up_base_dispatch,
+        build_remote_codex_launcher, build_remote_dispatch_prompt, build_remote_dispatch_schema,
+        latest_pull_request_for_branch, parse_dispatch_snapshot_report,
+        parse_github_repository_name, refresh_dispatch_record_from_snapshot,
+        render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
+        RemoteDispatchService, RemoteDispatchSnapshot,
     };
 
     struct TestContext {
@@ -3025,7 +3025,6 @@ mod tests {
                 model_path: Some("/tmp/parser.gguf".to_owned()),
                 model_hf_repo: None,
                 model_hf_file: None,
-                llama_completion_path: None,
             },
             remote_agent,
         }
@@ -3344,12 +3343,10 @@ mod tests {
             updated_dispatch.summary.as_deref(),
             Some("Canceled because the task was closed locally. Remote cleanup was skipped.")
         );
-        assert!(
-            updated_dispatch
-                .error_message
-                .as_deref()
-                .is_some_and(|message| message.contains("remote-agent configuration is missing"))
-        );
+        assert!(updated_dispatch
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("remote-agent configuration is missing")));
     }
 
     #[test]
@@ -3368,13 +3365,11 @@ mod tests {
             .get_task(&task.id)
             .expect_err("deleted task should be gone");
         assert_eq!(task_error.code, crate::errors::ErrorCode::TaskNotFound);
-        assert!(
-            context
-                .dispatch_repository
-                .dispatches_for_task(&task.id)
-                .expect("dispatch lookup should succeed")
-                .is_empty()
-        );
+        assert!(context
+            .dispatch_repository
+            .dispatches_for_task(&task.id)
+            .expect("dispatch lookup should succeed")
+            .is_empty());
     }
 
     #[test]

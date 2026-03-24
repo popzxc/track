@@ -10,10 +10,12 @@ The project now has one Rust backend and one TypeScript frontend.
 
 - `crates/track-core`
   Shared Rust domain logic: config loading, CLI-side project discovery,
-  `llama-completion` parsing, project metadata persistence, task storage, and
-  sorting.
+  project metadata persistence, task storage, and sorting.
+- `crates/track-capture`
+  CLI capture flow, local model resolution, and in-process `llama.cpp`
+  parsing.
 - `crates/track-cli`
-  The CLI adapter over `track-core`.
+  The CLI adapter over `track-capture` and `track-core`.
 - `crates/track-api`
   The Axum server over `track-core`.
 - `frontend/`
@@ -30,7 +32,7 @@ The CLI:
 
 1. loads config
 2. discovers git repositories under configured roots
-3. asks `llama-completion` to normalize the raw text
+3. asks the in-process local model to normalize the raw text
 4. validates that the chosen project really exists
 5. initializes `PROJECT.md` for the chosen repository when needed, including an inferred default branch
 6. writes a Markdown task file to disk

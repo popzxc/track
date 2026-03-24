@@ -22,7 +22,6 @@ use track_core::types::ParsedTaskCandidate;
 
 use crate::prompt::{build_llama_cpp_prompt, build_task_parser_json_schema};
 use crate::task_parser::TaskParser;
-use crate::task_parser_output::parse_candidate_from_model_output;
 
 const MAX_GENERATED_TOKENS: u32 = 384;
 
@@ -159,16 +158,20 @@ fn run_llama_cpp_2_inference(
         ));
     }
 
-    let n_ctx = model.n_ctx_train().max(tokens.len() as u32 + MAX_GENERATED_TOKENS);
+    let n_ctx = model
+        .n_ctx_train()
+        .max(tokens.len() as u32 + MAX_GENERATED_TOKENS);
     let context_params = LlamaContextParams::default()
         .with_n_ctx(NonZeroU32::new(n_ctx))
         .with_n_batch(n_ctx);
-    let mut context = model.new_context(&backend, context_params).map_err(|error| {
-        TrackError::new(
-            ErrorCode::AiParseFailed,
-            format!("AI parse failure. Could not initialize the local model context: {error}"),
-        )
-    })?;
+    let mut context = model
+        .new_context(&backend, context_params)
+        .map_err(|error| {
+            TrackError::new(
+                ErrorCode::AiParseFailed,
+                format!("AI parse failure. Could not initialize the local model context: {error}"),
+            )
+        })?;
 
     let mut batch = LlamaBatch::new(n_ctx as usize, 1);
     let last_prompt_index = tokens.len().saturating_sub(1) as i32;
@@ -177,7 +180,9 @@ fn run_llama_cpp_2_inference(
         batch.add(token, index, &[0], is_last).map_err(|error| {
             TrackError::new(
                 ErrorCode::AiParseFailed,
-                format!("AI parse failure. Could not prepare the local model prompt batch: {error}"),
+                format!(
+                    "AI parse failure. Could not prepare the local model prompt batch: {error}"
+                ),
             )
         })?;
     }
@@ -232,7 +237,28 @@ fn run_llama_cpp_2_inference(
     })?;
     truncate_additional_stop_sequences(&mut generated_text, &result.additional_stops);
 
-    parse_candidate_from_model_output(&generated_text)
+    parse_candidate_from_generated_json(&generated_text)
+}
+
+fn parse_candidate_from_generated_json(output: &str) -> Result<ParsedTaskCandidate, TrackError> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Err(TrackError::new(
+            ErrorCode::AiParseFailed,
+            "AI parse failure. The local model returned an empty response.",
+        ));
+    }
+
+    // The in-process path only sees generated tokens, not the mixed
+    // stdout/stderr transcript that the old subprocess flow produced. In local
+    // probing with the current cached model we also observed clean top-level
+    // JSON objects, so direct deserialization is the simplest contract here.
+    serde_json::from_str::<ParsedTaskCandidate>(trimmed).map_err(|error| {
+        TrackError::new(
+            ErrorCode::AiParseFailed,
+            format!("AI parse failure. The local model did not return valid task JSON: {error}"),
+        )
+    })
 }
 
 fn build_sampler(
@@ -241,12 +267,15 @@ fn build_sampler(
 ) -> Result<(LlamaSampler, HashSet<LlamaToken>), TrackError> {
     let mut preserved_tokens = HashSet::new();
     for token_str in &result.preserved_tokens {
-        let tokens = model.str_to_token(token_str, AddBos::Never).map_err(|error| {
-            TrackError::new(
+        let tokens =
+            model
+                .str_to_token(token_str, AddBos::Never)
+                .map_err(|error| {
+                    TrackError::new(
                 ErrorCode::AiParseFailed,
                 format!("AI parse failure. Could not tokenize a preserved grammar token: {error}"),
             )
-        })?;
+                })?;
         if tokens.len() == 1 {
             preserved_tokens.insert(tokens[0]);
         }
@@ -392,8 +421,7 @@ fn regex_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
-            '.' | '^' | '$' | '|' | '(' | ')' | '*' | '+' | '?' | '[' | ']' | '{' | '}'
-            | '\\' => {
+            '.' | '^' | '$' | '|' | '(' | ')' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '\\' => {
                 escaped.push('\\');
                 escaped.push(character);
             }
@@ -433,4 +461,41 @@ fn log_parse_event(timestamp: &str, model_path: &Path, ok: bool, error: Option<S
         "{}",
         serde_json::to_string(&event).expect("ai parse event serialization should succeed")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use track_core::types::{Confidence, Priority};
+
+    use super::parse_candidate_from_generated_json;
+
+    #[test]
+    fn parses_clean_generated_json_directly() {
+        let candidate = parse_candidate_from_generated_json(
+            r#"{
+  "project": "project-x",
+  "priority": "high",
+  "title": "Fix a bug",
+  "bodyMarkdown": "",
+  "confidence": "high",
+  "reason": null
+}"#,
+        )
+        .expect("clean generated json should parse");
+
+        assert_eq!(candidate.project.as_deref(), Some("project-x"));
+        assert_eq!(candidate.priority, Priority::High);
+        assert_eq!(candidate.title, "Fix a bug");
+        assert_eq!(candidate.body_markdown.as_deref(), Some(""));
+        assert_eq!(candidate.confidence, Confidence::High);
+        assert_eq!(candidate.reason, None);
+    }
+
+    #[test]
+    fn rejects_empty_generated_output() {
+        let error =
+            parse_candidate_from_generated_json(" \n\t ").expect_err("empty output should fail");
+
+        assert!(error.message().contains("empty response"));
+    }
 }

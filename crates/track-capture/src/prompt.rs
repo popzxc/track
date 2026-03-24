@@ -1,8 +1,6 @@
 use serde_json::json;
 use track_core::project_catalog::ProjectCatalog;
 
-pub const DEFAULT_LLAMA_CPP_COMPLETION_BINARY: &str = "llama-completion";
-
 pub struct LlamaCppPrompt {
     pub system_prompt: String,
     pub user_prompt: String,
@@ -97,9 +95,9 @@ pub fn build_task_parser_json_schema(project_catalog: &ProjectCatalog) -> serde_
 }
 
 pub fn build_llama_cpp_prompt(raw_text: &str, project_catalog: &ProjectCatalog) -> LlamaCppPrompt {
-    // `llama-completion` becomes much more reliable with instruct-tuned models
-    // when we give it a real system prompt and a single user turn instead of
-    // flattening the whole exchange into one raw completion string.
+    // The in-process backend works best when we keep the interaction in a
+    // normal chat shape: one stable system instruction plus one user turn that
+    // carries the current capture request and project allowlist.
     LlamaCppPrompt {
         system_prompt: TASK_PARSER_SYSTEM_PROMPT.to_owned(),
         user_prompt: [

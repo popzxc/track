@@ -1,6 +1,6 @@
 use std::env;
 
-use track_capture::TaskCaptureService;
+use track_capture::{LocalTaskParserFactory, TaskCaptureService, TaskParserFactory};
 use track_core::api_notify::notify_task_changed;
 use track_core::config::ConfigService;
 use track_core::errors::{ErrorCode, TrackError};
@@ -66,8 +66,16 @@ pub fn run_create_command_with_prompter(
     prompter: Option<&mut dyn Prompter>,
 ) -> Result<String, TrackError> {
     match prompter {
-        Some(prompter) => run_create_command_internal(argv, config_service, Some(prompter), None),
-        None => run_create_command_internal(argv, config_service, None, None),
+        Some(prompter) => run_create_command_internal(
+            argv,
+            config_service,
+            Some(prompter),
+            None,
+            &LocalTaskParserFactory,
+        ),
+        None => {
+            run_create_command_internal(argv, config_service, None, None, &LocalTaskParserFactory)
+        }
     }
 }
 
@@ -76,6 +84,7 @@ fn run_create_command_internal(
     config_service: &ConfigService,
     mut prompter: Option<&mut dyn Prompter>,
     data_dir_override: Option<std::path::PathBuf>,
+    task_parser_factory: &dyn TaskParserFactory,
 ) -> Result<String, TrackError> {
     let raw_text = argv.join(" ").trim().to_owned();
     if raw_text.is_empty() {
@@ -116,6 +125,7 @@ fn run_create_command_internal(
         config_service,
         project_repository: &project_repository,
         task_repository: &repository,
+        task_parser_factory,
     };
     let stored_task = capture_service.create_task_from_text(&raw_text, Some(TaskSource::Cli))?;
     if let Err(error) = notify_task_changed(&config.api) {
@@ -137,7 +147,11 @@ mod tests {
     use std::fs;
 
     use tempfile::TempDir;
+    use track_capture::{TaskParser, TaskParserFactory};
     use track_core::config::ConfigService;
+    use track_core::errors::TrackError;
+    use track_core::project_catalog::ProjectCatalog;
+    use track_core::types::{Confidence, ParsedTaskCandidate, Priority, TrackRuntimeConfig};
     use track_core::wizard::Prompter;
 
     use super::run_create_command_internal;
@@ -165,27 +179,33 @@ mod tests {
         fn println(&mut self, _line: &str) {}
     }
 
-    fn make_fake_llama_completion(directory: &TempDir) -> std::path::PathBuf {
-        let script_path = directory.path().join("llama-completion");
-        fs::write(
-            &script_path,
-            "#!/bin/sh\nprintf '%s\\n' '{\"project\":\"project-x\",\"priority\":\"high\",\"title\":\"Fix a bug in module A\",\"bodyMarkdown\":\"- Inspect `module_a.rs`\",\"confidence\":\"high\"}'\n",
-        )
-        .expect("fake llama-completion script should be written");
+    struct StaticTaskParser {
+        candidate: ParsedTaskCandidate,
+    }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&script_path)
-                .expect("fake llama-completion script should exist")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&script_path, permissions)
-                .expect("fake llama-completion script should be executable");
+    impl TaskParser for StaticTaskParser {
+        fn parse_task(
+            &self,
+            _raw_text: &str,
+            _project_catalog: &ProjectCatalog,
+        ) -> Result<ParsedTaskCandidate, TrackError> {
+            Ok(self.candidate.clone())
         }
+    }
 
-        script_path
+    struct StaticTaskParserFactory {
+        candidate: ParsedTaskCandidate,
+    }
+
+    impl TaskParserFactory for StaticTaskParserFactory {
+        fn create_parser(
+            &self,
+            _config: &TrackRuntimeConfig,
+        ) -> Result<Box<dyn TaskParser + 'static>, TrackError> {
+            Ok(Box::new(StaticTaskParser {
+                candidate: self.candidate.clone(),
+            }))
+        }
     }
 
     #[test]
@@ -193,16 +213,21 @@ mod tests {
         let directory = TempDir::new().expect("tempdir should be created");
         let config_service = ConfigService::new(Some(directory.path().join("config.json")))
             .expect("config service should resolve");
-        let fake_llama_completion = make_fake_llama_completion(&directory);
         let project_root = directory.path().join("projects");
         fs::create_dir_all(project_root.join("project-x/.git"))
             .expect("fake git repo should be created");
+        let parser_factory = StaticTaskParserFactory {
+            candidate: ParsedTaskCandidate {
+                project: Some("project-x".to_owned()),
+                priority: Priority::High,
+                title: "Fix a bug in module A".to_owned(),
+                body_markdown: Some("- Inspect `module_a.rs`".to_owned()),
+                confidence: Confidence::High,
+                reason: None,
+            },
+        };
 
         let mut prompter = ScriptedPrompter::new(&[
-            "~/.models/parser.gguf",
-            "none",
-            "none",
-            fake_llama_completion.to_string_lossy().as_ref(),
             "3210",
             project_root.to_string_lossy().as_ref(),
             "proj-x=project-x",
@@ -219,6 +244,7 @@ mod tests {
             &config_service,
             Some(&mut prompter),
             Some(directory.path().join("issues")),
+            &parser_factory,
         )
         .expect("create command should succeed after first-run setup");
 
