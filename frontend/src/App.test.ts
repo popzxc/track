@@ -89,7 +89,36 @@ describe('App shell', () => {
         },
       },
       {
+        path: '/api/dispatches',
+        body: {
+          dispatches: [
+            buildRunRecord(
+              { ...projectATask },
+              {
+                dispatchId: 'dispatch-queue',
+                taskId: projectATask.id,
+                project: projectATask.project,
+              },
+            ).dispatch,
+          ],
+        },
+      },
+      {
         path: '/api/runs?limit=200',
+        body: {
+          runs: [],
+        },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings(),
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(projectATask.id)}/runs`,
         body: {
           runs: [
             buildRunRecord(
@@ -103,14 +132,6 @@ describe('App shell', () => {
           ],
         },
       },
-      {
-        path: '/api/events/version',
-        body: { version: 1 },
-      },
-      {
-        path: '/api/remote-agent',
-        body: buildRemoteAgentSettings(),
-      },
     ])
 
     const wrapper = await mountApp()
@@ -121,8 +142,10 @@ describe('App shell', () => {
     await wrapper.get(`[data-task-id="${projectATask.id}"]`).trigger('click')
     await flushPromises()
 
+    expect(wrapper.get(`[data-task-id="${projectATask.id}"]`).text()).toContain('Succeeded')
     expect(wrapper.get('[data-testid="task-drawer"]').text()).toContain('Fix queue layout')
     expect(wrapper.get('[data-testid="run-latest-badge"]').text()).toBe('Latest')
+    expect(wrapper.get('[data-testid="drawer-primary-action"]').text()).toContain('Continue run')
   })
 
   it('surfaces dispatch failures as a user-visible error banner', async () => {
@@ -138,6 +161,10 @@ describe('App shell', () => {
         body: { tasks: [task] },
       },
       {
+        path: '/api/dispatches',
+        body: { dispatches: [] },
+      },
+      {
         path: '/api/runs?limit=200',
         body: { runs: [] },
       },
@@ -148,6 +175,10 @@ describe('App shell', () => {
       {
         path: '/api/remote-agent',
         body: buildRemoteAgentSettings(),
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(task.id)}/runs`,
+        body: { runs: [] },
       },
       {
         method: 'POST',
@@ -185,6 +216,10 @@ describe('App shell', () => {
         body: { tasks: [task] },
       },
       {
+        path: '/api/dispatches',
+        body: { dispatches: [] },
+      },
+      {
         path: '/api/runs?limit=200',
         body: { runs: [] },
       },
@@ -195,6 +230,10 @@ describe('App shell', () => {
       {
         path: '/api/remote-agent',
         body: buildRemoteAgentSettings(),
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(task.id)}/runs`,
+        body: { runs: [] },
       },
       {
         method: 'POST',

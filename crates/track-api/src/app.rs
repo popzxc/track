@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -402,6 +402,40 @@ async fn list_runs(
     Ok(Json(RunsResponse { runs }))
 }
 
+async fn list_task_runs(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<RunsResponse>, ApiError> {
+    let state = state.clone();
+    let task_id = id.clone();
+    let runs = tokio::task::spawn_blocking(move || {
+        let dispatch_service = RemoteDispatchService {
+            config_service: &state.config_service,
+            dispatch_repository: &state.dispatch_repository,
+            project_repository: &state.project_repository,
+            task_repository: &state.task_repository,
+        };
+
+        let task = state.task_repository.get_task(&task_id)?;
+        let dispatches = dispatch_service.dispatch_history_for_task(&task_id)?;
+
+        Ok::<Vec<RunRecordResponse>, TrackError>(
+            dispatches
+                .into_iter()
+                .map(|dispatch| RunRecordResponse {
+                    task: task.clone(),
+                    dispatch,
+                })
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Task runs refresh failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(RunsResponse { runs }))
+}
+
 // =============================================================================
 // Dispatch Query Parsing
 // =============================================================================
@@ -478,10 +512,7 @@ async fn patch_task(
     Ok(Json(updated_task))
 }
 
-async fn create_task(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Result<Json<Task>, ApiError> {
+async fn create_task(State(state): State<AppState>, body: Bytes) -> Result<Json<Task>, ApiError> {
     let input = serde_json::from_slice::<TaskCreateInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
     let validated_input = TaskCreateInput {
@@ -679,11 +710,15 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             "/remote-agent",
             get(get_remote_agent_settings).patch(patch_remote_agent_settings),
         )
-        .route("/remote-agent/cleanup", post(cleanup_remote_agent_artifacts))
+        .route(
+            "/remote-agent/cleanup",
+            post(cleanup_remote_agent_artifacts),
+        )
         .route("/remote-agent/reset", post(reset_remote_agent_workspace))
         .route("/dispatches", get(list_dispatches))
         .route("/runs", get(list_runs))
         .route("/tasks", get(list_tasks).post(create_task))
+        .route("/tasks/{id}/runs", get(list_task_runs))
         .route("/tasks/{id}", patch(patch_task).delete(delete_task))
         .route(
             "/tasks/{id}/dispatch",
@@ -716,17 +751,17 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::ServiceExt;
     use track_core::config::{
-        ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
-        DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
-        DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+        ApiConfigFile, ConfigService, DEFAULT_REMOTE_AGENT_PORT,
+        DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+        LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
     };
     use track_core::dispatch_repository::DispatchRepository;
     use track_core::project_catalog::ProjectInfo;
@@ -734,7 +769,7 @@ mod tests {
     use track_core::task_repository::FileTaskRepository;
     use track_core::types::{DispatchStatus, Priority, TaskCreateInput, TaskSource};
 
-    use super::{build_app, AppState};
+    use super::{AppState, build_app};
 
     fn static_root(directory: &TempDir) -> std::path::PathBuf {
         let root = directory.path().join("static");
@@ -984,7 +1019,10 @@ mod tests {
             .expect("repeated-dispatch body should be readable");
         let repeated_json: serde_json::Value = serde_json::from_slice(&repeated_body)
             .expect("repeated-dispatch response should be json");
-        assert_eq!(repeated_json["dispatches"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            repeated_json["dispatches"].as_array().map(Vec::len),
+            Some(2)
+        );
     }
 
     #[tokio::test]
@@ -1046,7 +1084,81 @@ mod tests {
 
         assert_eq!(json["runs"].as_array().map(Vec::len), Some(1));
         assert_eq!(json["runs"][0]["task"]["id"], task.id);
-        assert_eq!(json["runs"][0]["dispatch"]["dispatchId"], dispatch.dispatch_id);
+        assert_eq!(
+            json["runs"][0]["dispatch"]["dispatchId"],
+            dispatch.dispatch_id
+        );
+    }
+
+    #[tokio::test]
+    async fn lists_task_scoped_runs_without_global_limit_truncation() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let static_root = static_root(&directory);
+        let task_repository = Arc::new(
+            FileTaskRepository::new(Some(directory.path().join("issues")))
+                .expect("task repository should resolve"),
+        );
+        let dispatch_repository = Arc::new(
+            DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
+                .expect("dispatch repository should resolve"),
+        );
+
+        let task = task_repository
+            .create_task(TaskCreateInput {
+                project: "project-a".to_owned(),
+                priority: Priority::High,
+                description: "Inspect task-scoped run history".to_owned(),
+                source: Some(TaskSource::Cli),
+            })
+            .expect("task should be created")
+            .task;
+
+        dispatch_repository
+            .create_dispatch(&task, "192.0.2.25")
+            .expect("first dispatch should be created");
+        dispatch_repository
+            .create_dispatch(&task, "192.0.2.25")
+            .expect("second dispatch should be created");
+
+        let app = build_app(
+            AppState {
+                config_service: config_service(&directory),
+                dispatch_repository,
+                project_repository: Arc::new(
+                    ProjectRepository::new(Some(directory.path().join("issues")))
+                        .expect("project repository should resolve"),
+                ),
+                task_repository,
+                task_change_version: Arc::new(AtomicU64::new(0)),
+            },
+            &static_root,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/tasks/{}/runs", task.id))
+                    .body(Body::empty())
+                    .expect("task-runs request should build"),
+            )
+            .await
+            .expect("task-runs request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("task-runs response body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("task-runs response should be valid json");
+
+        assert_eq!(json["runs"].as_array().map(Vec::len), Some(2));
+        assert!(
+            json["runs"]
+                .as_array()
+                .expect("runs should be an array")
+                .iter()
+                .all(|run| run["task"]["id"] == task.id)
+        );
     }
 
     #[tokio::test]

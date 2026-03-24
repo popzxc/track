@@ -166,6 +166,11 @@ export async function fetchDispatches(taskIds: string[]): Promise<TaskDispatch[]
   return response.dispatches
 }
 
+export async function fetchTaskRuns(id: string): Promise<RunRecord[]> {
+  const response = await readJson<RunsResponse>(`/api/tasks/${encodeURIComponent(id)}/runs`)
+  return response.runs
+}
+
 export async function fetchRuns(limit = 200): Promise<RunRecord[]> {
   const response = await readJson<RunsResponse>(`/api/runs?limit=${limit}`)
   return response.runs

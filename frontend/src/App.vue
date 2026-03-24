@@ -9,9 +9,11 @@ import {
   deleteTask,
   discardDispatch,
   dispatchTask,
+  fetchDispatches,
   fetchProjects,
   fetchRemoteAgentSettings,
   fetchRuns,
+  fetchTaskRuns,
   fetchTaskChangeVersion,
   fetchTasks,
   followUpTask,
@@ -34,7 +36,6 @@ import {
   formatTaskTimestamp,
   getRunStartDisabledReason,
   groupTasksByProject,
-  latestDispatchByTaskId as buildLatestDispatchByTaskId,
   mergeProjects,
   priorityBadgeClass,
   taskReference,
@@ -84,6 +85,8 @@ const tasks = ref<Task[]>([])
 const projects = ref<ProjectInfo[]>([])
 const taskProjectOptions = ref<ProjectInfo[]>([])
 const runs = ref<RunRecord[]>([])
+const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
+const selectedTaskRuns = ref<RunRecord[]>([])
 const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
 const showClosed = ref(false)
 const selectedProjectFilter = ref('')
@@ -121,6 +124,7 @@ let taskChangePollTimer: number | null = null
 let taskChangePollInFlight = false
 let runPollTimer: number | null = null
 let runPollInFlight = false
+let selectedTaskRunsRequestVersion = 0
 
 // =============================================================================
 // Derived State
@@ -149,9 +153,9 @@ const taskGroups = computed(() => {
   return groupTasksByProject(tasks.value)
 })
 
-const latestDispatchByTaskId = computed<Record<string, TaskDispatch>>(() => {
-  return buildLatestDispatchByTaskId(runs.value)
-})
+const latestDispatchByTaskId = computed<Record<string, TaskDispatch>>(
+  () => latestTaskDispatchesByTaskId.value,
+)
 
 const selectedTask = computed(() =>
   tasks.value.find((task) => task.id === selectedTaskId.value) ?? null,
@@ -167,18 +171,14 @@ const selectedTaskLatestDispatch = computed(() =>
   selectedTask.value ? latestDispatchByTaskId.value[selectedTask.value.id] ?? null : null,
 )
 
-const selectedTaskRuns = computed(() =>
-  runs.value
-    .filter((run) => run.task.id === selectedTask.value?.id)
-    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt)),
-)
-
 const selectedTaskDescription = computed<ParsedTaskDescription | null>(() =>
   selectedTask.value ? parseTaskDescription(selectedTask.value.description) : null,
 )
 
 const selectedTaskLatestReusablePullRequest = computed(() =>
-  selectedTaskRuns.value.find((run) => Boolean(run.dispatch.pullRequestUrl))?.dispatch.pullRequestUrl ?? null,
+  selectedTaskRuns.value.find((run) => Boolean(run.dispatch.pullRequestUrl))?.dispatch.pullRequestUrl
+    ?? selectedTaskLatestDispatch.value?.pullRequestUrl
+    ?? null,
 )
 
 const selectedTaskLifecycleMutation = computed(() =>
@@ -333,8 +333,39 @@ function upsertRunRecord(task: Task, dispatch: TaskDispatch) {
     .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
 }
 
+function upsertLatestTaskDispatch(dispatch: TaskDispatch) {
+  latestTaskDispatchesByTaskId.value = {
+    ...latestTaskDispatchesByTaskId.value,
+    [dispatch.taskId]: dispatch,
+  }
+}
+
+function replaceSelectedTaskRuns(taskRuns: RunRecord[]) {
+  selectedTaskRuns.value = taskRuns
+    .slice()
+    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
+}
+
+function upsertSelectedTaskRun(task: Task, dispatch: TaskDispatch) {
+  if (selectedTaskId.value !== task.id) {
+    return
+  }
+
+  replaceSelectedTaskRuns([
+    { task, dispatch },
+    ...selectedTaskRuns.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId),
+  ])
+}
+
 function removeTaskRuns(taskId: string) {
   runs.value = runs.value.filter((run) => run.task.id !== taskId)
+  const nextDispatches = { ...latestTaskDispatchesByTaskId.value }
+  delete nextDispatches[taskId]
+  latestTaskDispatchesByTaskId.value = nextDispatches
+
+  if (selectedTaskId.value === taskId) {
+    selectedTaskRuns.value = []
+  }
 }
 
 function selectTask(taskId: string) {
@@ -405,6 +436,40 @@ async function loadTasks() {
   }))
 }
 
+async function loadLatestDispatchesForVisibleTasks() {
+  const dispatches = await fetchDispatches(tasks.value.map((task) => task.id))
+
+  const latestByTaskId: Record<string, TaskDispatch> = {}
+  for (const dispatch of dispatches) {
+    latestByTaskId[dispatch.taskId] = dispatch
+  }
+
+  latestTaskDispatchesByTaskId.value = latestByTaskId
+}
+
+async function loadSelectedTaskRunHistory() {
+  if (!isTaskDrawerOpen.value || !selectedTask.value) {
+    selectedTaskRuns.value = []
+    return
+  }
+
+  const requestVersion = ++selectedTaskRunsRequestVersion
+  const taskId = selectedTask.value.id
+  const taskRuns = await fetchTaskRuns(taskId)
+
+  // The drawer is transient, so stale responses should not overwrite a newer
+  // selection if the user switched tasks while the request was in flight.
+  if (
+    requestVersion !== selectedTaskRunsRequestVersion
+    || !isTaskDrawerOpen.value
+    || selectedTask.value?.id !== taskId
+  ) {
+    return
+  }
+
+  replaceSelectedTaskRuns(taskRuns)
+}
+
 async function loadRuns() {
   runs.value = await fetchRuns(200)
 }
@@ -421,11 +486,19 @@ async function refreshAll() {
     await Promise.all([
       loadProjects(),
       loadTasks(),
-      loadRuns(),
       syncTaskChangeVersion(),
       loadRemoteAgentSettings().catch(() => {
         // Runner setup is useful context, but the rest of the app should still
         // render if that endpoint is temporarily unavailable.
+      }),
+    ])
+
+    await Promise.all([
+      loadLatestDispatchesForVisibleTasks(),
+      loadRuns(),
+      loadSelectedTaskRunHistory().catch(() => {
+        // The drawer can still show the task body if task-scoped run history
+        // is temporarily unavailable.
       }),
     ])
   } catch (error) {
@@ -625,6 +698,8 @@ async function startRemoteRun(task: Task) {
   try {
     const dispatch = await dispatchTask(task.id)
     upsertRunRecord(task, dispatch)
+    upsertLatestTaskDispatch(dispatch)
+    upsertSelectedTaskRun(task, dispatch)
   } catch (error) {
     await loadRuns().catch(() => undefined)
     setFriendlyError(error)
@@ -640,6 +715,8 @@ async function cancelRemoteRun(task: Task) {
   try {
     const dispatch = await cancelDispatch(task.id)
     upsertRunRecord(task, dispatch)
+    upsertLatestTaskDispatch(dispatch)
+    upsertSelectedTaskRun(task, dispatch)
   } catch (error) {
     await loadRuns().catch(() => undefined)
     setFriendlyError(error)
@@ -674,6 +751,8 @@ async function submitFollowUp(payload: TaskFollowUpInput) {
   try {
     const dispatch = await followUpTask(followingUpTask.value.id, payload)
     upsertRunRecord(followingUpTask.value, dispatch)
+    upsertLatestTaskDispatch(dispatch)
+    upsertSelectedTaskRun(followingUpTask.value, dispatch)
     followingUpTask.value = null
     await refreshAll()
   } catch (error) {
@@ -838,7 +917,14 @@ async function pollForRunChanges() {
   runPollInFlight = true
 
   try {
-    await loadRuns()
+    await Promise.all([
+      loadRuns(),
+      loadLatestDispatchesForVisibleTasks(),
+      loadSelectedTaskRunHistory().catch(() => {
+        // The rest of the run state remains useful even if the drawer history
+        // fails to refresh on one background poll.
+      }),
+    ])
   } catch {
     // The last known run state remains useful, so this poll stays best-effort.
   } finally {
@@ -851,7 +937,20 @@ watch([showClosed, selectedProjectFilter], () => {
     return
   }
 
-  void loadTasks().catch(setFriendlyError)
+  void (async () => {
+    try {
+      await loadTasks()
+      await Promise.all([
+        loadLatestDispatchesForVisibleTasks(),
+        loadSelectedTaskRunHistory().catch(() => {
+          // Changing filters should not blank the queue just because drawer
+          // history could not be refreshed for the currently selected task.
+        }),
+      ])
+    } catch (error) {
+      setFriendlyError(error)
+    }
+  })()
 })
 
 watch(
@@ -897,13 +996,23 @@ watch(
 watch(currentPage, (nextPage) => {
   if (nextPage !== 'tasks') {
     isTaskDrawerOpen.value = false
+    selectedTaskRuns.value = []
   }
 })
 
-watch(selectedTask, (task) => {
+watch([isTaskDrawerOpen, selectedTask], ([drawerOpen, task]) => {
   if (!task) {
     isTaskDrawerOpen.value = false
+    selectedTaskRuns.value = []
+    return
   }
+
+  if (!drawerOpen) {
+    selectedTaskRuns.value = []
+    return
+  }
+
+  void loadSelectedTaskRunHistory().catch(setFriendlyError)
 })
 
 onMounted(() => {

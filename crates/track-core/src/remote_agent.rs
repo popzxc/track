@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Condvar, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,6 +36,63 @@ const REMOTE_CODEX_PID_FILE_NAME: &str = "codex.pid";
 // also refreshes the summary at each preparation phase so normal progress keeps
 // pushing this timeout forward instead of relying on one initial timestamp.
 const PREPARING_STALE_AFTER: Duration = Duration::minutes(30);
+
+#[derive(Debug, Default)]
+struct TaskDispatchStartGate {
+    active_task_ids: Mutex<BTreeSet<String>>,
+    wake_waiters: Condvar,
+}
+
+#[derive(Debug)]
+struct TaskDispatchStartGuard {
+    task_id: String,
+}
+
+impl TaskDispatchStartGuard {
+    fn acquire(task_id: &str) -> Self {
+        let gate = task_dispatch_start_gate();
+        let mut active_task_ids = gate
+            .active_task_ids
+            .lock()
+            .expect("dispatch start gate should not be poisoned");
+
+        while active_task_ids.contains(task_id) {
+            active_task_ids = gate
+                .wake_waiters
+                .wait(active_task_ids)
+                .expect("dispatch start gate should not be poisoned");
+        }
+
+        active_task_ids.insert(task_id.to_owned());
+
+        Self {
+            task_id: task_id.to_owned(),
+        }
+    }
+}
+
+impl Drop for TaskDispatchStartGuard {
+    fn drop(&mut self) {
+        let gate = task_dispatch_start_gate();
+        let mut active_task_ids = gate
+            .active_task_ids
+            .lock()
+            .expect("dispatch start gate should not be poisoned");
+        active_task_ids.remove(&self.task_id);
+        gate.wake_waiters.notify_all();
+    }
+}
+
+fn task_dispatch_start_gate() -> &'static TaskDispatchStartGate {
+    static GATE: OnceLock<TaskDispatchStartGate> = OnceLock::new();
+
+    // Dispatch start requests are handled by one long-lived API process in the
+    // deployed shape, so a process-local gate is enough to close the race
+    // between "no active dispatch exists" and "persist a new preparing record".
+    // This keeps the fix lightweight and avoids inventing filesystem locks for
+    // a code path that only needs in-process serialization.
+    GATE.get_or_init(TaskDispatchStartGate::default)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RemoteDispatchSnapshot {
@@ -116,6 +174,7 @@ impl<'a> RemoteDispatchService<'a> {
     // terminal outcome.
     pub fn queue_dispatch(&self, task_id: &str) -> Result<TaskDispatchRecord, TrackError> {
         let (remote_agent, task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
+        let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
         self.ensure_no_blocking_active_dispatch(task_id)?;
 
         let mut dispatch_record = self
@@ -157,11 +216,10 @@ impl<'a> RemoteDispatchService<'a> {
         }
 
         let (remote_agent, _task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
+        let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
         self.ensure_no_blocking_active_dispatch(task_id)?;
 
-        let dispatch_history = self
-            .dispatch_repository
-            .dispatches_for_task(task_id)?;
+        let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
         let previous_dispatch = select_follow_up_base_dispatch(&dispatch_history)
             .ok_or_else(|| {
                 TrackError::new(
@@ -307,10 +365,7 @@ impl<'a> RemoteDispatchService<'a> {
                 &updated_registry,
             )?;
 
-            if !self.save_preparing_phase(
-                &mut dispatch_record,
-                "Preparing the task worktree.",
-            )? {
+            if !self.save_preparing_phase(&mut dispatch_record, "Preparing the task worktree.")? {
                 return Ok(());
             }
             if dispatch_record.follow_up_request.is_some() {
@@ -357,15 +412,13 @@ impl<'a> RemoteDispatchService<'a> {
             // remote checkout. We re-read the persisted record right before the
             // expensive Codex launch so a user-triggered cancel can stop the
             // flow before it starts spending more tokens.
-            if !self.dispatch_is_still_active(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+            if !self
+                .dispatch_is_still_active(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
             {
                 return Ok(());
             }
 
-            if !self.save_preparing_phase(
-                &mut dispatch_record,
-                "Launching the remote agent.",
-            )? {
+            if !self.save_preparing_phase(&mut dispatch_record, "Launching the remote agent.")? {
                 return Ok(());
             }
             ssh_client.launch_codex_dispatch(&remote_run_directory, &worktree_path)?;
@@ -375,8 +428,8 @@ impl<'a> RemoteDispatchService<'a> {
 
         match launch_result {
             Ok(()) => {
-                if let Some(existing_record) =
-                    self.load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+                if let Some(existing_record) = self
+                    .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
                 {
                     if !existing_record.status.is_active() {
                         let _ = self.cancel_remote_dispatch_if_possible(&existing_record);
@@ -387,9 +440,8 @@ impl<'a> RemoteDispatchService<'a> {
                 dispatch_record.status = DispatchStatus::Running;
                 dispatch_record.updated_at = now_utc();
                 dispatch_record.finished_at = None;
-                dispatch_record.summary = Some(
-                    "The remote agent is working in the prepared environment.".to_owned(),
-                );
+                dispatch_record.summary =
+                    Some("The remote agent is working in the prepared environment.".to_owned());
                 dispatch_record.error_message = None;
                 self.dispatch_repository.save_dispatch(&dispatch_record)?;
                 Ok(dispatch_record)
@@ -476,7 +528,8 @@ impl<'a> RemoteDispatchService<'a> {
         // TODO: If users later want audit history, replace this hard delete
         // with an explicit archived-history concept instead of reviving older
         // dispatch records automatically.
-        self.dispatch_repository.delete_dispatch_history_for_task(task_id)
+        self.dispatch_repository
+            .delete_dispatch_history_for_task(task_id)
     }
 
     // =============================================================================
@@ -495,7 +548,11 @@ impl<'a> RemoteDispatchService<'a> {
     // place. The heavy cost is in per-task worktrees and their build outputs,
     // while branches and the reusable checkout are comparatively cheap and
     // valuable for follow-up work.
-    pub fn update_task(&self, task_id: &str, input: TaskUpdateInput) -> Result<crate::types::Task, TrackError> {
+    pub fn update_task(
+        &self,
+        task_id: &str,
+        input: TaskUpdateInput,
+    ) -> Result<crate::types::Task, TrackError> {
         let validated_input = input.validate()?;
 
         if validated_input.status == Some(crate::types::Status::Closed) {
@@ -519,9 +576,7 @@ impl<'a> RemoteDispatchService<'a> {
                         None,
                     )?,
                     Err(error) => {
-                        eprintln!(
-                            "Skipping remote cleanup while closing task {task_id}: {error}"
-                        );
+                        eprintln!("Skipping remote cleanup while closing task {task_id}: {error}");
                         self.finalize_active_dispatches_locally(
                             &dispatch_history,
                             DispatchStatus::Canceled,
@@ -548,9 +603,7 @@ impl<'a> RemoteDispatchService<'a> {
                 // task, stale remote artifacts must not veto that choice.
                 // TODO: We intentionally do not persist this warning locally
                 // because delete also removes the task's local dispatch history.
-                eprintln!(
-                    "Skipping remote cleanup while deleting task {task_id}: {error}"
-                );
+                eprintln!("Skipping remote cleanup while deleting task {task_id}: {error}");
             }
 
             // We intentionally remove the local dispatch history before the
@@ -617,7 +670,8 @@ impl<'a> RemoteDispatchService<'a> {
                         .extend(unique_run_directories(&dispatch_history, &remote_agent));
                     summary.closed_tasks_cleaned += 1;
                     summary.remote_worktrees_removed += cleanup_counts.worktrees_removed;
-                    summary.remote_run_directories_removed += cleanup_counts.run_directories_removed;
+                    summary.remote_run_directories_removed +=
+                        cleanup_counts.run_directories_removed;
                 }
                 Err(error) if error.code == ErrorCode::TaskNotFound => {
                     let cleanup_counts = self.cleanup_task_remote_artifacts(
@@ -630,7 +684,8 @@ impl<'a> RemoteDispatchService<'a> {
                     summary.missing_tasks_cleaned += 1;
                     summary.local_dispatch_histories_removed += 1;
                     summary.remote_worktrees_removed += cleanup_counts.worktrees_removed;
-                    summary.remote_run_directories_removed += cleanup_counts.run_directories_removed;
+                    summary.remote_run_directories_removed +=
+                        cleanup_counts.run_directories_removed;
                 }
                 Err(error) => return Err(error),
                 Ok(_) => unreachable!("tasks should only be open or closed"),
@@ -712,6 +767,39 @@ impl<'a> RemoteDispatchService<'a> {
         self.refresh_active_dispatch_records(records)
     }
 
+    // The task drawer needs authoritative history for the selected task even
+    // when the global Runs page is intentionally truncated for UI cost. We
+    // therefore expose a task-scoped history path that keeps older tasks from
+    // losing their latest status or drawer history just because newer runs
+    // pushed them past the global limit.
+    pub fn dispatch_history_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
+        let mut records = self.dispatch_repository.dispatches_for_task(task_id)?;
+
+        // At most one dispatch should be active per task. If the newest record
+        // is still active, route it through the same remote reconciliation path
+        // as the queue badges so the drawer sees current state instead of raw
+        // persisted JSON.
+        if records
+            .first()
+            .is_some_and(|record| record.status.is_active())
+        {
+            if let Some(refreshed_latest) = self
+                .latest_dispatches_for_tasks(&[task_id.to_owned()])?
+                .into_iter()
+                .next()
+            {
+                if let Some(first_record) = records.first_mut() {
+                    *first_record = refreshed_latest;
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
     fn refresh_active_dispatch_records(
         &self,
         records: Vec<TaskDispatchRecord>,
@@ -756,18 +844,20 @@ impl<'a> RemoteDispatchService<'a> {
         }
 
         let ssh_client = SshClient::new(&remote_agent)?;
-        let snapshots_by_dispatch_id =
-            match load_dispatch_snapshots_for_records(&ssh_client, &records) {
-                Ok(snapshots) => snapshots,
-                Err(error) => {
-                    let error_message = error.to_string();
-                    return self.release_active_dispatches_after_reconciliation_loss(
+        let snapshots_by_dispatch_id = match load_dispatch_snapshots_for_records(
+            &ssh_client,
+            &records,
+        ) {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                let error_message = error.to_string();
+                return self.release_active_dispatches_after_reconciliation_loss(
                         records,
                         "Remote reconciliation could not reach the remote machine, so active runs were released locally.",
                         &error_message,
                     );
-                }
-            };
+            }
+        };
         let mut refreshed_records = Vec::with_capacity(records.len());
         for record in records {
             if !record.status.is_active() {
@@ -929,10 +1019,9 @@ impl<'a> RemoteDispatchService<'a> {
         dispatch_record: &mut TaskDispatchRecord,
         summary: &str,
     ) -> Result<bool, TrackError> {
-        if let Some(saved_record) = self.load_saved_dispatch(
-            &dispatch_record.task_id,
-            &dispatch_record.dispatch_id,
-        )? {
+        if let Some(saved_record) =
+            self.load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+        {
             if !saved_record.status.is_active() {
                 *dispatch_record = saved_record;
                 return Ok(false);
@@ -956,11 +1045,8 @@ impl<'a> RemoteDispatchService<'a> {
     ) -> Result<crate::types::Task, TrackError> {
         let task = self.task_repository.get_task(task_id)?;
         let timestamp_label = format_iso_8601_millis(now_utc());
-        let next_description = append_follow_up_request(
-            &task.description,
-            &timestamp_label,
-            follow_up_request,
-        );
+        let next_description =
+            append_follow_up_request(&task.description, &timestamp_label, follow_up_request);
 
         self.task_repository.update_task(
             task_id,
@@ -1095,7 +1181,8 @@ impl<'a> RemoteDispatchService<'a> {
         remote_agent: &crate::types::RemoteAgentRuntimeConfig,
         project_name: &str,
     ) -> Result<String, TrackError> {
-        let remote_registry = load_remote_registry(ssh_client, &remote_agent.projects_registry_path)?;
+        let remote_registry =
+            load_remote_registry(ssh_client, &remote_agent.projects_registry_path)?;
 
         Ok(remote_registry
             .projects
@@ -1269,7 +1356,8 @@ fn load_dispatch_snapshots_for_records(
         let Some(worktree_path) = record.worktree_path.as_deref() else {
             continue;
         };
-        let Ok(run_directory) = derive_remote_run_directory(worktree_path, &record.dispatch_id) else {
+        let Ok(run_directory) = derive_remote_run_directory(worktree_path, &record.dispatch_id)
+        else {
             continue;
         };
 
@@ -1464,7 +1552,10 @@ fn refresh_dispatch_record_from_snapshot(
     if remote_status == "canceled" {
         record.status = DispatchStatus::Canceled;
         record.updated_at = now_utc();
-        record.finished_at = Some(parse_remote_finished_at(snapshot.finished_at.as_deref(), now_utc()));
+        record.finished_at = Some(parse_remote_finished_at(
+            snapshot.finished_at.as_deref(),
+            now_utc(),
+        ));
         record.summary = Some(
             record
                 .summary
@@ -1498,12 +1589,18 @@ fn refresh_dispatch_record_from_snapshot(
         record.worktree_path = Some(outcome.worktree_path);
         record.notes = outcome.notes;
         record.error_message = None;
-        record.finished_at = Some(parse_remote_finished_at(snapshot.finished_at.as_deref(), now));
+        record.finished_at = Some(parse_remote_finished_at(
+            snapshot.finished_at.as_deref(),
+            now,
+        ));
         return Ok(record);
     }
 
     record.status = DispatchStatus::Failed;
-    record.finished_at = Some(parse_remote_finished_at(snapshot.finished_at.as_deref(), now));
+    record.finished_at = Some(parse_remote_finished_at(
+        snapshot.finished_at.as_deref(),
+        now,
+    ));
     record.error_message = snapshot
         .stderr
         .as_deref()
@@ -1529,13 +1626,15 @@ fn mark_abandoned_preparing_dispatch(mut record: TaskDispatchRecord) -> Option<T
     record.status = DispatchStatus::Failed;
     record.updated_at = now;
     record.finished_at = Some(now);
-    record.error_message = Some(
-        "Dispatch preparation stopped before the remote agent launched.".to_owned(),
-    );
+    record.error_message =
+        Some("Dispatch preparation stopped before the remote agent launched.".to_owned());
     Some(record)
 }
 
-fn parse_remote_finished_at(value: Option<&str>, fallback: time::OffsetDateTime) -> time::OffsetDateTime {
+fn parse_remote_finished_at(
+    value: Option<&str>,
+    fallback: time::OffsetDateTime,
+) -> time::OffsetDateTime {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1556,7 +1655,10 @@ fn mark_terminal_refresh_failure(
     let now = now_utc();
     record.status = DispatchStatus::Failed;
     record.updated_at = now;
-    record.finished_at = Some(parse_remote_finished_at(snapshot.finished_at.as_deref(), now));
+    record.finished_at = Some(parse_remote_finished_at(
+        snapshot.finished_at.as_deref(),
+        now,
+    ));
     record.error_message = Some(error.to_string());
     Some(record)
 }
@@ -1703,7 +1805,9 @@ fn build_remote_codex_launcher(shell_prelude: &str) -> String {
     launcher.push_str(&format!(
         "  CURRENT_STATUS=\"$(tr -d '[:space:]' < \"$RUN_DIR/{REMOTE_STATUS_FILE_NAME}\" 2>/dev/null || true)\"\n"
     ));
-    launcher.push_str("  if [ \"$CURRENT_STATUS\" != \"canceled\" ] && [ \"$EXIT_CODE\" -ne 130 ]; then\n");
+    launcher.push_str(
+        "  if [ \"$CURRENT_STATUS\" != \"canceled\" ] && [ \"$EXIT_CODE\" -ne 130 ]; then\n",
+    );
     launcher.push_str(&format!(
         "    printf 'launcher_failed\\n' > \"$RUN_DIR/{REMOTE_STATUS_FILE_NAME}\"\n"
     ));
@@ -2405,10 +2509,7 @@ fi
 "#,
             path_helpers = remote_path_helpers_shell(),
         );
-        match self.run_script_with_exit_code(
-            &read_remote_file_script,
-            &[remote_path.to_owned()],
-        )? {
+        match self.run_script_with_exit_code(&read_remote_file_script, &[remote_path.to_owned()])? {
             ScriptOutput::Success(stdout) => Ok(Some(stdout)),
             ScriptOutput::ExitCode(3) => Ok(None),
             ScriptOutput::ExitCode(code) => Err(TrackError::new(
@@ -2565,12 +2666,14 @@ done
             ));
         };
         let rendered_script = render_remote_script_with_shell_prelude(script, &self.shell_prelude);
-        stdin.write_all(rendered_script.as_bytes()).map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not write the remote shell script to SSH stdin: {error}"),
-            )
-        })?;
+        stdin
+            .write_all(rendered_script.as_bytes())
+            .map_err(|error| {
+                TrackError::new(
+                    ErrorCode::RemoteDispatchFailed,
+                    format!("Could not write the remote shell script to SSH stdin: {error}"),
+                )
+            })?;
         drop(stdin);
 
         let output = child.wait_with_output().map_err(|error| {
@@ -2696,7 +2799,7 @@ fn parse_dispatch_snapshot_report(report: &str) -> Result<Vec<RemoteDispatchSnap
                         return Err(TrackError::new(
                             ErrorCode::RemoteDispatchFailed,
                             "Remote dispatch refresh report has an unknown field state.",
-                        ))
+                        ));
                     }
                 };
                 let Some(snapshot) = current_snapshot.as_mut() else {
@@ -2717,7 +2820,7 @@ fn parse_dispatch_snapshot_report(report: &str) -> Result<Vec<RemoteDispatchSnap
                 return Err(TrackError::new(
                     ErrorCode::RemoteDispatchFailed,
                     "Remote dispatch refresh report contains an unexpected line.",
-                ))
+                ));
             }
         }
     }
@@ -2730,14 +2833,13 @@ fn parse_dispatch_snapshot_report(report: &str) -> Result<Vec<RemoteDispatchSnap
 }
 
 fn parse_remote_cleanup_counts(report: &str) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-    let parsed_report = serde_json::from_str::<RemoteArtifactCleanupReport>(report.trim()).map_err(
-        |error| {
+    let parsed_report = serde_json::from_str::<RemoteArtifactCleanupReport>(report.trim())
+        .map_err(|error| {
             TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
                 format!("Could not parse the remote cleanup report: {error}"),
             )
-        },
-    )?;
+        })?;
 
     Ok(RemoteArtifactCleanupCounts {
         worktrees_removed: parsed_report.worktrees_removed,
@@ -2795,7 +2897,10 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use tempfile::TempDir;
 
@@ -2804,8 +2909,8 @@ mod tests {
     };
     use crate::dispatch_repository::DispatchRepository;
     use crate::project_repository::{ProjectMetadata, ProjectRepository};
-    use crate::task_repository::FileTaskRepository;
     use crate::task_description::render_task_description;
+    use crate::task_repository::FileTaskRepository;
     use crate::time_utils::now_utc;
     use crate::types::{
         DispatchStatus, Priority, Status, TaskCreateInput, TaskDispatchRecord, TaskSource,
@@ -2814,12 +2919,11 @@ mod tests {
     use time::Duration;
 
     use super::{
-        build_remote_codex_launcher, build_remote_dispatch_prompt, build_remote_dispatch_schema,
-        latest_pull_request_for_branch, parse_dispatch_snapshot_report, parse_github_repository_name,
-        refresh_dispatch_record_from_snapshot, RemoteDispatchSnapshot,
+        RemoteDispatchService, RemoteDispatchSnapshot, build_remote_codex_launcher,
+        build_remote_dispatch_prompt, build_remote_dispatch_schema, latest_pull_request_for_branch,
+        parse_dispatch_snapshot_report, parse_github_repository_name,
+        refresh_dispatch_record_from_snapshot, render_remote_script_with_shell_prelude,
         select_follow_up_base_dispatch,
-        RemoteDispatchService,
-        render_remote_script_with_shell_prelude,
     };
 
     struct TestContext {
@@ -2902,9 +3006,8 @@ mod tests {
                 "~/workspace/{}/worktrees/{}",
                 task.project, dispatch.dispatch_id
             ));
-            dispatch.summary = Some(
-                "The remote agent is working in the prepared environment.".to_owned(),
-            );
+            dispatch.summary =
+                Some("The remote agent is working in the prepared environment.".to_owned());
             dispatch.updated_at = now_utc();
             self.dispatch_repository
                 .save_dispatch(&dispatch)
@@ -2961,8 +3064,11 @@ mod tests {
             .expect("data dir should have a parent")
             .join("remote-agent");
         fs::create_dir_all(&remote_agent_dir).expect("remote-agent dir should be created");
-        fs::write(remote_agent_dir.join("id_ed25519"), "not-a-real-private-key")
-            .expect("dummy SSH key should be written");
+        fs::write(
+            remote_agent_dir.join("id_ed25519"),
+            "not-a-real-private-key",
+        )
+        .expect("dummy SSH key should be written");
         fs::write(remote_agent_dir.join("known_hosts"), "")
             .expect("dummy known_hosts file should be written");
     }
@@ -2994,7 +3100,9 @@ mod tests {
         assert!(prompt.contains("## Current follow-up request"));
         assert!(prompt.contains("fetch that context with `gh`"));
         assert!(prompt.contains("track/dispatch-1"));
-        assert!(prompt.contains("Use conventional commits for both commit messages and the PR title"));
+        assert!(
+            prompt.contains("Use conventional commits for both commit messages and the PR title")
+        );
     }
 
     #[test]
@@ -3079,9 +3187,8 @@ mod tests {
 
     #[test]
     fn builds_launcher_with_runner_shell_prelude() {
-        let launcher = build_remote_codex_launcher(
-            "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n",
-        );
+        let launcher =
+            build_remote_codex_launcher("export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n");
 
         assert!(launcher.starts_with("#!/usr/bin/env bash"));
         assert!(launcher.contains("export NVM_DIR=\"$HOME/.nvm\""));
@@ -3125,7 +3232,10 @@ mod tests {
             .expect("canceled snapshot should refresh");
 
         assert_eq!(refreshed.status, DispatchStatus::Canceled);
-        assert_eq!(refreshed.summary.as_deref(), Some("Canceled from the web UI."));
+        assert_eq!(
+            refreshed.summary.as_deref(),
+            Some("Canceled from the web UI.")
+        );
         assert!(refreshed.finished_at.is_some());
     }
 
@@ -3301,7 +3411,8 @@ mod tests {
             projects_registry_path: "~/track-projects.json".to_owned(),
             shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         })));
-        let task = context.create_task("project-a", "Retry after the previous remote run got stuck");
+        let task =
+            context.create_task("project-a", "Retry after the previous remote run got stuck");
         context.write_project_metadata(&task.project);
         let existing_dispatch = context.create_running_dispatch(&task);
 
@@ -3331,5 +3442,35 @@ mod tests {
             )
         );
         assert!(released_dispatch.error_message.is_some());
+    }
+
+    #[test]
+    fn task_dispatch_start_guard_serializes_same_task() {
+        let acquired_in_second_thread = Arc::new(AtomicBool::new(false));
+        let guard = super::TaskDispatchStartGuard::acquire("task-1");
+
+        std::thread::scope(|scope| {
+            let acquired_in_second_thread_for_join = Arc::clone(&acquired_in_second_thread);
+            let join_handle = scope.spawn(move || {
+                let _guard = super::TaskDispatchStartGuard::acquire("task-1");
+                acquired_in_second_thread_for_join.store(true, Ordering::SeqCst);
+            });
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !acquired_in_second_thread.load(Ordering::SeqCst),
+                "the second same-task start should stay blocked while the first guard is held",
+            );
+
+            drop(guard);
+            join_handle
+                .join()
+                .expect("second thread should acquire the guard after release");
+        });
+
+        assert!(
+            acquired_in_second_thread.load(Ordering::SeqCst),
+            "the waiting same-task start should proceed after the first guard releases",
+        );
     }
 }

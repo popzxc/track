@@ -32,7 +32,7 @@ The CLI:
 2. discovers git repositories under configured roots
 3. asks `llama-completion` to normalize the raw text
 4. validates that the chosen project really exists
-5. initializes `PROJECT.md` for the chosen repository when needed
+5. initializes `PROJECT.md` for the chosen repository when needed, including an inferred default branch
 6. writes a Markdown task file to disk
 7. sends a best-effort local API notification so the browser UI can refresh
 
@@ -83,7 +83,8 @@ status:
 - `project/closed/...`
 
 Each project directory can also contain `project/PROJECT.md`, which stores repo
-URL, git URL, base branch, and optional description for the frontend editor.
+URL, git URL, inferred-or-overridden base branch, and optional description for
+the frontend editor.
 
 The data directory also contains two hidden implementation areas:
 

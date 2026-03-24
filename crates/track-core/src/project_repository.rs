@@ -433,7 +433,7 @@ fn blank_project_metadata() -> ProjectMetadata {
 // Project metadata lives alongside track data rather than inside the Git
 // checkout. When the CLI sees a repository for the first time, it seeds
 // `PROJECT.md` with the details users are most likely to want to edit later:
-// browser-friendly repo URL, clone URL, and default branch.
+// browser-friendly repo URL, clone URL, and an inferred default branch.
 //
 // We intentionally parse `.git/config` directly instead of shelling out to the
 // `git` binary. That keeps initialization deterministic, avoids another runtime
@@ -447,13 +447,29 @@ fn build_default_metadata(project: &ProjectInfo) -> ProjectMetadata {
     } else {
         derive_repo_url(&git_url)
     };
+    let base_branch =
+        infer_default_base_branch(&project.path).unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_owned());
 
     ProjectMetadata {
         repo_url,
         git_url,
-        base_branch: DEFAULT_BASE_BRANCH.to_owned(),
+        base_branch,
         description: None,
     }
+}
+
+// We prefer the remote-tracking HEAD because it reflects the repository's
+// intended default branch even when the local checkout happens to be on a
+// feature branch. If that remote hint is missing, we fall back to the local
+// HEAD branch before finally defaulting to `main`.
+fn infer_default_base_branch(project_path: &Path) -> Option<String> {
+    let git_common_directory = resolve_git_common_directory(project_path)?;
+
+    read_symbolic_ref_branch(
+        &git_common_directory.join("refs/remotes/origin/HEAD"),
+        "refs/remotes/origin/",
+    )
+    .or_else(|| read_symbolic_ref_branch(&git_common_directory.join("HEAD"), "refs/heads/"))
 }
 
 fn read_origin_git_url(project_path: &Path) -> Option<String> {
@@ -513,6 +529,33 @@ fn resolve_git_directory(project_path: &Path) -> Option<PathBuf> {
     } else {
         Some(project_path.join(git_dir))
     }
+}
+
+fn resolve_git_common_directory(project_path: &Path) -> Option<PathBuf> {
+    let git_directory = resolve_git_directory(project_path)?;
+    let commondir_path = git_directory.join("commondir");
+    if !commondir_path.is_file() {
+        return Some(git_directory);
+    }
+
+    let common_directory = fs::read_to_string(commondir_path).ok()?;
+    let common_directory = PathBuf::from(common_directory.trim());
+    if common_directory.is_absolute() {
+        Some(common_directory)
+    } else {
+        Some(git_directory.join(common_directory))
+    }
+}
+
+fn read_symbolic_ref_branch(reference_path: &Path, prefix: &str) -> Option<String> {
+    let reference = fs::read_to_string(reference_path).ok()?;
+    let target = reference.trim().strip_prefix("ref:")?.trim();
+    let branch_name = target.strip_prefix(prefix)?.trim();
+    if branch_name.is_empty() {
+        return None;
+    }
+
+    Some(branch_name.to_owned())
 }
 
 fn derive_repo_url(git_url: &str) -> String {
@@ -646,12 +689,18 @@ mod tests {
         let repository = ProjectRepository::new(Some(directory.path().join("issues")))
             .expect("repository should resolve");
         let project_path = directory.path().join("workspace/project-x");
-        fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
+        fs::create_dir_all(project_path.join(".git/refs/remotes/origin"))
+            .expect("git directory should exist");
         fs::write(
             project_path.join(".git/config"),
             "[remote \"origin\"]\n\turl = git@github.com:acme/project-x.git\n",
         )
         .expect("git config should be written");
+        fs::write(
+            project_path.join(".git/refs/remotes/origin/HEAD"),
+            "ref: refs/remotes/origin/trunk\n",
+        )
+        .expect("origin HEAD should be written");
 
         let record = repository
             .ensure_project(&ProjectInfo {
@@ -666,7 +715,7 @@ mod tests {
             record.metadata.repo_url,
             "https://github.com/acme/project-x"
         );
-        assert_eq!(record.metadata.base_branch, "main");
+        assert_eq!(record.metadata.base_branch, "trunk");
         assert_eq!(record.metadata.description, None);
         assert_eq!(
             record.path,
@@ -676,6 +725,35 @@ mod tests {
             .path()
             .join("issues/project-x/PROJECT.md")
             .exists());
+    }
+
+    #[test]
+    fn falls_back_to_local_head_branch_when_origin_head_is_missing() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
+            .expect("repository should resolve");
+        let project_path = directory.path().join("workspace/project-x");
+        fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
+        fs::write(
+            project_path.join(".git/config"),
+            "[remote \"origin\"]\n\turl = git@github.com:acme/project-x.git\n",
+        )
+        .expect("git config should be written");
+        fs::write(
+            project_path.join(".git/HEAD"),
+            "ref: refs/heads/release/2026\n",
+        )
+        .expect("local HEAD should be written");
+
+        let record = repository
+            .ensure_project(&ProjectInfo {
+                canonical_name: "project-x".to_owned(),
+                path: project_path,
+                aliases: vec![],
+            })
+            .expect("project should be initialized");
+
+        assert_eq!(record.metadata.base_branch, "release/2026");
     }
 
     #[test]

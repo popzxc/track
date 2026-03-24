@@ -246,7 +246,8 @@ For local frontend development, `frontend/vite.config.ts` proxies `/api` and
 - Task files live under `~/.track/issues` by default.
 - Project metadata lives next to tasks in `~/.track/issues/<project>/PROJECT.md`.
 - The CLI initializes project metadata from the host repository when it creates
-  the first task for a project.
+  the first task for a project, including the repo's default branch when Git
+  metadata exposes it.
 - Remote-agent material lives under `~/.track/remote-agent`.
 - Remote dispatch records live under `~/.track/issues/.dispatches`.
 - The API and frontend list projects from the persisted track directory rather
