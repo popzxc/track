@@ -1,0 +1,14 @@
+[package]
+name = "track-capture"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+hf-hub = { workspace = true, features = ["ureq"] }
+llama-cpp-2 = { workspace = true }
+serde_json = { workspace = true }
+track-core = { path = "../track-core" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

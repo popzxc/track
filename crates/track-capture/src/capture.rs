@@ -1,27 +1,20 @@
-use crate::config::ConfigService;
-use crate::errors::{ErrorCode, TrackError};
-use crate::llama_cpp::LlamaCppTaskParser;
-use crate::project_catalog::ProjectCatalog;
-use crate::project_discovery::discover_projects;
-use crate::project_repository::ProjectRepository;
-use crate::task_description::render_task_description;
-use crate::task_repository::FileTaskRepository;
-use crate::types::{
+use track_core::config::ConfigService;
+use track_core::errors::{ErrorCode, TrackError};
+use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
+use track_core::project_discovery::discover_projects;
+use track_core::project_repository::ProjectRepository;
+use track_core::task_description::render_task_description;
+use track_core::task_repository::FileTaskRepository;
+use track_core::types::{
     Confidence, ParsedTaskCandidate, Priority, StoredTask, TaskCreateInput, TaskSource,
 };
+
+use crate::task_parser::create_task_parser;
 
 fn validate_parsed_task_candidate(
     candidate: ParsedTaskCandidate,
     project_catalog: &ProjectCatalog,
-) -> Result<
-    (
-        crate::project_catalog::ProjectInfo,
-        crate::types::Priority,
-        String,
-        String,
-    ),
-    TrackError,
-> {
+) -> Result<(ProjectInfo, Priority, String, String), TrackError> {
     if candidate.project.is_none() || candidate.confidence == Confidence::Low {
         return Err(TrackError::new(
             ErrorCode::InvalidProjectSelection,
@@ -243,10 +236,7 @@ impl<'a> TaskCaptureService<'a> {
             ));
         }
 
-        let parser = LlamaCppTaskParser::new(
-            config.llama_cpp.llama_completion_path.clone(),
-            config.llama_cpp.model_path.clone(),
-        );
+        let parser = create_task_parser(&config)?;
         let candidate = parser.parse_task(raw_text, &project_catalog)?;
         let (project, priority, title, body_markdown) =
             validate_parsed_task_candidate(candidate, &project_catalog)?;
@@ -279,9 +269,10 @@ impl<'a> TaskCaptureService<'a> {
 mod tests {
     use std::path::PathBuf;
 
+    use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
+    use track_core::types::{Confidence, ParsedTaskCandidate, Priority};
+
     use super::{build_task_body, validate_parsed_task_candidate};
-    use crate::project_catalog::{ProjectCatalog, ProjectInfo};
-    use crate::types::{Confidence, ParsedTaskCandidate, Priority};
 
     #[test]
     fn resolves_aliases_to_canonical_project_names() {

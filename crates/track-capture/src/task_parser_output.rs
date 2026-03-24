@@ -1,158 +1,19 @@
-use std::env;
-use std::process::Command;
+use track_core::errors::{ErrorCode, TrackError};
+use track_core::types::ParsedTaskCandidate;
 
-use serde_json::json;
+// =============================================================================
+// Local Model Output Recovery
+// =============================================================================
+//
+// Both local parser backends ultimately need the same last-mile behavior:
+// extract one `ParsedTaskCandidate` from output that may contain prompt echo,
+// logging noise, or terminal metadata around the actual JSON payload.
+//
+// Keeping that recovery logic in one module prevents the subprocess parser and
+// the in-process parser from drifting apart in subtle ways when we tighten the
+// task schema or improve JSON extraction.
 
-use crate::errors::{ErrorCode, TrackError};
-use crate::paths::path_to_string;
-use crate::project_catalog::ProjectCatalog;
-use crate::prompt::{build_llama_cpp_prompt, DEFAULT_LLAMA_CPP_COMPLETION_BINARY};
-use crate::time_utils::format_iso_8601_millis;
-use crate::types::ParsedTaskCandidate;
-
-pub struct LlamaCppTaskParser {
-    binary_path: String,
-    model_path: std::path::PathBuf,
-}
-
-impl LlamaCppTaskParser {
-    pub fn new(binary_path: Option<String>, model_path: std::path::PathBuf) -> Self {
-        Self {
-            binary_path: binary_path
-                .unwrap_or_else(|| DEFAULT_LLAMA_CPP_COMPLETION_BINARY.to_owned()),
-            model_path,
-        }
-    }
-
-    pub fn parse_task(
-        &self,
-        raw_text: &str,
-        project_catalog: &ProjectCatalog,
-    ) -> Result<ParsedTaskCandidate, TrackError> {
-        let request_timestamp = format_iso_8601_millis(crate::time_utils::now_utc());
-        let prompt = build_llama_cpp_prompt(raw_text, project_catalog);
-
-        // We intentionally use `llama-completion` in single-turn chat mode
-        // instead of raw completion mode. The local default model is an
-        // instruct-tuned checkpoint, so preserving the system/user separation
-        // gives materially better project and priority extraction than stuffing
-        // the entire exchange into one flat completion prompt.
-        //
-        // `-cnv` makes the chat-template choice explicit instead of relying on
-        // llama.cpp's auto mode, and `--no-display-prompt` avoids echoing the
-        // full prompt back into stdout. We intentionally do not use
-        // `--log-disable`: on the local build used for this project it suppresses
-        // generated output, not just diagnostics.
-        //
-        // The output budget is a little larger than before because the model
-        // now returns both a concise title and supporting Markdown inside the
-        // JSON payload instead of a single summary string.
-        //
-        // TODO: surface model-specific tuning knobs if we end up supporting
-        // multiple local prompt styles. Right now we optimize for one default
-        // instruct model path instead of building a full prompt-template system.
-        let args = vec![
-            "-m".to_owned(),
-            path_to_string(&self.model_path),
-            "-cnv".to_owned(),
-            "-sys".to_owned(),
-            prompt.system_prompt,
-            "-p".to_owned(),
-            prompt.user_prompt,
-            "--single-turn".to_owned(),
-            "--no-display-prompt".to_owned(),
-            "-n".to_owned(),
-            "384".to_owned(),
-            "--temp".to_owned(),
-            "0".to_owned(),
-        ];
-
-        let result = Command::new(&self.binary_path)
-            .args(&args)
-            .output()
-            .map_err(|error| {
-                log_parse_event(
-                    &request_timestamp,
-                    &self.binary_path,
-                    &self.model_path,
-                    false,
-                    Some(format!("Could not start llama-completion: {error}")),
-                );
-                TrackError::new(
-                    ErrorCode::AiParseFailed,
-                    "AI parse failure. Please try again with a more explicit task description.",
-                )
-            })?;
-
-        if !result.status.success() {
-            let message = format!(
-                "AI parse failure. llama-completion exited with code {}.",
-                result
-                    .status
-                    .code()
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "unknown".to_owned())
-            );
-            log_parse_event(
-                &request_timestamp,
-                &self.binary_path,
-                &self.model_path,
-                false,
-                Some(message.clone()),
-            );
-            return Err(TrackError::new(ErrorCode::AiParseFailed, message));
-        }
-
-        let parsed_candidate = parse_candidate_from_command_output(&result.stdout, &result.stderr)
-            .map_err(|error| {
-                log_parse_event(
-                    &request_timestamp,
-                    &self.binary_path,
-                    &self.model_path,
-                    false,
-                    Some(error.message().to_owned()),
-                );
-                error
-            })?;
-
-        if env::var("TRACK_DEBUG_AI").ok().as_deref() == Some("1") {
-            log_parse_event(
-                &request_timestamp,
-                &self.binary_path,
-                &self.model_path,
-                true,
-                None,
-            );
-        }
-
-        Ok(parsed_candidate)
-    }
-}
-
-fn log_parse_event(
-    timestamp: &str,
-    binary_path: &str,
-    model_path: &std::path::Path,
-    ok: bool,
-    error: Option<String>,
-) {
-    let event = json!({
-        "timestamp": timestamp,
-        "event": "ai_parse",
-        "provider": "llama-cpp",
-        "binaryPath": binary_path,
-        "modelPath": path_to_string(model_path),
-        "ok": ok,
-        "error": error,
-    });
-
-    eprintln!(
-        "{}",
-        serde_json::to_string(&event).expect("ai parse event serialization should succeed")
-    );
-}
-
-fn combine_model_output(stdout: &[u8], stderr: &[u8]) -> String {
+pub fn combine_model_output(stdout: &[u8], stderr: &[u8]) -> String {
     let stdout = String::from_utf8_lossy(stdout);
     let stderr = String::from_utf8_lossy(stderr);
 
@@ -164,7 +25,7 @@ fn combine_model_output(stdout: &[u8], stderr: &[u8]) -> String {
     }
 }
 
-fn parse_candidate_from_command_output(
+pub fn parse_candidate_from_command_output(
     stdout: &[u8],
     stderr: &[u8],
 ) -> Result<ParsedTaskCandidate, TrackError> {
@@ -184,7 +45,7 @@ fn parse_candidate_from_command_output(
     parse_candidate_from_model_output(&combined_output)
 }
 
-fn parse_candidate_from_model_output(output: &str) -> Result<ParsedTaskCandidate, TrackError> {
+pub fn parse_candidate_from_model_output(output: &str) -> Result<ParsedTaskCandidate, TrackError> {
     let trimmed = output.trim();
     if trimmed.is_empty() {
         return Err(TrackError::new(
@@ -283,7 +144,7 @@ fn json_object_candidates(output: &str) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{Confidence, ParsedTaskCandidate, Priority};
+    use track_core::types::{Confidence, ParsedTaskCandidate, Priority};
 
     use super::{
         combine_model_output, json_object_candidates, parse_candidate_from_command_output,

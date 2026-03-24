@@ -200,26 +200,32 @@ ls ~/src/llama.cpp/build/bin/llama-completion
 Write down the final absolute path to `llama-completion`. You will need it when
 configuring `track`.
 
-### 2.3 Download a local model
+### 2.3 Choose a local model source
 
-Create a directory for models:
+`track` now supports two ways to provide a GGUF model:
+
+1. Recommended: keep the default Hugging Face model settings in the config
+   wizard. `track` will download the model into `~/.track/models` on first use.
+2. Manual: download a GGUF yourself and set `llamaCpp.modelPath`.
+
+The default recommended model is:
+[Meta-Llama-3-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF?show_file_info=Meta-Llama-3-8B-Instruct-Q4_K_M.gguf)
+
+If you prefer a manual local file, create a directory for models:
 
 ```bash
 mkdir -p ~/.models
 ```
 
-Download a quantized instruction-tuned model of your choice.
-
-Confirmed and recommended:
-[Meta-Llama-3-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF?show_file_info=Meta-Llama-3-8B-Instruct-Q4_K_M.gguf)
-
-Put the model somewhere stable, for example:
+Then download a quantized instruction-tuned model of your choice and put it
+somewhere stable, for example:
 
 ```text
 ~/.models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
 ```
 
-Write down the final absolute path. You will need it when configuring `track`.
+Write down the final absolute path. You will need it only if you plan to use
+`llamaCpp.modelPath` instead of the default Hugging Face-backed config.
 
 ### 2.4 Clone this repository locally
 

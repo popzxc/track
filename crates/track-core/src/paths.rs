@@ -88,6 +88,10 @@ pub fn get_track_root_dir() -> Result<PathBuf, TrackError> {
     Ok(data_dir.parent().map(Path::to_path_buf).unwrap_or(data_dir))
 }
 
+pub fn get_models_dir() -> Result<PathBuf, TrackError> {
+    Ok(get_track_root_dir()?.join("models"))
+}
+
 pub fn get_remote_agent_dir() -> Result<PathBuf, TrackError> {
     Ok(get_track_root_dir()?.join(REMOTE_AGENT_DIRECTORY_NAME))
 }

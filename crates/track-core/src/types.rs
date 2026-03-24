@@ -176,8 +176,14 @@ pub struct StoredTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlamaCppModelSource {
+    LocalPath(PathBuf),
+    HuggingFace { repo: String, file: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlamaCppRuntimeConfig {
-    pub model_path: PathBuf,
+    pub model_source: LlamaCppModelSource,
     pub llama_completion_path: Option<String>,
 }
 

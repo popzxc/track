@@ -18,8 +18,11 @@ Think about the project as one Rust backend split into crates plus one frontend.
 
 - `crates/track-core`
   Shared backend behavior. Start here when config loading, CLI-side project
-  discovery, project metadata persistence, task storage, sorting, or
-  `llama-completion` integration changes.
+  discovery, project metadata persistence, task storage, sorting, or remote
+  agent behavior changes.
+- `crates/track-capture`
+  CLI capture and local-model parsing. Start here when prompt shaping,
+  model download, `llama-completion`, or `llama-cpp-2` integration changes.
 - `crates/track-cli`
   CLI entrypoint and user-facing capture output.
 - `crates/track-api`
@@ -73,8 +76,13 @@ Keep these behaviors stable unless the change is intentional:
 
 The backend supports local parsing only.
 
-- `llama.cpp` is invoked through the `llama-completion` binary.
-- `llamaCpp.modelPath` is required in config.
+- The default parser invokes `llama.cpp` through the `llama-completion` binary.
+- `TRACK_TASK_PARSER=llama-cpp-2` switches capture to the in-process Rust
+  bindings backend.
+- Config may provide either `llamaCpp.modelPath` or both
+  `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
+- When Hugging Face config is present, the model is cached under
+  `~/.track/models`.
 - `llamaCpp.llamaCompletionPath` is optional; if it is absent, the CLI uses
   `llama-completion` from `$PATH`.
 

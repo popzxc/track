@@ -14,18 +14,20 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml deny.toml ./
 COPY .config/nextest.toml .config/nextest.toml
 COPY crates/track-core/Cargo.toml crates/track-core/Cargo.toml
+COPY crates/track-capture/Cargo.toml crates/track-capture/Cargo.toml
 COPY crates/track-cli/Cargo.toml crates/track-cli/Cargo.toml
 COPY crates/track-api/Cargo.toml crates/track-api/Cargo.toml
 COPY crates/track-integration-tests/Cargo.toml crates/track-integration-tests/Cargo.toml
 COPY crates/track-core/src crates/track-core/src
+COPY crates/track-capture/src crates/track-capture/src
 COPY crates/track-cli/src crates/track-cli/src
 COPY crates/track-cli/tests crates/track-cli/tests
 COPY crates/track-api/src crates/track-api/src
 COPY crates/track-integration-tests/src crates/track-integration-tests/src
 
 # Cargo resolves every workspace member's manifest even when we build only
-# `track-api`, so the image needs the lightweight integration-test crate layout
-# to keep workspace metadata valid. We intentionally omit `tests/` here because
+# `track-api`, so the image needs the lightweight workspace crate layouts to
+# keep workspace metadata valid. We intentionally omit `tests/` here because
 # the production image does not execute the live Docker-backed test suite.
 
 RUN cargo build --release -p track-api

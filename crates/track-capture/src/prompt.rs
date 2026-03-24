@@ -1,6 +1,5 @@
 use serde_json::json;
-
-use crate::project_catalog::ProjectCatalog;
+use track_core::project_catalog::ProjectCatalog;
 
 pub const DEFAULT_LLAMA_CPP_COMPLETION_BINARY: &str = "llama-completion";
 
@@ -41,6 +40,59 @@ pub fn build_task_parser_payload(
             "confidence": "high|low",
             "reason": "Optional short explanation",
         }
+    })
+}
+
+pub fn build_task_parser_json_schema(project_catalog: &ProjectCatalog) -> serde_json::Value {
+    let mut allowed_projects = project_catalog
+        .projects()
+        .iter()
+        .flat_map(|project| {
+            std::iter::once(project.canonical_name.clone()).chain(project.aliases.iter().cloned())
+        })
+        .collect::<Vec<_>>();
+    allowed_projects.sort();
+    allowed_projects.dedup();
+
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "project",
+            "priority",
+            "title",
+            "bodyMarkdown",
+            "confidence",
+            "reason"
+        ],
+        "properties": {
+            "project": {
+                "type": ["string", "null"],
+                "enum": allowed_projects
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .chain(std::iter::once(serde_json::Value::Null))
+                    .collect::<Vec<_>>(),
+            },
+            "priority": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+            },
+            "title": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "bodyMarkdown": {
+                "type": "string",
+            },
+            "confidence": {
+                "type": "string",
+                "enum": ["high", "low"],
+            },
+            "reason": {
+                "type": ["string", "null"],
+            },
+        },
     })
 }
 

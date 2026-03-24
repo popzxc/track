@@ -3022,7 +3022,9 @@ mod tests {
             project_aliases: BTreeMap::new(),
             api: ApiConfigFile { port: 3210 },
             llama_cpp: LlamaCppConfigFile {
-                model_path: "/tmp/parser.gguf".to_owned(),
+                model_path: Some("/tmp/parser.gguf".to_owned()),
+                model_hf_repo: None,
+                model_hf_file: None,
                 llama_completion_path: None,
             },
             remote_agent,

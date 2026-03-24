@@ -1,7 +1,7 @@
 use std::env;
 
+use track_capture::TaskCaptureService;
 use track_core::api_notify::notify_task_changed;
-use track_core::capture::TaskCaptureService;
 use track_core::config::ConfigService;
 use track_core::errors::{ErrorCode, TrackError};
 use track_core::paths::collapse_home_path;
@@ -200,6 +200,8 @@ mod tests {
 
         let mut prompter = ScriptedPrompter::new(&[
             "~/.models/parser.gguf",
+            "none",
+            "none",
             fake_llama_completion.to_string_lossy().as_ref(),
             "3210",
             project_root.to_string_lossy().as_ref(),

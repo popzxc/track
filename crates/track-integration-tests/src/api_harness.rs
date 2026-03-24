@@ -70,7 +70,9 @@ impl ApiHarness {
                 project_aliases: Default::default(),
                 api: ApiConfigFile::default(),
                 llama_cpp: LlamaCppConfigFile {
-                    model_path: "/tmp/model.gguf".to_owned(),
+                    model_path: Some("/tmp/model.gguf".to_owned()),
+                    model_hf_repo: None,
+                    model_hf_file: None,
                     llama_completion_path: None,
                 },
                 remote_agent: Some(fixture.remote_agent_config()),

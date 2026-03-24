@@ -155,7 +155,8 @@ The stable boundary between them is the filesystem contract:
     "port": 3210
   },
   "llamaCpp": {
-    "modelPath": "/home/user/models/task-parser.gguf",
+    "modelHfRepo": "bartowski/Meta-Llama-3-8B-Instruct-GGUF",
+    "modelHfFile": "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
     "llamaCompletionPath": "/opt/llama.cpp/bin/llama-completion"
   },
   "remoteAgent": {
@@ -171,6 +172,15 @@ The stable boundary between them is the filesystem contract:
 
 `llamaCompletionPath` is optional. If you omit it, `track` looks for
 `llama-completion` on `$PATH`.
+
+Configure either `llamaCpp.modelPath` or both `llamaCpp.modelHfRepo` and
+`llamaCpp.modelHfFile`. If the Hugging Face fields are present, `track`
+downloads or reuses the model under `~/.track/models` and uses that local file
+for inference.
+
+`TRACK_TASK_PARSER=llama-cpp-2` switches capture to the in-process Rust
+bindings backend. If the variable is unset, `track` keeps using the existing
+`llama-completion` subprocess flow.
 
 `api.port` controls where the CLI looks for the local API when it sends
 task-change notifications. `track-api` also uses that same port by default
