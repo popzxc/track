@@ -21,14 +21,16 @@ COPY crates/track-integration-tests/Cargo.toml crates/track-integration-tests/Ca
 COPY crates/track-core/src crates/track-core/src
 COPY crates/track-capture/src crates/track-capture/src
 COPY crates/track-cli/src crates/track-cli/src
-COPY crates/track-cli/tests crates/track-cli/tests
 COPY crates/track-api/src crates/track-api/src
 COPY crates/track-integration-tests/src crates/track-integration-tests/src
 
 # Cargo resolves every workspace member's manifest even when we build only
 # `track-api`, so the image needs the lightweight workspace crate layouts to
-# keep workspace metadata valid. We intentionally omit `tests/` here because
-# the production image does not execute the live Docker-backed test suite.
+# keep workspace metadata valid.
+#
+# We intentionally omit workspace test directories from the production image
+# because they are not needed for `track-api`, and empty test directories do
+# not survive a fresh Git checkout.
 
 RUN cargo build --release -p track-api
 
