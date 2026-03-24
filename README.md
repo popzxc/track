@@ -173,6 +173,9 @@ The stable boundary between them is the filesystem contract:
 By default, `track` uses the built-in Hugging Face model settings and downloads
 or reuses the model under `~/.track/models` on first capture.
 
+Most users should leave `config.json` without a `llamaCpp` block and let
+`track` manage the default model automatically.
+
 If you want to override that manually, add a `llamaCpp` block and set either
 `llamaCpp.modelPath` or both `llamaCpp.modelHfRepo` and
 `llamaCpp.modelHfFile` in `config.json`.

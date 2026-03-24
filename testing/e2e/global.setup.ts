@@ -283,7 +283,6 @@ async function writeConfigFile(
       api: {
         port: apiPort,
       },
-      llamaCpp: {},
       remoteAgent: {
         host: FIXTURE_HOST,
         user: FIXTURE_USER,

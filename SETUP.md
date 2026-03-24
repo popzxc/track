@@ -193,21 +193,25 @@ sudo apt install -y build-essential cmake clang libclang-dev pkg-config
 If you use another distro or macOS, install the equivalent C/C++ toolchain,
 CMake, and `libclang` package for your platform.
 
-### 2.3 Choose a local model source
+### 2.3 Default local model
 
 `track` uses a local GGUF model for task capture.
 
 By default, it downloads this model into `~/.track/models` on first use:
 [Meta-Llama-3-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF?show_file_info=Meta-Llama-3-8B-Instruct-Q4_K_M.gguf)
 
-If you want to use a different model, `track` supports two manual override
-shapes in `~/.config/track/config.json`:
+For normal setup, you do not need to configure anything about the model in the
+wizard or create any extra model directories yourself. The first task capture
+will download the default model automatically if it is not already cached.
+
+If you want to use a different model, `track` supports advanced manual
+overrides in `~/.config/track/config.json`:
 
 1. Set `llamaCpp.modelPath` to a local GGUF file you manage yourself.
 2. Set both `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile` to a different
    Hugging Face model file.
 
-If you prefer a manual local file, create a directory for models:
+If you prefer a manual local file, create a directory for models yourself:
 
 ```bash
 mkdir -p ~/.models
@@ -284,7 +288,7 @@ After the wizard finishes, the first task capture will download the default
 local model into `~/.track/models` if it is not already cached.
 
 If you want to override the model later, edit `~/.config/track/config.json`
-directly and set either `llamaCpp.modelPath` or both
+directly and add a `llamaCpp` block with either `llamaCpp.modelPath` or both
 `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
 
 When you import the key, `track` copies it into its managed automation
