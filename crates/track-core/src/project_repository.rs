@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::{ErrorCode, TrackError};
+use crate::path_component::validate_single_normal_path_component;
 use crate::paths::{get_data_dir, path_to_string};
 use crate::project_catalog::ProjectInfo;
 
@@ -112,8 +113,13 @@ impl ProjectRepository {
     // data directory mounted. That makes the CLI the right place to seed
     // `PROJECT.md` from git metadata.
     pub fn ensure_project(&self, project: &ProjectInfo) -> Result<ProjectRecord, TrackError> {
+        let canonical_name = validate_single_normal_path_component(
+            &project.canonical_name,
+            "Project canonical name",
+            ErrorCode::InvalidPathComponent,
+        )?;
         let project_directory = self.ensure_project_directory(&project.canonical_name)?;
-        let metadata_path = self.metadata_file_path(&project.canonical_name);
+        let metadata_path = self.metadata_file_path(&canonical_name)?;
 
         let metadata = if metadata_path.exists() {
             self.load_existing_metadata_or_blank(&metadata_path)
@@ -124,7 +130,7 @@ impl ProjectRepository {
         };
 
         Ok(ProjectRecord {
-            canonical_name: project.canonical_name.clone(),
+            canonical_name,
             path: project_directory,
             aliases: project.aliases.clone(),
             metadata,
@@ -184,6 +190,22 @@ impl ProjectRepository {
                 continue;
             }
 
+            let canonical_name = match validate_single_normal_path_component(
+                &canonical_name,
+                "Project canonical name",
+                ErrorCode::InvalidPathComponent,
+            ) {
+                Ok(canonical_name) => canonical_name,
+                Err(error) => {
+                    eprintln!(
+                        "Skipping invalid project directory {}: {}",
+                        path_to_string(&project_directory),
+                        error
+                    );
+                    continue;
+                }
+            };
+
             let metadata_path = project_directory.join(PROJECT_METADATA_FILE_NAME);
             let metadata = if metadata_path.exists() {
                 self.load_existing_metadata_or_blank(&metadata_path)
@@ -204,7 +226,12 @@ impl ProjectRepository {
     }
 
     pub fn get_project_by_name(&self, canonical_name: &str) -> Result<ProjectRecord, TrackError> {
-        let project_directory = self.project_directory(canonical_name);
+        let canonical_name = validate_single_normal_path_component(
+            canonical_name,
+            "Project canonical name",
+            ErrorCode::InvalidPathComponent,
+        )?;
+        let project_directory = self.project_directory(&canonical_name)?;
         if !project_directory.is_dir() {
             return Err(TrackError::new(
                 ErrorCode::ProjectNotFound,
@@ -212,7 +239,7 @@ impl ProjectRepository {
             ));
         }
 
-        let metadata_path = self.metadata_file_path(canonical_name);
+        let metadata_path = self.metadata_file_path(&canonical_name)?;
         let metadata = if metadata_path.exists() {
             self.load_existing_metadata_or_blank(&metadata_path)
         } else {
@@ -232,7 +259,12 @@ impl ProjectRepository {
         canonical_name: &str,
         metadata: ProjectMetadata,
     ) -> Result<ProjectRecord, TrackError> {
-        let project_directory = self.project_directory(canonical_name);
+        let canonical_name = validate_single_normal_path_component(
+            canonical_name,
+            "Project canonical name",
+            ErrorCode::InvalidPathComponent,
+        )?;
+        let project_directory = self.project_directory(&canonical_name)?;
         if !project_directory.is_dir() {
             return Err(TrackError::new(
                 ErrorCode::ProjectNotFound,
@@ -240,10 +272,10 @@ impl ProjectRepository {
             ));
         }
 
-        self.write_metadata_file(&self.metadata_file_path(canonical_name), &metadata)?;
+        self.write_metadata_file(&self.metadata_file_path(&canonical_name)?, &metadata)?;
 
         Ok(ProjectRecord {
-            canonical_name: canonical_name.to_owned(),
+            canonical_name,
             path: project_directory,
             aliases: Vec::new(),
             metadata,
@@ -251,7 +283,7 @@ impl ProjectRepository {
     }
 
     fn ensure_project_directory(&self, canonical_name: &str) -> Result<PathBuf, TrackError> {
-        let directory_path = self.project_directory(canonical_name);
+        let directory_path = self.project_directory(canonical_name)?;
         fs::create_dir_all(&directory_path).map_err(|error| {
             TrackError::new(
                 ErrorCode::ProjectWriteFailed,
@@ -265,13 +297,20 @@ impl ProjectRepository {
         Ok(directory_path)
     }
 
-    fn project_directory(&self, canonical_name: &str) -> PathBuf {
-        self.data_dir.join(canonical_name)
+    fn project_directory(&self, canonical_name: &str) -> Result<PathBuf, TrackError> {
+        let canonical_name = validate_single_normal_path_component(
+            canonical_name,
+            "Project canonical name",
+            ErrorCode::InvalidPathComponent,
+        )?;
+
+        Ok(self.data_dir.join(canonical_name))
     }
 
-    fn metadata_file_path(&self, canonical_name: &str) -> PathBuf {
-        self.project_directory(canonical_name)
-            .join(PROJECT_METADATA_FILE_NAME)
+    fn metadata_file_path(&self, canonical_name: &str) -> Result<PathBuf, TrackError> {
+        Ok(self
+            .project_directory(canonical_name)?
+            .join(PROJECT_METADATA_FILE_NAME))
     }
 
     // =============================================================================
@@ -696,6 +735,23 @@ mod tests {
             .expect("metadata file should be readable");
         assert!(raw_file.contains("baseBranch: develop"));
         assert!(raw_file.contains("Main coordination repo for the release work."));
+    }
+
+    #[test]
+    fn rejects_canonical_names_that_are_not_single_path_components() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
+            .expect("repository should resolve");
+
+        let error = repository
+            .ensure_project(&ProjectInfo {
+                canonical_name: "../escape".to_owned(),
+                path: directory.path().join("workspace/project-x"),
+                aliases: vec![],
+            })
+            .expect_err("project initialization should reject traversal-shaped names");
+
+        assert_eq!(error.code, ErrorCode::InvalidPathComponent);
     }
 
     #[test]

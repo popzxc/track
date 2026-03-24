@@ -4,6 +4,7 @@ pub mod config;
 pub mod dispatch_repository;
 pub mod errors;
 pub mod llama_cpp;
+pub mod path_component;
 pub mod paths;
 pub mod project_catalog;
 pub mod project_discovery;

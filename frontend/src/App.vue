@@ -60,6 +60,7 @@ import type {
 } from './types/task'
 
 type AppPage = 'tasks' | 'runs' | 'projects' | 'settings'
+type TaskLifecycleMutation = 'closing' | 'reopening' | 'deleting'
 
 const TASK_CHANGE_POLL_INTERVAL_MS = 2_000
 
@@ -98,6 +99,8 @@ const dispatchingTaskId = ref<string | null>(null)
 const cancelingDispatchTaskId = ref<string | null>(null)
 const discardingDispatchTaskId = ref<string | null>(null)
 const followingUpTaskId = ref<string | null>(null)
+const taskLifecycleMutationTaskId = ref<string | null>(null)
+const taskLifecycleMutation = ref<TaskLifecycleMutation | null>(null)
 const errorMessage = ref('')
 
 const creatingTask = ref(false)
@@ -176,6 +179,12 @@ const selectedTaskDescription = computed<ParsedTaskDescription | null>(() =>
 
 const selectedTaskLatestReusablePullRequest = computed(() =>
   selectedTaskRuns.value.find((run) => Boolean(run.dispatch.pullRequestUrl))?.dispatch.pullRequestUrl ?? null,
+)
+
+const selectedTaskLifecycleMutation = computed(() =>
+  selectedTask.value && taskLifecycleMutationTaskId.value === selectedTask.value.id
+    ? taskLifecycleMutation.value
+    : null,
 )
 
 const selectedTaskDispatchDisabledReason = computed(() =>
@@ -258,7 +267,7 @@ const followingUpDispatch = computed(() =>
 function drawerPrimaryActionLabel(task: Task, dispatch?: TaskDispatch | null): string {
   switch (drawerPrimaryAction(task, dispatch)) {
     case 'reopen':
-      return 'Reopen task'
+      return selectedTaskLifecycleMutation.value === 'reopening' ? 'Reopening...' : 'Reopen task'
     case 'cancel':
       return cancelingDispatchTaskId.value === task.id ? 'Canceling...' : 'Cancel run'
     case 'continue':
@@ -278,6 +287,29 @@ function drawerPrimaryActionClass(task: Task, dispatch?: TaskDispatch | null): s
       return 'border border-aqua/30 bg-aqua/10 text-aqua hover:bg-aqua/15'
     case 'start':
       return 'border border-blue/30 bg-blue/10 text-blue hover:bg-blue/15'
+  }
+}
+
+function beginTaskLifecycleMutation(taskId: string, mutation: TaskLifecycleMutation) {
+  taskLifecycleMutationTaskId.value = taskId
+  taskLifecycleMutation.value = mutation
+}
+
+function clearTaskLifecycleMutation() {
+  taskLifecycleMutationTaskId.value = null
+  taskLifecycleMutation.value = null
+}
+
+function taskLifecycleProgressMessage(mutation: TaskLifecycleMutation | null): string {
+  switch (mutation) {
+    case 'closing':
+      return 'Closing the task and cleaning up its remote worktree...'
+    case 'reopening':
+      return 'Reopening the task so you can continue work...'
+    case 'deleting':
+      return 'Deleting the task and removing its remote artifacts...'
+    case null:
+      return ''
   }
 }
 
@@ -414,6 +446,7 @@ async function refreshAll() {
 async function updateTaskStatus(task: Task, status: Task['status']) {
   saving.value = true
   errorMessage.value = ''
+  beginTaskLifecycleMutation(task.id, status === 'closed' ? 'closing' : 'reopening')
 
   try {
     await updateTask(task.id, { status })
@@ -422,6 +455,7 @@ async function updateTaskStatus(task: Task, status: Task['status']) {
     setFriendlyError(error)
   } finally {
     saving.value = false
+    clearTaskLifecycleMutation()
   }
 }
 
@@ -542,6 +576,7 @@ async function confirmDelete() {
 
   saving.value = true
   errorMessage.value = ''
+  beginTaskLifecycleMutation(taskPendingDeletion.value.id, 'deleting')
 
   try {
     const deletedTaskId = taskPendingDeletion.value.id
@@ -556,6 +591,7 @@ async function confirmDelete() {
     setFriendlyError(error)
   } finally {
     saving.value = false
+    clearTaskLifecycleMutation()
   }
 }
 
@@ -1727,7 +1763,8 @@ onBeforeUnmount(() => {
 
             <button
               type="button"
-              class="border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg2 transition hover:border-fg1/35 hover:text-fg0"
+              class="border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg2 transition hover:border-fg1/35 hover:text-fg0 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="selectedTaskLifecycleMutation !== null"
               @click="closeTaskDrawer"
             >
               Close
@@ -1741,6 +1778,7 @@ onBeforeUnmount(() => {
               class="px-4 py-2.5 text-sm font-semibold tracking-[0.08em] transition disabled:cursor-not-allowed disabled:opacity-60"
               :class="drawerPrimaryActionClass(selectedTask, selectedTaskLatestDispatch)"
               :disabled="
+                selectedTaskLifecycleMutation !== null ||
                 dispatchingTaskId === selectedTask.id ||
                 cancelingDispatchTaskId === selectedTask.id ||
                 followingUpTaskId === selectedTask.id ||
@@ -1757,7 +1795,8 @@ onBeforeUnmount(() => {
 
             <button
               type="button"
-              class="border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg1 transition hover:border-fg1/35 hover:text-fg0"
+              class="border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg1 transition hover:border-fg1/35 hover:text-fg0 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="selectedTaskLifecycleMutation !== null"
               @click="openTaskEditor(selectedTask)"
             >
               Edit
@@ -1766,22 +1805,24 @@ onBeforeUnmount(() => {
             <button
               v-if="selectedTask.status === 'open'"
               type="button"
-              class="border border-green/30 bg-green/10 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-green transition hover:bg-green/15"
+              class="border border-green/30 bg-green/10 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-green transition hover:bg-green/15 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="selectedTaskLifecycleMutation !== null"
               @click="updateTaskStatus(selectedTask, 'closed')"
             >
-              Close task
+              {{ selectedTaskLifecycleMutation === 'closing' ? 'Closing...' : 'Close task' }}
             </button>
 
             <button
               v-if="selectedTaskLatestReusablePullRequest"
               type="button"
-              class="border border-aqua/30 bg-aqua/10 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
+              class="border border-aqua/30 bg-aqua/10 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="selectedTaskLifecycleMutation !== null"
               @click="openExternal(selectedTaskLatestReusablePullRequest)"
             >
               View PR
             </button>
 
-            <details class="relative">
+            <details class="relative" :class="selectedTaskLifecycleMutation !== null ? 'pointer-events-none opacity-60' : ''">
               <summary class="list-none border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg2 transition hover:border-fg1/35 hover:text-fg0 cursor-pointer">
                 More
               </summary>
@@ -1812,12 +1853,19 @@ onBeforeUnmount(() => {
                   class="w-full border border-red/30 bg-red/10 px-3 py-2 text-left text-xs font-semibold tracking-[0.08em] text-red transition hover:bg-red/15"
                   @click="queueTaskDeletion(selectedTask)"
                 >
-                  Delete
+                  {{ selectedTaskLifecycleMutation === 'deleting' ? 'Deleting...' : 'Delete' }}
                 </button>
               </div>
             </details>
 
           </div>
+
+          <p
+            v-if="selectedTaskLifecycleMutation"
+            class="border border-blue/20 bg-blue/8 px-4 py-3 text-sm leading-6 text-blue"
+          >
+            {{ taskLifecycleProgressMessage(selectedTaskLifecycleMutation) }}
+          </p>
 
           <p
             v-if="selectedTaskDispatchDisabledReason && selectedTask.status === 'open' && !selectedTaskCanContinue"

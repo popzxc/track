@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::errors::{ErrorCode, TrackError};
+use crate::path_component::validate_single_normal_path_component;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
@@ -106,24 +109,21 @@ pub struct TaskCreateInput {
 }
 
 impl TaskCreateInput {
-    pub fn validate(self) -> Result<Self, crate::errors::TrackError> {
+    pub fn validate(self) -> Result<Self, TrackError> {
         let validated = Self {
-            project: self.project.trim().to_owned(),
+            project: validate_single_normal_path_component(
+                &self.project,
+                "Task project",
+                ErrorCode::InvalidPathComponent,
+            )?,
             priority: self.priority,
             description: self.description.trim().to_owned(),
             source: self.source,
         };
 
-        if validated.project.is_empty() {
-            return Err(crate::errors::TrackError::new(
-                crate::errors::ErrorCode::InvalidTaskUpdate,
-                "Please choose a project for the new task.",
-            ));
-        }
-
         if validated.description.is_empty() {
-            return Err(crate::errors::TrackError::new(
-                crate::errors::ErrorCode::EmptyInput,
+            return Err(TrackError::new(
+                ErrorCode::EmptyInput,
                 "Please provide a task description.",
             ));
         }
@@ -143,7 +143,7 @@ pub struct TaskUpdateInput {
 }
 
 impl TaskUpdateInput {
-    pub fn validate(self) -> Result<Self, crate::errors::TrackError> {
+    pub fn validate(self) -> Result<Self, TrackError> {
         let description = self
             .description
             .map(|value| value.trim().to_owned())
@@ -159,8 +159,8 @@ impl TaskUpdateInput {
             && validated.priority.is_none()
             && validated.status.is_none()
         {
-            return Err(crate::errors::TrackError::new(
-                crate::errors::ErrorCode::InvalidTaskUpdate,
+            return Err(TrackError::new(
+                ErrorCode::InvalidTaskUpdate,
                 "At least one mutable field must be provided.",
             ));
         }

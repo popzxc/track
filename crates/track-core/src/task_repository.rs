@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::errors::{ErrorCode, TrackError};
+use crate::path_component::validate_single_normal_path_component;
 use crate::paths::{get_data_dir, path_to_string};
 use crate::task_id::build_unique_task_id;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
@@ -55,27 +56,20 @@ impl FileTaskRepository {
     }
 
     pub fn create_task(&self, input: TaskCreateInput) -> Result<StoredTask, TrackError> {
-        let trimmed_description = input.description.trim().to_owned();
-        if trimmed_description.is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::EmptyInput,
-                "Please provide a task description.",
-            ));
-        }
+        let input = input.validate()?;
 
         // We create project folders on demand so the first captured task can be
         // the thing that establishes a repository's task directory.
         self.ensure_project_directories(&input.project)?;
 
         let timestamp = now_utc();
-        let destination_directory = self.get_status_directory(&input.project, Status::Open);
         // Task bodies can contain extra captured context, but the filename
         // should stay anchored to the concise title on the first non-empty
         // line so paths remain readable and stable.
-        let slug_source =
-            first_non_empty_line(&trimmed_description).unwrap_or(&trimmed_description);
+        let slug_source = first_non_empty_line(&input.description).unwrap_or(&input.description);
         let id = build_unique_task_id(timestamp, slug_source, |candidate| {
             self.get_task_file_path(&input.project, Status::Open, candidate)
+                .expect("generated task ids should stay path-safe")
                 .exists()
         });
 
@@ -84,13 +78,13 @@ impl FileTaskRepository {
             project: input.project.clone(),
             priority: input.priority,
             status: Status::Open,
-            description: trimmed_description,
+            description: input.description.clone(),
             created_at: timestamp,
             updated_at: timestamp,
             source: input.source,
         };
 
-        let file_path = destination_directory.join(format!("{id}{TASK_FILE_EXTENSION}"));
+        let file_path = self.get_task_file_path(&task.project, Status::Open, &id)?;
         self.write_task_file(&file_path, &task)?;
 
         Ok(StoredTask { file_path, task })
@@ -106,7 +100,11 @@ impl FileTaskRepository {
         }
 
         let projects = match project {
-            Some(project) => vec![project.to_owned()],
+            Some(project) => vec![validate_single_normal_path_component(
+                project,
+                "Task project",
+                ErrorCode::InvalidPathComponent,
+            )?],
             None => self.list_project_directories()?,
         };
         let statuses = if include_closed {
@@ -118,7 +116,7 @@ impl FileTaskRepository {
         let mut tasks = Vec::new();
         for project in projects {
             for status in &statuses {
-                let directory_path = self.get_status_directory(&project, *status);
+                let directory_path = self.get_status_directory(&project, *status)?;
                 if !directory_path.exists() {
                     continue;
                 }
@@ -192,7 +190,7 @@ impl FileTaskRepository {
         };
 
         let destination_file_path =
-            self.get_task_file_path(&updated_task.project, next_status, &updated_task.id);
+            self.get_task_file_path(&updated_task.project, next_status, &updated_task.id)?;
         self.ensure_project_directories(&updated_task.project)?;
         self.write_task_file(&destination_file_path, &updated_task)?;
 
@@ -227,7 +225,7 @@ impl FileTaskRepository {
     }
 
     fn ensure_project_directories(&self, project: &str) -> Result<(), TrackError> {
-        let open_directory = self.get_status_directory(project, Status::Open);
+        let open_directory = self.get_status_directory(project, Status::Open)?;
         fs::create_dir_all(&open_directory).map_err(|error| {
             TrackError::new(
                 ErrorCode::TaskWriteFailed,
@@ -238,7 +236,7 @@ impl FileTaskRepository {
             )
         })?;
 
-        let closed_directory = self.get_status_directory(project, Status::Closed);
+        let closed_directory = self.get_status_directory(project, Status::Closed)?;
         fs::create_dir_all(&closed_directory).map_err(|error| {
             TrackError::new(
                 ErrorCode::TaskWriteFailed,
@@ -253,6 +251,12 @@ impl FileTaskRepository {
     }
 
     fn find_task_by_id(&self, id: &str) -> Result<StoredTask, TrackError> {
+        let id = validate_single_normal_path_component(
+            id,
+            "Task id",
+            ErrorCode::InvalidPathComponent,
+        )?;
+
         if !self.data_dir.exists() {
             return Err(TrackError::new(
                 ErrorCode::TaskNotFound,
@@ -262,7 +266,7 @@ impl FileTaskRepository {
 
         for project in self.list_project_directories()? {
             for status in [Status::Open, Status::Closed] {
-                let file_path = self.get_task_file_path(&project, status, id);
+                let file_path = self.get_task_file_path(&project, status, &id)?;
                 if !file_path.exists() {
                     continue;
                 }
@@ -323,19 +327,50 @@ impl FileTaskRepository {
                 continue;
             }
 
-            projects.push(project_name);
+            let validated_project_name = match validate_single_normal_path_component(
+                &project_name,
+                "Task project",
+                ErrorCode::InvalidPathComponent,
+            ) {
+                Ok(project_name) => project_name,
+                Err(error) => {
+                    eprintln!(
+                        "Skipping invalid project directory {}: {}",
+                        path_to_string(&entry.path()),
+                        error
+                    );
+                    continue;
+                }
+            };
+
+            projects.push(validated_project_name);
         }
 
         Ok(projects)
     }
 
-    fn get_status_directory(&self, project: &str, status: Status) -> PathBuf {
-        self.data_dir.join(project).join(status.as_str())
+    fn get_status_directory(&self, project: &str, status: Status) -> Result<PathBuf, TrackError> {
+        let project = validate_single_normal_path_component(
+            project,
+            "Task project",
+            ErrorCode::InvalidPathComponent,
+        )?;
+
+        Ok(self.data_dir.join(project).join(status.as_str()))
     }
 
-    fn get_task_file_path(&self, project: &str, status: Status, id: &str) -> PathBuf {
-        self.get_status_directory(project, status)
-            .join(format!("{id}{TASK_FILE_EXTENSION}"))
+    fn get_task_file_path(
+        &self,
+        project: &str,
+        status: Status,
+        id: &str,
+    ) -> Result<PathBuf, TrackError> {
+        let id =
+            validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
+
+        Ok(self
+            .get_status_directory(project, status)?
+            .join(format!("{id}{TASK_FILE_EXTENSION}")))
     }
 
     fn read_task_file(&self, file_path: &Path) -> Result<StoredTask, TrackError> {
@@ -679,6 +714,46 @@ mod tests {
         assert!(!raw_file.contains("project:"));
         assert!(!raw_file.contains("status:"));
         assert!(raw_file.contains("Fix a bug in module A"));
+    }
+
+    #[test]
+    fn rejects_project_names_that_are_not_single_path_components() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = FileTaskRepository::new(Some(directory.path().join("issues")))
+            .expect("repository should resolve");
+
+        let error = repository
+            .create_task(TaskCreateInput {
+                project: "../escape".to_owned(),
+                priority: Priority::High,
+                description: "Do not escape the task root".to_owned(),
+                source: Some(TaskSource::Cli),
+            })
+            .expect_err("task creation should reject traversal-shaped project names");
+
+        assert_eq!(error.code, ErrorCode::InvalidPathComponent);
+    }
+
+    #[test]
+    fn rejects_task_ids_that_are_not_single_path_components() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = FileTaskRepository::new(Some(directory.path().join("issues")))
+            .expect("repository should resolve");
+
+        repository
+            .create_task(TaskCreateInput {
+                project: "project-x".to_owned(),
+                priority: Priority::High,
+                description: "Keep task ids path-safe".to_owned(),
+                source: Some(TaskSource::Cli),
+            })
+            .expect("task should be created");
+
+        let error = repository
+            .get_task("../escape")
+            .expect_err("task lookup should reject traversal-shaped ids");
+
+        assert_eq!(error.code, ErrorCode::InvalidPathComponent);
     }
 
     #[test]

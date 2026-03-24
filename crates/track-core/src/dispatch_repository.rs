@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::errors::{ErrorCode, TrackError};
+use crate::path_component::validate_single_normal_path_component;
 use crate::paths::{get_dispatches_dir, path_to_string};
 use crate::time_utils::now_utc;
 use crate::types::{DispatchStatus, Task, TaskDispatchRecord};
@@ -50,7 +51,7 @@ impl DispatchRepository {
     }
 
     pub fn save_dispatch(&self, record: &TaskDispatchRecord) -> Result<(), TrackError> {
-        let task_dispatch_directory = self.dispatch_directory_for_task(&record.task_id);
+        let task_dispatch_directory = self.dispatch_directory_for_task(&record.task_id)?;
         fs::create_dir_all(&task_dispatch_directory).map_err(|error| {
             TrackError::new(
                 ErrorCode::DispatchWriteFailed,
@@ -69,7 +70,7 @@ impl DispatchRepository {
         })?;
 
         fs::write(
-            self.dispatch_record_path(&record.task_id, &record.dispatch_id),
+            self.dispatch_record_path(&record.task_id, &record.dispatch_id)?,
             serialized,
         )
         .map_err(|error| {
@@ -94,7 +95,7 @@ impl DispatchRepository {
         &self,
         task_id: &str,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let task_dispatch_directory = self.dispatch_directory_for_task(task_id);
+        let task_dispatch_directory = self.dispatch_directory_for_task(task_id)?;
         if !task_dispatch_directory.exists() {
             return Ok(Vec::new());
         }
@@ -315,7 +316,24 @@ impl DispatchRepository {
                 continue;
             }
 
-            task_ids.push(entry.file_name().to_string_lossy().into_owned());
+            let task_id = entry.file_name().to_string_lossy().into_owned();
+            let validated_task_id = match validate_single_normal_path_component(
+                &task_id,
+                "Task id",
+                ErrorCode::InvalidPathComponent,
+            ) {
+                Ok(task_id) => task_id,
+                Err(error) => {
+                    eprintln!(
+                        "Skipping invalid dispatch history directory {}: {}",
+                        path_to_string(&entry.path()),
+                        error
+                    );
+                    continue;
+                }
+            };
+
+            task_ids.push(validated_task_id);
         }
 
         task_ids.sort();
@@ -327,7 +345,7 @@ impl DispatchRepository {
         task_id: &str,
         dispatch_id: &str,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
-        let dispatch_record_path = self.dispatch_record_path(task_id, dispatch_id);
+        let dispatch_record_path = self.dispatch_record_path(task_id, dispatch_id)?;
         if !dispatch_record_path.exists() {
             return Ok(None);
         }
@@ -355,7 +373,7 @@ impl DispatchRepository {
     }
 
     pub fn delete_dispatch_history_for_task(&self, task_id: &str) -> Result<(), TrackError> {
-        let task_dispatch_directory = self.dispatch_directory_for_task(task_id);
+        let task_dispatch_directory = self.dispatch_directory_for_task(task_id)?;
         if !task_dispatch_directory.exists() {
             return Ok(());
         }
@@ -371,13 +389,27 @@ impl DispatchRepository {
         })
     }
 
-    fn dispatch_directory_for_task(&self, task_id: &str) -> PathBuf {
-        self.dispatches_dir.join(task_id)
+    fn dispatch_directory_for_task(&self, task_id: &str) -> Result<PathBuf, TrackError> {
+        let task_id =
+            validate_single_normal_path_component(task_id, "Task id", ErrorCode::InvalidPathComponent)?;
+
+        Ok(self.dispatches_dir.join(task_id))
     }
 
-    fn dispatch_record_path(&self, task_id: &str, dispatch_id: &str) -> PathBuf {
-        self.dispatch_directory_for_task(task_id)
-            .join(format!("{dispatch_id}.json"))
+    fn dispatch_record_path(
+        &self,
+        task_id: &str,
+        dispatch_id: &str,
+    ) -> Result<PathBuf, TrackError> {
+        let dispatch_id = validate_single_normal_path_component(
+            dispatch_id,
+            "Dispatch id",
+            ErrorCode::InvalidPathComponent,
+        )?;
+
+        Ok(self
+            .dispatch_directory_for_task(task_id)?
+            .join(format!("{dispatch_id}.json")))
     }
 }
 
@@ -388,6 +420,7 @@ mod tests {
     use super::DispatchRepository;
     use time::Duration;
 
+    use crate::errors::ErrorCode;
     use crate::time_utils::now_utc;
     use crate::types::{DispatchStatus, Priority, Task, TaskDispatchRecord};
 
@@ -447,6 +480,49 @@ mod tests {
 
         assert_eq!(latest.dispatch_id, "dispatch-2");
         assert_eq!(latest.status, DispatchStatus::Running);
+    }
+
+    #[test]
+    fn rejects_task_ids_that_are_not_single_path_components() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = DispatchRepository::new(Some(directory.path().join(".dispatches")))
+            .expect("dispatch repository should resolve");
+
+        let error = repository
+            .latest_dispatch_for_task("../escape")
+            .expect_err("dispatch lookup should reject traversal-shaped task ids");
+
+        assert_eq!(error.code, ErrorCode::InvalidPathComponent);
+    }
+
+    #[test]
+    fn rejects_dispatch_ids_that_are_not_single_path_components() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = DispatchRepository::new(Some(directory.path().join(".dispatches")))
+            .expect("dispatch repository should resolve");
+        let created_at = now_utc();
+
+        let error = repository
+            .save_dispatch(&TaskDispatchRecord {
+                dispatch_id: "../dispatch-2".to_owned(),
+                task_id: "task-1".to_owned(),
+                project: "project-a".to_owned(),
+                status: DispatchStatus::Running,
+                created_at,
+                updated_at: created_at,
+                finished_at: None,
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: None,
+                worktree_path: None,
+                pull_request_url: None,
+                follow_up_request: None,
+                summary: None,
+                notes: None,
+                error_message: None,
+            })
+            .expect_err("dispatch writes should reject traversal-shaped dispatch ids");
+
+        assert_eq!(error.code, ErrorCode::InvalidPathComponent);
     }
 
     #[test]
