@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 publish = false
 
+[features]
+default = []
+cuda = ["track-capture/cuda"]
+
 [[bin]]
 name = "track"
 path = "src/main.rs"

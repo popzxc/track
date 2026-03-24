@@ -12,6 +12,7 @@ use llama_cpp_2::model::{
 };
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
+use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use llama_cpp_2::TokenToStringError;
 use serde_json::json;
 use track_core::errors::{ErrorCode, TrackError};
@@ -95,14 +96,43 @@ fn run_llama_cpp_2_inference(
     json_schema: &str,
     debug_ai: bool,
 ) -> Result<ParsedTaskCandidate, TrackError> {
-    let mut backend = LlamaBackend::init().map_err(|error| {
+    // CUDA device discovery logs are emitted during backend initialization, so
+    // suppressing logs after `LlamaBackend::init()` is too late for the normal
+    // CLI path. We install the muted callback first and keep the debug path
+    // untouched so `TRACK_DEBUG_AI=1` still surfaces upstream details when
+    // someone is actively diagnosing local-model behavior.
+    //
+    // TODO: If `track` ever reuses the parser across multiple captures in one
+    // process with different debug settings, replace this crate-level helper
+    // with a direct per-call logger hook.
+    if !debug_ai {
+        send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
+    }
+
+    let backend = LlamaBackend::init().map_err(|error| {
         TrackError::new(
             ErrorCode::AiParseFailed,
             format!("AI parse failure. Could not initialize llama.cpp: {error}"),
         )
     })?;
-    if !debug_ai {
-        backend.void_logs();
+
+    // A CUDA-enabled build is an explicit performance choice. If that build
+    // reaches a machine where libllama cannot offload to a GPU, we fail fast
+    // instead of silently running the much slower CPU path.
+    let gpu_offload_available = backend.supports_gpu_offload();
+    if debug_ai {
+        eprintln!(
+            "track AI debug: llama.cpp build flavor = {}, gpu offload available = {}",
+            llama_cpp_build_flavor(),
+            gpu_offload_available,
+        );
+    }
+    #[cfg(feature = "cuda")]
+    if !gpu_offload_available {
+        return Err(TrackError::new(
+            ErrorCode::AiParseFailed,
+            "AI parse failure. This `track` binary was built with CUDA support, but llama.cpp could not enable GPU offload on this machine. Rebuild without `--features cuda` or make sure the NVIDIA driver and CUDA toolkit are installed and the GPU is visible.",
+        ));
     }
 
     let model = LlamaModel::load_from_file(&backend, model_path, &LlamaModelParams::default())
@@ -238,6 +268,18 @@ fn run_llama_cpp_2_inference(
     truncate_additional_stop_sequences(&mut generated_text, &result.additional_stops);
 
     parse_candidate_from_generated_json(&generated_text)
+}
+
+fn llama_cpp_build_flavor() -> &'static str {
+    #[cfg(feature = "cuda")]
+    {
+        "cuda"
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    {
+        "default"
+    }
 }
 
 fn parse_candidate_from_generated_json(output: &str) -> Result<ParsedTaskCandidate, TrackError> {
@@ -452,6 +494,7 @@ fn log_parse_event(timestamp: &str, model_path: &Path, ok: bool, error: Option<S
         "timestamp": timestamp,
         "event": "ai_parse",
         "provider": "llama-cpp-2",
+        "buildFlavor": llama_cpp_build_flavor(),
         "modelPath": path_to_string(model_path),
         "ok": ok,
         "error": error,

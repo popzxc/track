@@ -70,6 +70,47 @@ To reinstall after updating the repository:
 cargo install --path crates/track-cli --locked --force
 ```
 
+If you are on a Linux machine with a supported NVIDIA GPU, we recommend the
+CUDA-enabled CLI build because local task capture is much faster with GPU
+offload. The CPU-only build remains the portable fallback for machines without
+working CUDA support.
+
+Before building, make sure:
+
+- `~/.cargo/bin` is on `PATH` so the installed `track` binary is available.
+- the NVIDIA driver is working, for example `nvidia-smi` succeeds.
+- the CUDA toolkit is installed, and either `nvcc` is on `PATH` or
+  `CUDACXX` points at it.
+
+A common setup on Linux is:
+
+```bash
+export PATH="$HOME/.cargo/bin:/usr/local/cuda/bin:$PATH"
+export CUDACXX=/usr/local/cuda/bin/nvcc
+```
+
+Then install the CUDA-enabled CLI:
+
+```bash
+cargo install --path crates/track-cli --locked --force --features cuda
+```
+
+If you are doing local development instead of installing the CLI, build it with:
+
+```bash
+cargo build --release -p track-cli --features cuda
+```
+
+To verify that the resulting binary really uses the GPU path, run a capture with
+debug logging enabled:
+
+```bash
+TRACK_DEBUG_AI=1 track test note
+```
+
+The debug output should mention `llama.cpp build flavor = cuda` and
+`gpu offload available = true`.
+
 ### Run the web UI with Docker Compose
 
 After `track` has created `~/.config/track/config.json`, start the combined
@@ -262,6 +303,8 @@ For local frontend development, `frontend/vite.config.ts` proxies `/api` and
   than rediscovering host repositories.
 - The CLI uses in-process `llama.cpp` bindings for local parsing.
 - The default local model is cached under `~/.track/models`.
+- Advanced users can build the CLI with `--features cuda` to let `llama.cpp`
+  use NVIDIA GPU offload when it is available.
 - The CLI sends a best-effort local API notification after creating a task.
 - Remote dispatch uses the system `ssh` and `scp` clients from the API process.
 - The Rust API serves both JSON routes and the built frontend assets.

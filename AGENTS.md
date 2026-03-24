@@ -83,6 +83,9 @@ The backend supports local parsing only.
   `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
 - When Hugging Face config is active, the model is cached under
   `~/.track/models`.
+- On supported Linux hosts with NVIDIA GPUs, the CUDA-enabled CLI build is the
+  recommended local parsing path because it materially improves capture
+  latency. The CPU build remains the portable fallback.
 
 Do not reintroduce hosted-model assumptions without an explicit user request.
 

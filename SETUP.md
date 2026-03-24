@@ -291,6 +291,31 @@ If you want to override the model later, edit `~/.config/track/config.json`
 directly and add a `llamaCpp` block with either `llamaCpp.modelPath` or both
 `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
 
+If you are on a Linux machine with a supported NVIDIA GPU, we recommend the
+CUDA-enabled CLI build for local parsing because task capture is much faster
+with GPU offload. The CPU-only build remains the fallback for machines without
+working CUDA support.
+
+Before building, make sure:
+
+- the NVIDIA driver is working, for example `nvidia-smi` succeeds.
+- the CUDA toolkit is installed.
+- `~/.cargo/bin` is on `PATH` so the installed `track` binary is available.
+- either `nvcc` is on `PATH` or `CUDACXX` points at it.
+
+A common Linux setup looks like:
+
+```bash
+export PATH="$HOME/.cargo/bin:/usr/local/cuda/bin:$PATH"
+export CUDACXX=/usr/local/cuda/bin/nvcc
+```
+
+Then install the CUDA-enabled CLI:
+
+```bash
+cargo install --path crates/track-cli --locked --force --features cuda
+```
+
 When you import the key, `track` copies it into its managed automation
 directory under `~/.track/remote-agent/`. That is why the key must be dedicated
 to this workflow.
