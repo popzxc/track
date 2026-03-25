@@ -5,8 +5,9 @@ use std::io::{self, IsTerminal};
 use dialoguer::{theme::ColorfulTheme, Input};
 
 use crate::config::{
-    ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
-    DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT,
+    ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile,
+    RemoteAgentReviewFollowUpConfigFile, TrackConfigFile, DEFAULT_LLAMACPP_MODEL_HF_FILE,
+    DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT,
     DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
 use crate::errors::{ErrorCode, TrackError};
@@ -254,6 +255,23 @@ fn prompt_remote_agent_port(
         match response.parse::<u16>() {
             Ok(port) if port > 0 => return Ok(port),
             _ => prompter.println("Please enter a valid SSH port."),
+        }
+    }
+}
+
+fn prompt_yes_no(
+    prompter: &mut dyn Prompter,
+    label: &str,
+    default_value: bool,
+) -> Result<bool, TrackError> {
+    loop {
+        let default_display = if default_value { "yes" } else { "no" };
+        let response = prompt_with_default(prompter, label, Some(default_display), false)?;
+
+        match response.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" | "true" => return Ok(true),
+            "n" | "no" | "false" => return Ok(false),
+            _ => prompter.println("Please answer yes or no."),
         }
     }
 }
@@ -519,6 +537,43 @@ pub fn run_configure_command_with_prompter(
                 .or(Some(DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH)),
         )?;
         prompt_remote_agent_key_import(prompter, managed_remote_agent_key_exists()?)?;
+        let existing_review_follow_up = existing_remote_agent
+            .and_then(|remote_agent| remote_agent.review_follow_up.as_ref());
+        let review_follow_up_enabled = prompt_yes_no(
+            prompter,
+            "Enable automatic GitHub review follow-ups",
+            existing_review_follow_up
+                .map(|review_follow_up| review_follow_up.enabled)
+                .unwrap_or(false),
+        )?;
+
+        // We intentionally remember the last configured reviewer when the
+        // feature is toggled off. That keeps the wizard fast to re-enable on a
+        // later run instead of forcing users back through the web UI.
+        // TODO: If users ask to clear the remembered GitHub user from the
+        // wizard, add an explicit prompt for that instead of overloading the
+        // yes/no flow here.
+        let review_follow_up = if review_follow_up_enabled {
+            let main_user = prompt_required_value(
+                prompter,
+                "GitHub user for automatic follow-ups",
+                existing_review_follow_up.and_then(|review_follow_up| {
+                    review_follow_up.main_user.as_deref()
+                }),
+            )?;
+
+            Some(RemoteAgentReviewFollowUpConfigFile {
+                enabled: true,
+                main_user: Some(main_user),
+            })
+        } else {
+            existing_review_follow_up
+                .and_then(|review_follow_up| review_follow_up.main_user.clone())
+                .map(|main_user| RemoteAgentReviewFollowUpConfigFile {
+                    enabled: false,
+                    main_user: Some(main_user),
+                })
+        };
 
         Some(RemoteAgentConfigFile {
             host,
@@ -533,6 +588,7 @@ pub fn run_configure_command_with_prompter(
             // setup into a single-line prompt.
             shell_prelude: existing_remote_agent
                 .and_then(|remote_agent| remote_agent.shell_prelude.clone()),
+            review_follow_up,
         })
     } else {
         // TODO: Consider removing the managed SSH key when remote dispatch is
@@ -569,9 +625,10 @@ mod tests {
         run_configure_command_with_prompter, ConfigureReason, Prompter,
     };
     use crate::config::{
-        ConfigService, LlamaCppConfigFile, TrackConfigFile, DEFAULT_LLAMACPP_MODEL_HF_FILE,
-        DEFAULT_LLAMACPP_MODEL_HF_REPO,
+        ConfigService, LlamaCppConfigFile, RemoteAgentReviewFollowUpConfigFile, TrackConfigFile,
+        DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
     };
+    use crate::test_support::{set_env_var, track_data_env_lock};
 
     struct ScriptedPrompter {
         answers: VecDeque<String>,
@@ -690,5 +747,66 @@ mod tests {
 
         assert!(!output.contains("llamaCpp.modelHfRepo"));
         assert!(!output.contains("llamaCpp.modelHfFile"));
+    }
+
+    #[test]
+    fn writes_remote_review_follow_up_from_wizard() {
+        let (_directory, service) = temp_config_service();
+        let _track_data_dir_guard = track_data_env_lock()
+            .lock()
+            .expect("track data dir lock should not be poisoned");
+        let data_dir = service
+            .resolved_path()
+            .parent()
+            .expect("config path should have a parent")
+            .join("track-data")
+            .join("issues");
+        let _track_data_dir = set_env_var("TRACK_DATA_DIR", &data_dir);
+
+        let ssh_key_source = data_dir
+            .parent()
+            .expect("data dir should have a parent")
+            .join("id_ed25519.source");
+        std::fs::create_dir_all(
+            ssh_key_source
+                .parent()
+                .expect("SSH key source should have a parent"),
+        )
+        .expect("SSH key source parent should be created");
+        std::fs::write(&ssh_key_source, "not-a-real-private-key")
+            .expect("SSH key source should be written");
+
+        let ssh_key_source = ssh_key_source.to_string_lossy().into_owned();
+        let mut prompter = ScriptedPrompter::new(&[
+            "3210",
+            "~/work",
+            "",
+            "builder.example.com",
+            "codex",
+            "2222",
+            "/srv/track",
+            "/srv/track/projects.json",
+            &ssh_key_source,
+            "yes",
+            "octocat",
+        ]);
+
+        run_configure_command_with_prompter(&service, &mut prompter, ConfigureReason::FirstRun)
+            .expect("config wizard should succeed");
+
+        let saved = service
+            .load_config_file()
+            .expect("saved config should load successfully");
+        let remote_agent = saved
+            .remote_agent
+            .expect("remote agent config should be present");
+
+        assert_eq!(
+            remote_agent.review_follow_up,
+            Some(RemoteAgentReviewFollowUpConfigFile {
+                enabled: true,
+                main_user: Some("octocat".to_owned()),
+            })
+        );
     }
 }

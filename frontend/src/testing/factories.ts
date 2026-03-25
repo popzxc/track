@@ -76,6 +76,9 @@ export function buildRemoteAgentSettings(
     user: 'track',
     port: 2222,
     shellPrelude: 'export PATH="/opt/track-testing/bin:$PATH"',
+    reviewFollowUp: {
+      enabled: false,
+    },
     ...overrides,
   }
 }

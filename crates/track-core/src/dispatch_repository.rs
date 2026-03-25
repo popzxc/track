@@ -44,6 +44,8 @@ impl DispatchRepository {
             summary: None,
             notes: None,
             error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
         };
 
         self.save_dispatch(&record)?;
@@ -468,6 +470,8 @@ mod tests {
             summary: None,
             notes: None,
             error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
         };
         repository
             .save_dispatch(&second)
@@ -519,6 +523,8 @@ mod tests {
                 summary: None,
                 notes: None,
                 error_message: None,
+                review_request_head_oid: None,
+                review_request_user: None,
             })
             .expect_err("dispatch writes should reject traversal-shaped dispatch ids");
 
@@ -568,6 +574,8 @@ mod tests {
             summary: None,
             notes: None,
             error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
         };
         repository
             .save_dispatch(&newer)
@@ -674,6 +682,8 @@ mod tests {
             summary: Some("Opened a PR.".to_owned()),
             notes: None,
             error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
         };
         repository
             .save_dispatch(&newer)

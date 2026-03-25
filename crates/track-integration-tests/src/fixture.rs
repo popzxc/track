@@ -149,6 +149,7 @@ impl RemoteFixture {
             workspace_root: FIXTURE_WORKSPACE_ROOT.to_owned(),
             projects_registry_path: FIXTURE_PROJECTS_REGISTRY_PATH.to_owned(),
             shell_prelude: Some(FIXTURE_SHELL_PRELUDE.to_owned()),
+            review_follow_up: None,
         }
     }
 

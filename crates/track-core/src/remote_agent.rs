@@ -124,6 +124,61 @@ struct RemoteWorkspaceResetReport {
     registry_removed: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoteReviewFollowUpReconciliation {
+    pub queued_dispatches: Vec<TaskDispatchRecord>,
+    pub review_requests_updated: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubPullRequestReference {
+    owner: String,
+    repository: String,
+    number: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubPullRequestReviewState {
+    is_open: bool,
+    head_oid: String,
+    requested_reviewers: BTreeSet<String>,
+    latest_eligible_review: Option<GithubSubmittedReview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubSubmittedReview {
+    state: String,
+    submitted_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestApiResponse {
+    state: String,
+    #[serde(rename = "merged_at")]
+    merged_at: Option<String>,
+    head: GithubPullRequestHeadApiResponse,
+    #[serde(rename = "requested_reviewers", default)]
+    requested_reviewers: Vec<GithubUserApiResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestHeadApiResponse {
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubUserApiResponse {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReviewApiResponse {
+    state: String,
+    #[serde(rename = "submitted_at")]
+    submitted_at: Option<String>,
+    user: Option<GithubUserApiResponse>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RemoteProjectRegistryFile {
     version: u8,
@@ -262,6 +317,8 @@ impl<'a> RemoteDispatchService<'a> {
         )
         .or(previous_dispatch.pull_request_url.clone());
         dispatch_record.follow_up_request = Some(trimmed_follow_up_request.to_owned());
+        dispatch_record.review_request_head_oid = previous_dispatch.review_request_head_oid.clone();
+        dispatch_record.review_request_user = previous_dispatch.review_request_user.clone();
         dispatch_record.summary = Some(format!(
             "Follow-up request: {}",
             first_follow_up_line(trimmed_follow_up_request)
@@ -800,6 +857,136 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(records)
     }
 
+    // =============================================================================
+    // Review Follow-Up Reconciliation
+    // =============================================================================
+    //
+    // The review automation stays intentionally narrow for now:
+    //
+    // - request review from the configured `mainUser` after a PR head changes
+    // - queue one follow-up when that same user leaves actionable review feedback
+    //
+    // We treat review submissions as "newer than the bot run" when their
+    // timestamp is after the dispatch `created_at`. That is conservative on
+    // purpose: if review feedback lands while a bot run is already active, we
+    // would rather schedule one extra follow-up than silently miss the human
+    // feedback entirely.
+    pub fn reconcile_review_follow_up(
+        &self,
+    ) -> Result<RemoteReviewFollowUpReconciliation, TrackError> {
+        let runtime_config = match self.config_service.load_runtime_config() {
+            Ok(config) => config,
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::ConfigNotFound
+                        | ErrorCode::InvalidConfig
+                        | ErrorCode::InvalidRemoteAgentConfig
+                ) =>
+            {
+                return Ok(RemoteReviewFollowUpReconciliation::default());
+            }
+            Err(error) => return Err(error),
+        };
+
+        let Some(remote_agent) = runtime_config.remote_agent else {
+            return Ok(RemoteReviewFollowUpReconciliation::default());
+        };
+        let Some(review_follow_up) = remote_agent.review_follow_up.clone() else {
+            return Ok(RemoteReviewFollowUpReconciliation::default());
+        };
+        if !remote_agent.managed_key_path.exists() {
+            return Ok(RemoteReviewFollowUpReconciliation::default());
+        }
+
+        let task_ids = self.dispatch_repository.task_ids_with_history()?;
+        if task_ids.is_empty() {
+            return Ok(RemoteReviewFollowUpReconciliation::default());
+        }
+
+        let latest_dispatches = self.latest_dispatches_for_tasks(&task_ids)?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let mut reconciliation = RemoteReviewFollowUpReconciliation::default();
+
+        for dispatch_record in latest_dispatches {
+            let Some(pull_request_url) = dispatch_record
+                .pull_request_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            match self.task_repository.get_task(&dispatch_record.task_id) {
+                Ok(task) if task.status == Status::Open => task,
+                Ok(_) => continue,
+                Err(error) if error.code == ErrorCode::TaskNotFound => continue,
+                Err(error) => return Err(error),
+            };
+
+            let pull_request_state = ssh_client
+                .fetch_pull_request_review_state(pull_request_url, &review_follow_up.main_user)?;
+            if !pull_request_state.is_open {
+                continue;
+            }
+
+            if dispatch_record.status.is_active() {
+                continue;
+            }
+
+            if let Some(latest_review) = pull_request_state.latest_eligible_review.as_ref() {
+                if latest_review.submitted_at > dispatch_record.created_at {
+                    let follow_up_request = build_review_follow_up_request(
+                        pull_request_url,
+                        &review_follow_up.main_user,
+                        dispatch_record.created_at,
+                    );
+                    let queued_dispatch = self
+                        .queue_follow_up_dispatch(&dispatch_record.task_id, &follow_up_request)?;
+                    reconciliation.queued_dispatches.push(queued_dispatch);
+                    continue;
+                }
+            }
+
+            if pull_request_state.head_oid.is_empty() {
+                continue;
+            }
+
+            let already_recorded_for_head =
+                dispatch_record.review_request_head_oid.as_deref()
+                    == Some(pull_request_state.head_oid.as_str())
+                    && dispatch_record.review_request_user.as_deref()
+                        == Some(review_follow_up.main_user.as_str());
+            if already_recorded_for_head {
+                continue;
+            }
+
+            if pull_request_state
+                .requested_reviewers
+                .contains(&review_follow_up.main_user)
+            {
+                self.mark_review_requested_for_head(
+                    &dispatch_record,
+                    &pull_request_state.head_oid,
+                    &review_follow_up.main_user,
+                )?;
+                reconciliation.review_requests_updated += 1;
+                continue;
+            }
+
+            ssh_client.request_pull_request_review(pull_request_url, &review_follow_up.main_user)?;
+            self.mark_review_requested_for_head(
+                &dispatch_record,
+                &pull_request_state.head_oid,
+                &review_follow_up.main_user,
+            )?;
+            reconciliation.review_requests_updated += 1;
+        }
+
+        Ok(reconciliation)
+    }
+
     fn refresh_active_dispatch_records(
         &self,
         records: Vec<TaskDispatchRecord>,
@@ -1056,6 +1243,18 @@ impl<'a> RemoteDispatchService<'a> {
                 status: None,
             },
         )
+    }
+
+    fn mark_review_requested_for_head(
+        &self,
+        dispatch_record: &TaskDispatchRecord,
+        head_oid: &str,
+        review_user: &str,
+    ) -> Result<(), TrackError> {
+        let mut updated_record = dispatch_record.clone();
+        updated_record.review_request_head_oid = Some(head_oid.to_owned());
+        updated_record.review_request_user = Some(review_user.to_owned());
+        self.dispatch_repository.save_dispatch(&updated_record)
     }
 
     fn cleanup_task_remote_artifacts(
@@ -1455,6 +1654,7 @@ fn build_remote_dispatch_prompt(
     prompt.push_str("- Use the current worktree as the only place to make changes.\n");
     prompt.push_str("- Use conventional commits for both commit messages and the PR title, for example `feat: Add X`, `fix: Correct Y`, or `chore: Update Z`.\n");
     prompt.push_str("- If the follow-up mentions review comments or reviewer feedback, fetch that context with `gh` instead of guessing.\n");
+    prompt.push_str("- If the follow-up names a reviewer, only act on that reviewer's feedback unless the request explicitly says otherwise.\n");
     prompt.push_str("- If the task is blocked, explain the blocker clearly in the final JSON.\n\n");
     prompt.push_str("## Task title\n\n");
     prompt.push_str(&sections.title);
@@ -1713,6 +1913,57 @@ fn parse_github_repository_name(repo_url: &str) -> Result<String, TrackError> {
     Ok(repository_name.to_owned())
 }
 
+fn parse_github_pull_request_reference(
+    pull_request_url: &str,
+) -> Result<GithubPullRequestReference, TrackError> {
+    let trimmed = pull_request_url.trim().trim_end_matches('/');
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Pull request URL {pull_request_url} does not look like a GitHub pull request."
+                ),
+            )
+        })?;
+    let parts = without_scheme.split('/').collect::<Vec<_>>();
+    if parts.len() != 4 || parts[2] != "pull" {
+        return Err(TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Pull request URL {pull_request_url} does not look like a GitHub pull request."),
+        ));
+    }
+
+    let number = parts[3].parse::<u64>().map_err(|_| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Pull request URL {pull_request_url} does not contain a valid PR number."),
+        )
+    })?;
+
+    Ok(GithubPullRequestReference {
+        owner: parts[0].to_owned(),
+        repository: parts[1].to_owned(),
+        number,
+    })
+}
+
+fn build_review_follow_up_request(
+    pull_request_url: &str,
+    main_user: &str,
+    dispatch_started_at: time::OffsetDateTime,
+) -> String {
+    format!(
+        "Respond to new review feedback from @{main_user} on the existing PR.\n\n\
+Use `gh` to fetch submitted PR reviews and inline review comments from @{main_user} only.\n\
+Only use reviews with state COMMENTED or CHANGES_REQUESTED that were submitted after {dispatch_started_at}.\n\
+Ignore APPROVED reviews and all feedback from other users.\n\
+Keep using the existing PR at {pull_request_url} unless you explain why that is impossible.",
+        dispatch_started_at = format_iso_8601_millis(dispatch_started_at),
+    )
+}
+
 fn remote_path_helpers_shell() -> &'static str {
     r#"
 expand_remote_path() {
@@ -1882,6 +2133,114 @@ gh api user --jq .login
         }
 
         Ok(login)
+    }
+
+    fn fetch_pull_request_review_state(
+        &self,
+        pull_request_url: &str,
+        main_user: &str,
+    ) -> Result<GithubPullRequestReviewState, TrackError> {
+        let reference = parse_github_pull_request_reference(pull_request_url)?;
+        let pull_request_json = self.run_script(
+            r#"
+set -eu
+ENDPOINT="$1"
+gh api "$ENDPOINT"
+"#,
+            &[format!(
+                "repos/{}/{}/pulls/{}",
+                reference.owner, reference.repository, reference.number
+            )],
+        )?;
+        let pull_request =
+            serde_json::from_str::<GithubPullRequestApiResponse>(&pull_request_json).map_err(
+                |error| {
+                    TrackError::new(
+                        ErrorCode::RemoteDispatchFailed,
+                        format!("GitHub PR details are not valid JSON: {error}"),
+                    )
+                },
+            )?;
+
+        let reviews_json = self.run_script(
+            r#"
+set -eu
+ENDPOINT="$1"
+gh api "$ENDPOINT"
+"#,
+            &[format!(
+                "repos/{}/{}/pulls/{}/reviews?per_page=100",
+                reference.owner, reference.repository, reference.number
+            )],
+        )?;
+        let reviews = serde_json::from_str::<Vec<GithubReviewApiResponse>>(&reviews_json).map_err(
+            |error| {
+                TrackError::new(
+                    ErrorCode::RemoteDispatchFailed,
+                    format!("GitHub PR reviews are not valid JSON: {error}"),
+                )
+            },
+        )?;
+
+        let latest_eligible_review = reviews
+            .into_iter()
+            .filter_map(|review| {
+                let reviewer = review.user?.login;
+                if reviewer != main_user {
+                    return None;
+                }
+
+                if review.state != "COMMENTED" && review.state != "CHANGES_REQUESTED" {
+                    return None;
+                }
+
+                let submitted_at = review
+                    .submitted_at
+                    .as_deref()
+                    .and_then(|value| parse_iso_8601_seconds(value).ok())?;
+
+                Some(GithubSubmittedReview {
+                    state: review.state,
+                    submitted_at,
+                })
+            })
+            .max_by_key(|review| review.submitted_at);
+
+        Ok(GithubPullRequestReviewState {
+            is_open: pull_request.state == "open" && pull_request.merged_at.is_none(),
+            head_oid: pull_request.head.sha,
+            requested_reviewers: pull_request
+                .requested_reviewers
+                .into_iter()
+                .map(|reviewer| reviewer.login)
+                .collect(),
+            latest_eligible_review,
+        })
+    }
+
+    fn request_pull_request_review(
+        &self,
+        pull_request_url: &str,
+        main_user: &str,
+    ) -> Result<(), TrackError> {
+        let reference = parse_github_pull_request_reference(pull_request_url)?;
+        self.run_script(
+            r#"
+set -eu
+ENDPOINT="$1"
+MAIN_USER="$2"
+gh api --method POST "$ENDPOINT" -f reviewers[]="$MAIN_USER" >/dev/null
+"#,
+            &[
+                format!(
+                    "repos/{}/{}/pulls/{}/requested_reviewers",
+                    reference.owner, reference.repository, reference.number
+                ),
+                main_user.to_owned(),
+            ],
+        )?;
+
+        Ok(())
     }
 
     fn ensure_checkout(
@@ -2894,12 +3253,11 @@ fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc,
     };
 
     use tempfile::TempDir;
@@ -2911,7 +3269,8 @@ mod tests {
     use crate::project_repository::{ProjectMetadata, ProjectRepository};
     use crate::task_description::render_task_description;
     use crate::task_repository::FileTaskRepository;
-    use crate::time_utils::now_utc;
+    use crate::test_support::{set_env_var, track_data_env_lock};
+    use crate::time_utils::{now_utc, parse_iso_8601_seconds};
     use crate::types::{
         DispatchStatus, Priority, Status, TaskCreateInput, TaskDispatchRecord, TaskSource,
         TaskUpdateInput,
@@ -2920,7 +3279,8 @@ mod tests {
 
     use super::{
         build_remote_codex_launcher, build_remote_dispatch_prompt, build_remote_dispatch_schema,
-        latest_pull_request_for_branch, parse_dispatch_snapshot_report,
+        build_review_follow_up_request, latest_pull_request_for_branch,
+        parse_dispatch_snapshot_report, parse_github_pull_request_reference,
         parse_github_repository_name, refresh_dispatch_record_from_snapshot,
         render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
         RemoteDispatchService, RemoteDispatchSnapshot,
@@ -3030,35 +3390,6 @@ mod tests {
         }
     }
 
-    fn track_data_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous_value: Option<OsString>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.previous_value.take() {
-                Some(previous_value) => std::env::set_var(self.key, previous_value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: &Path) -> EnvVarGuard {
-        let previous_value = std::env::var_os(key);
-        std::env::set_var(key, value);
-
-        EnvVarGuard {
-            key,
-            previous_value,
-        }
-    }
-
     fn install_dummy_managed_remote_agent_material(data_dir: &Path) {
         let remote_agent_dir = data_dir
             .parent()
@@ -3100,6 +3431,7 @@ mod tests {
         assert!(prompt.contains("## Existing PR"));
         assert!(prompt.contains("## Current follow-up request"));
         assert!(prompt.contains("fetch that context with `gh`"));
+        assert!(prompt.contains("only act on that reviewer's feedback"));
         assert!(prompt.contains("track/dispatch-1"));
         assert!(
             prompt.contains("Use conventional commits for both commit messages and the PR title")
@@ -3127,6 +3459,32 @@ mod tests {
                 .expect("github url should parse"),
             "project-x"
         );
+    }
+
+    #[test]
+    fn parses_github_pull_request_reference() {
+        let reference = parse_github_pull_request_reference(
+            "https://github.com/acme/project-x/pull/42",
+        )
+        .expect("github pr url should parse");
+
+        assert_eq!(reference.owner, "acme");
+        assert_eq!(reference.repository, "project-x");
+        assert_eq!(reference.number, 42);
+    }
+
+    #[test]
+    fn builds_review_follow_up_request_that_scopes_feedback_to_one_user() {
+        let request = build_review_follow_up_request(
+            "https://github.com/acme/project-x/pull/42",
+            "octocat",
+            parse_iso_8601_seconds("2026-03-25T12:00:00Z").expect("timestamp should parse"),
+        );
+
+        assert!(request.contains("@octocat"));
+        assert!(request.contains("COMMENTED or CHANGES_REQUESTED"));
+        assert!(request.contains("Ignore APPROVED reviews"));
+        assert!(request.contains("https://github.com/acme/project-x/pull/42"));
     }
 
     #[test]
@@ -3221,6 +3579,8 @@ mod tests {
             summary: None,
             notes: None,
             error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
         };
         let snapshot = RemoteDispatchSnapshot {
             status: Some("canceled\n".to_owned()),
@@ -3260,6 +3620,8 @@ mod tests {
                 summary: Some("Launch failed before the branch was restored.".to_owned()),
                 notes: None,
                 error_message: Some("Remote launch failed.".to_owned()),
+                review_request_head_oid: None,
+                review_request_user: None,
             },
             TaskDispatchRecord {
                 dispatch_id: "dispatch-2".to_owned(),
@@ -3277,6 +3639,8 @@ mod tests {
                 summary: Some("Opened a PR.".to_owned()),
                 notes: None,
                 error_message: None,
+                review_request_head_oid: None,
+                review_request_user: None,
             },
             TaskDispatchRecord {
                 dispatch_id: "dispatch-1".to_owned(),
@@ -3294,6 +3658,8 @@ mod tests {
                 summary: None,
                 notes: None,
                 error_message: Some("Old failure.".to_owned()),
+                review_request_head_oid: None,
+                review_request_user: None,
             },
         ];
 
@@ -3407,6 +3773,7 @@ mod tests {
             workspace_root: "~/workspace".to_owned(),
             projects_registry_path: "~/track-projects.json".to_owned(),
             shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
+            review_follow_up: None,
         })));
         let task =
             context.create_task("project-a", "Retry after the previous remote run got stuck");

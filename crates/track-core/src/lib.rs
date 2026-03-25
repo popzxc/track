@@ -16,3 +16,6 @@ pub mod terminal_ui;
 pub mod time_utils;
 pub mod types;
 pub mod wizard;
+
+#[cfg(test)]
+pub(crate) mod test_support;

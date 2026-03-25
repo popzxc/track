@@ -23,6 +23,12 @@ export interface RemoteAgentSettings {
   user?: string
   port?: number
   shellPrelude?: string
+  reviewFollowUp?: RemoteAgentReviewFollowUpSettings
+}
+
+export interface RemoteAgentReviewFollowUpSettings {
+  enabled: boolean
+  mainUser?: string
 }
 
 export interface RemoteCleanupSummary {
@@ -135,4 +141,5 @@ export interface ProjectMetadataUpdateInput {
 
 export interface RemoteAgentSettingsUpdateInput {
   shellPrelude: string
+  reviewFollowUp?: RemoteAgentReviewFollowUpSettings
 }

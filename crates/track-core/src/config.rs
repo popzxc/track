@@ -10,7 +10,8 @@ use crate::paths::{
     get_managed_remote_agent_known_hosts_path, resolve_path_from_config_file,
 };
 use crate::types::{
-    ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, RemoteAgentRuntimeConfig,
+    ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig,
+    RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig,
     TrackRuntimeConfig,
 };
 
@@ -110,6 +111,20 @@ pub struct RemoteAgentConfigFile {
         skip_serializing_if = "Option::is_none"
     )]
     pub shell_prelude: Option<String>,
+    #[serde(
+        rename = "reviewFollowUp",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAgentReviewFollowUpConfigFile {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(rename = "mainUser", default, skip_serializing_if = "Option::is_none")]
+    pub main_user: Option<String>,
 }
 
 fn default_api_port() -> u16 {
@@ -194,6 +209,32 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
             let workspace_root = remote_agent.workspace_root.trim().to_owned();
             let projects_registry_path = remote_agent.projects_registry_path.trim().to_owned();
             let shell_prelude = canonicalize_optional_multiline_value(remote_agent.shell_prelude);
+            let review_follow_up = remote_agent
+                .review_follow_up
+                .map(|review_follow_up| {
+                    let main_user = review_follow_up
+                        .main_user
+                        .map(|value| value.trim().to_owned())
+                        .filter(|value| !value.is_empty());
+
+                    if review_follow_up.enabled && main_user.is_none() {
+                        return Err(TrackError::new(
+                            ErrorCode::InvalidRemoteAgentConfig,
+                            "Remote review follow-up requires `mainUser` when the feature is enabled.",
+                        ));
+                    }
+
+                    if !review_follow_up.enabled && main_user.is_none() {
+                        return Ok(None);
+                    }
+
+                    Ok(Some(RemoteAgentReviewFollowUpConfigFile {
+                        enabled: review_follow_up.enabled,
+                        main_user,
+                    }))
+                })
+                .transpose()?
+                .flatten();
 
             if host.is_empty()
                 || user.is_empty()
@@ -214,6 +255,7 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
                 workspace_root,
                 projects_registry_path,
                 shell_prelude,
+                review_follow_up,
             })
         })
         .transpose()?;
@@ -345,6 +387,15 @@ impl ConfigService {
                     workspace_root: remote_agent.workspace_root,
                     projects_registry_path: remote_agent.projects_registry_path,
                     shell_prelude: remote_agent.shell_prelude,
+                    review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
+                        if review_follow_up.enabled {
+                            review_follow_up.main_user.map(|main_user| {
+                                RemoteAgentReviewFollowUpRuntimeConfig { main_user }
+                            })
+                        } else {
+                            None
+                        }
+                    }),
                     managed_key_path: get_managed_remote_agent_key_path()?,
                     managed_known_hosts_path: get_managed_remote_agent_known_hosts_path()?,
                 })
@@ -366,9 +417,10 @@ impl ConfigService {
         Ok(self.load_config_file()?.remote_agent)
     }
 
-    pub fn save_remote_agent_shell_prelude(
+    pub fn save_remote_agent_settings(
         &self,
         shell_prelude: Option<String>,
+        review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
         let mut config = self.load_config_file()?;
         let Some(remote_agent) = config.remote_agent.as_mut() else {
@@ -379,6 +431,7 @@ impl ConfigService {
         };
 
         remote_agent.shell_prelude = canonicalize_optional_multiline_value(shell_prelude);
+        remote_agent.review_follow_up = review_follow_up;
         self.save_config_file(&config)?;
 
         self.load_config_file()?
@@ -400,11 +453,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        default_llama_cpp_model_source, ConfigService, RemoteAgentConfigFile, TrackConfigFile,
+        default_llama_cpp_model_source, ConfigService, RemoteAgentConfigFile,
+        RemoteAgentReviewFollowUpConfigFile, TrackConfigFile,
         DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
         DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
         DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
+    use crate::errors::ErrorCode;
     use crate::types::LlamaCppModelSource;
 
     fn temp_config_service() -> (TempDir, ConfigService) {
@@ -437,6 +492,7 @@ mod tests {
                     workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
                     projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
                     shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
+                    review_follow_up: None,
                 }),
             })
             .expect("config should save");
@@ -495,6 +551,7 @@ mod tests {
                     workspace_root: "~/workspace".to_owned(),
                     projects_registry_path: "~/track-projects.json".to_owned(),
                     shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
+                    review_follow_up: None,
                 }),
             })
             .expect("config should save");
@@ -584,5 +641,35 @@ mod tests {
             runtime.llama_cpp.model_source,
             default_llama_cpp_model_source()
         );
+    }
+
+    #[test]
+    fn rejects_enabled_review_follow_up_without_a_main_user() {
+        let (_directory, service) = temp_config_service();
+
+        let error = service
+            .save_config_file(&TrackConfigFile {
+                project_roots: vec!["~/work".to_owned()],
+                project_aliases: BTreeMap::new(),
+                api: super::ApiConfigFile {
+                    port: DEFAULT_API_PORT,
+                },
+                llama_cpp: super::LlamaCppConfigFile::default(),
+                remote_agent: Some(RemoteAgentConfigFile {
+                    host: "192.0.2.25".to_owned(),
+                    user: "builder".to_owned(),
+                    port: DEFAULT_REMOTE_AGENT_PORT,
+                    workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
+                    projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                    shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
+                    review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
+                        enabled: true,
+                        main_user: None,
+                    }),
+                }),
+            })
+            .expect_err("enabled review follow-up without a main user should fail");
+
+        assert_eq!(error.code, ErrorCode::InvalidRemoteAgentConfig);
     }
 }

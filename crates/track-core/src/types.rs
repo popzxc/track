@@ -191,6 +191,11 @@ pub struct ApiRuntimeConfig {
     pub port: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAgentReviewFollowUpRuntimeConfig {
+    pub main_user: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAgentDispatchOutcome {
     pub status: DispatchStatus,
@@ -240,6 +245,10 @@ pub struct TaskDispatchRecord {
     pub notes: Option<String>,
     #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    #[serde(rename = "reviewRequestHeadOid", skip_serializing_if = "Option::is_none")]
+    pub review_request_head_oid: Option<String>,
+    #[serde(rename = "reviewRequestUser", skip_serializing_if = "Option::is_none")]
+    pub review_request_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +281,7 @@ pub struct RemoteAgentRuntimeConfig {
     pub workspace_root: String,
     pub projects_registry_path: String,
     pub shell_prelude: Option<String>,
+    pub review_follow_up: Option<RemoteAgentReviewFollowUpRuntimeConfig>,
     pub managed_key_path: PathBuf,
     pub managed_known_hosts_path: PathBuf,
 }

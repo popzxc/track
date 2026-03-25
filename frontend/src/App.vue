@@ -1607,7 +1607,7 @@ onBeforeUnmount(() => {
                       </span>
                     </div>
 
-                    <dl class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <dl class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                       <div class="border border-fg2/15 bg-bg0/60 p-4">
                         <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
                           Host
@@ -1638,6 +1638,14 @@ onBeforeUnmount(() => {
                         </dt>
                         <dd class="mt-2 text-sm text-fg1">
                           {{ runnerSetupReady ? 'Configured' : 'Missing' }}
+                        </dd>
+                      </div>
+                      <div class="border border-fg2/15 bg-bg0/60 p-4">
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                          Review follow-up
+                        </dt>
+                        <dd class="mt-2 text-sm text-fg1">
+                          {{ remoteAgentSettings?.reviewFollowUp?.enabled ? 'Enabled' : 'Disabled' }}
                         </dd>
                       </div>
                     </dl>
@@ -1672,6 +1680,25 @@ onBeforeUnmount(() => {
                       Current shell prelude
                     </p>
                     <pre class="mt-4 overflow-x-auto whitespace-pre-wrap text-sm leading-7 text-fg1">{{ remoteAgentSettings?.shellPrelude || 'No shell prelude has been saved yet.' }}</pre>
+                    <div class="mt-6 border-t border-fg2/10 pt-4">
+                      <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                        Review follow-up
+                      </p>
+                      <div class="mt-4 space-y-2 text-sm leading-7 text-fg1">
+                        <p>
+                          Status:
+                          <span class="text-fg0">
+                            {{ remoteAgentSettings?.reviewFollowUp?.enabled ? 'Enabled' : 'Disabled' }}
+                          </span>
+                        </p>
+                        <p>
+                          Main user:
+                          <span class="text-fg0">
+                            {{ remoteAgentSettings?.reviewFollowUp?.mainUser || 'Not set' }}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
                   </section>
                 </div>
 

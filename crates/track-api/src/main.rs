@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use track_api::{AppState, build_app};
+use track_api::{AppState, build_app, spawn_remote_review_follow_up_reconciler};
 use track_core::config::ConfigService;
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::project_repository::ProjectRepository;
@@ -39,16 +39,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&address).await?;
 
-    let app = build_app(
-        AppState {
-            config_service,
-            dispatch_repository: Arc::new(DispatchRepository::new(None)?),
-            project_repository: Arc::new(ProjectRepository::new(None)?),
-            task_repository: Arc::new(FileTaskRepository::new(None)?),
-            task_change_version: Arc::new(AtomicU64::new(0)),
-        },
-        static_root(),
-    );
+    let state = AppState {
+        config_service,
+        dispatch_repository: Arc::new(DispatchRepository::new(None)?),
+        project_repository: Arc::new(ProjectRepository::new(None)?),
+        task_repository: Arc::new(FileTaskRepository::new(None)?),
+        task_change_version: Arc::new(AtomicU64::new(0)),
+    };
+    spawn_remote_review_follow_up_reconciler(state.clone());
+    let app = build_app(state, static_root());
 
     tracing::info!("track API listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;

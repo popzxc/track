@@ -10,7 +10,9 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
-use track_core::config::{ConfigService, RemoteAgentConfigFile};
+use track_core::config::{
+    ConfigService, RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile,
+};
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::errors::{ErrorCode, TrackError};
 use track_core::project_repository::{
@@ -164,6 +166,15 @@ struct RemoteAgentSettingsResponse {
     port: Option<u16>,
     #[serde(rename = "shellPrelude", skip_serializing_if = "Option::is_none")]
     shell_prelude: Option<String>,
+    #[serde(rename = "reviewFollowUp", skip_serializing_if = "Option::is_none")]
+    review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RemoteAgentReviewFollowUpSettingsResponse {
+    enabled: bool,
+    #[serde(rename = "mainUser", skip_serializing_if = "Option::is_none")]
+    main_user: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,6 +208,8 @@ struct RunsQuery {
 struct UpdateRemoteAgentSettingsInput {
     #[serde(rename = "shellPrelude")]
     shell_prelude: String,
+    #[serde(rename = "reviewFollowUp")]
+    review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +227,18 @@ fn remote_agent_settings_response(
             user: Some(remote_agent.user),
             port: Some(remote_agent.port),
             shell_prelude: remote_agent.shell_prelude,
+            review_follow_up: Some(
+                remote_agent
+                    .review_follow_up
+                    .map(|review_follow_up| RemoteAgentReviewFollowUpSettingsResponse {
+                        enabled: review_follow_up.enabled,
+                        main_user: review_follow_up.main_user,
+                    })
+                    .unwrap_or(RemoteAgentReviewFollowUpSettingsResponse {
+                        enabled: false,
+                        main_user: None,
+                    }),
+            ),
         },
         None => RemoteAgentSettingsResponse {
             configured: false,
@@ -221,6 +246,7 @@ fn remote_agent_settings_response(
             user: None,
             port: None,
             shell_prelude: None,
+            review_follow_up: None,
         },
     }
 }
@@ -255,10 +281,27 @@ async fn patch_remote_agent_settings(
 ) -> Result<Json<RemoteAgentSettingsResponse>, ApiError> {
     let input = serde_json::from_slice::<UpdateRemoteAgentSettingsInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+    let existing_remote_agent = state
+        .config_service
+        .load_remote_agent_config()
+        .map_err(ApiError::from_track_error)?
+        .ok_or_else(|| ApiError::from_track_error(TrackError::new(
+            ErrorCode::RemoteAgentNotConfigured,
+            "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+        )))?;
 
     let remote_agent = state
         .config_service
-        .save_remote_agent_shell_prelude(Some(input.shell_prelude))
+        .save_remote_agent_settings(
+            Some(input.shell_prelude),
+            input
+                .review_follow_up
+                .map(|review_follow_up| RemoteAgentReviewFollowUpConfigFile {
+                    enabled: review_follow_up.enabled,
+                    main_user: review_follow_up.main_user,
+                })
+                .or(existing_remote_agent.review_follow_up),
+        )
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(remote_agent_settings_response(Some(remote_agent))))
@@ -592,6 +635,52 @@ fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
     });
 }
 
+pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+
+            let reconcile_state = state.clone();
+            let join_result = tokio::task::spawn_blocking(move || {
+                let dispatch_service = RemoteDispatchService {
+                    config_service: &reconcile_state.config_service,
+                    dispatch_repository: &reconcile_state.dispatch_repository,
+                    project_repository: &reconcile_state.project_repository,
+                    task_repository: &reconcile_state.task_repository,
+                };
+
+                dispatch_service.reconcile_review_follow_up()
+            })
+            .await;
+
+            let reconciliation = match join_result {
+                Ok(Ok(reconciliation)) => reconciliation,
+                Ok(Err(error)) => {
+                    tracing::warn!("Review follow-up reconciliation failed: {error}");
+                    continue;
+                }
+                Err(join_error) => {
+                    tracing::warn!(
+                        "Review follow-up reconciliation task failed to join: {join_error}"
+                    );
+                    continue;
+                }
+            };
+
+            if !reconciliation.queued_dispatches.is_empty() {
+                bump_task_change_version(&state);
+            }
+
+            for queued_dispatch in reconciliation.queued_dispatches {
+                spawn_dispatch_launch(state.clone(), queued_dispatch);
+            }
+        }
+    });
+}
+
 async fn dispatch_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -801,6 +890,7 @@ mod tests {
                     workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
                     projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
                     shell_prelude: Some(". \"$HOME/.cargo/env\"".to_owned()),
+                    review_follow_up: None,
                 }),
             })
             .expect("remote-agent config should save");
@@ -1567,6 +1657,7 @@ mod tests {
             serde_json::from_slice(&get_body).expect("get response should be valid json");
         assert_eq!(get_json["configured"], true);
         assert_eq!(get_json["shellPrelude"], ". \"$HOME/.cargo/env\"");
+        assert_eq!(get_json["reviewFollowUp"]["enabled"], false);
 
         let patch_response = app
             .oneshot(
@@ -1575,7 +1666,7 @@ mod tests {
                     .uri("/api/remote-agent")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"shellPrelude":"export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\""}"#,
+                        r#"{"shellPrelude":"export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"","reviewFollowUp":{"enabled":true,"mainUser":"octocat"}}"#,
                     ))
                     .expect("patch request should build"),
             )
@@ -1591,5 +1682,7 @@ mod tests {
             patch_json["shellPrelude"],
             "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\""
         );
+        assert_eq!(patch_json["reviewFollowUp"]["enabled"], true);
+        assert_eq!(patch_json["reviewFollowUp"]["mainUser"], "octocat");
     }
 }
