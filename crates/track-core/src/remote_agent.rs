@@ -127,7 +127,7 @@ struct RemoteWorkspaceResetReport {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteReviewFollowUpReconciliation {
     pub queued_dispatches: Vec<TaskDispatchRecord>,
-    pub review_requests_updated: usize,
+    pub review_notifications_updated: usize,
     pub failures: usize,
     pub events: Vec<RemoteReviewFollowUpEvent>,
 }
@@ -145,7 +145,6 @@ pub struct RemoteReviewFollowUpEvent {
     pub reviewer: String,
     pub pr_is_open: Option<bool>,
     pub pr_head_oid: Option<String>,
-    pub reviewer_already_requested: Option<bool>,
     pub latest_review_state: Option<String>,
     pub latest_review_submitted_at: Option<String>,
 }
@@ -161,7 +160,6 @@ struct GithubPullRequestReference {
 struct GithubPullRequestReviewState {
     is_open: bool,
     head_oid: String,
-    requested_reviewers: BTreeSet<String>,
     latest_eligible_review: Option<GithubSubmittedReview>,
 }
 
@@ -177,8 +175,6 @@ struct GithubPullRequestApiResponse {
     #[serde(rename = "merged_at")]
     merged_at: Option<String>,
     head: GithubPullRequestHeadApiResponse,
-    #[serde(rename = "requested_reviewers", default)]
-    requested_reviewers: Vec<GithubUserApiResponse>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -883,7 +879,7 @@ impl<'a> RemoteDispatchService<'a> {
     //
     // The review automation stays intentionally narrow for now:
     //
-    // - request review from the configured `mainUser` after a PR head changes
+    // - mention the configured `mainUser` on the PR after a PR head changes
     // - queue one follow-up when that same user leaves actionable review feedback
     //
     // We treat review submissions as "newer than the bot run" when their
@@ -1030,7 +1026,7 @@ impl<'a> RemoteDispatchService<'a> {
             if pull_request_state.head_oid.is_empty() {
                 reconciliation.events.push(review_follow_up_event(
                     "skip_missing_head_oid",
-                    "Skipped reviewer notification because the PR head SHA is missing.",
+                    "Skipped PR reviewer notification because the PR head SHA is missing.",
                     &dispatch_record,
                     &review_follow_up.main_user,
                     Some(&pull_request_state),
@@ -1044,8 +1040,8 @@ impl<'a> RemoteDispatchService<'a> {
                     == Some(review_follow_up.main_user.as_str());
             if already_recorded_for_head {
                 reconciliation.events.push(review_follow_up_event(
-                    "skip_request_already_recorded",
-                    "Skipped reviewer notification because this PR head already recorded the same reviewer.",
+                    "skip_notification_already_recorded",
+                    "Skipped PR reviewer notification because this PR head already recorded the same reviewer.",
                     &dispatch_record,
                     &review_follow_up.main_user,
                     Some(&pull_request_state),
@@ -1053,41 +1049,25 @@ impl<'a> RemoteDispatchService<'a> {
                 continue;
             }
 
-            if pull_request_state
-                .requested_reviewers
-                .contains(&review_follow_up.main_user)
-            {
-                self.mark_review_requested_for_head(
-                    &dispatch_record,
-                    &pull_request_state.head_oid,
-                    &review_follow_up.main_user,
-                )?;
-                reconciliation.events.push(review_follow_up_event(
-                    "record_existing_review_request",
-                    "Recorded the existing reviewer request for the current PR head.",
-                    &dispatch_record,
-                    &review_follow_up.main_user,
-                    Some(&pull_request_state),
-                ));
-                reconciliation.review_requests_updated += 1;
-                continue;
-            }
-
-            let request_review_result = ssh_client
-                .request_pull_request_review(pull_request_url, &review_follow_up.main_user)
+            let notification_comment = build_review_follow_up_notification_comment(
+                &review_follow_up.main_user,
+                &pull_request_state.head_oid,
+            );
+            let notify_reviewer_result = ssh_client
+                .post_pull_request_comment(pull_request_url, &notification_comment)
                 .map_err(|error| {
                     contextualize_track_error(
                         error,
                         format!(
-                            "Review follow-up could not request reviewer @{} for task {} PR {}",
+                            "Review follow-up could not notify reviewer @{} for task {} PR {}",
                             review_follow_up.main_user, dispatch_record.task_id, pull_request_url
                         ),
                     )
                 });
-            if let Err(error) = request_review_result {
+            if let Err(error) = notify_reviewer_result {
                 reconciliation.failures += 1;
                 reconciliation.events.push(review_follow_up_event(
-                    "request_review_failed",
+                    "notify_reviewer_failed",
                     error.to_string(),
                     &dispatch_record,
                     &review_follow_up.main_user,
@@ -1095,19 +1075,19 @@ impl<'a> RemoteDispatchService<'a> {
                 ));
                 continue;
             }
-            self.mark_review_requested_for_head(
+            self.mark_review_notification_for_head(
                 &dispatch_record,
                 &pull_request_state.head_oid,
                 &review_follow_up.main_user,
             )?;
             reconciliation.events.push(review_follow_up_event(
-                "request_review_submitted",
-                "Requested review from the configured main GitHub user for the current PR head.",
+                "notify_reviewer_posted",
+                "Posted a PR comment mentioning the configured main GitHub user for the current PR head.",
                 &dispatch_record,
                 &review_follow_up.main_user,
                 Some(&pull_request_state),
             ));
-            reconciliation.review_requests_updated += 1;
+            reconciliation.review_notifications_updated += 1;
         }
 
         Ok(reconciliation)
@@ -1371,13 +1351,18 @@ impl<'a> RemoteDispatchService<'a> {
         )
     }
 
-    fn mark_review_requested_for_head(
+    fn mark_review_notification_for_head(
         &self,
         dispatch_record: &TaskDispatchRecord,
         head_oid: &str,
         review_user: &str,
     ) -> Result<(), TrackError> {
         let mut updated_record = dispatch_record.clone();
+
+        // These persisted field names started out as "review request" markers.
+        // We intentionally keep them for backward compatibility with existing
+        // dispatch JSON while reusing them as a "notified this reviewer about
+        // this PR head already" checkpoint.
         updated_record.review_request_head_oid = Some(head_oid.to_owned());
         updated_record.review_request_user = Some(review_user.to_owned());
         self.dispatch_repository.save_dispatch(&updated_record)
@@ -2090,6 +2075,15 @@ Keep using the existing PR at {pull_request_url} unless you explain why that is 
     )
 }
 
+fn build_review_follow_up_notification_comment(main_user: &str, head_oid: &str) -> String {
+    let short_head_oid = head_oid.get(..7).unwrap_or(head_oid);
+
+    format!(
+        "@{main_user} new bot updates are ready on commit `{short_head_oid}`. \
+Please leave a PR review (COMMENTED or CHANGES_REQUESTED) if you want the bot to follow up automatically."
+    )
+}
+
 fn github_pull_request_endpoint(reference: &GithubPullRequestReference) -> String {
     format!(
         "repos/{}/{}/pulls/{}",
@@ -2104,12 +2098,10 @@ fn github_pull_request_reviews_endpoint(reference: &GithubPullRequestReference) 
     )
 }
 
-fn github_pull_request_requested_reviewers_endpoint(
-    reference: &GithubPullRequestReference,
-) -> String {
+fn github_pull_request_issue_comments_endpoint(reference: &GithubPullRequestReference) -> String {
     format!(
-        "{}/requested_reviewers",
-        github_pull_request_endpoint(reference)
+        "repos/{}/{}/issues/{}/comments",
+        reference.owner, reference.repository, reference.number
     )
 }
 
@@ -2146,8 +2138,6 @@ fn review_follow_up_event(
         reviewer: reviewer.to_owned(),
         pr_is_open: pull_request_state.map(|state| state.is_open),
         pr_head_oid: pull_request_state.map(|state| state.head_oid.clone()),
-        reviewer_already_requested: pull_request_state
-            .map(|state| state.requested_reviewers.contains(reviewer)),
         latest_review_state,
         latest_review_submitted_at,
     }
@@ -2418,38 +2408,32 @@ gh api "$ENDPOINT"
         Ok(GithubPullRequestReviewState {
             is_open: pull_request.state == "open" && pull_request.merged_at.is_none(),
             head_oid: pull_request.head.sha,
-            requested_reviewers: pull_request
-                .requested_reviewers
-                .into_iter()
-                .map(|reviewer| reviewer.login)
-                .collect(),
             latest_eligible_review,
         })
     }
 
-    fn request_pull_request_review(
+    fn post_pull_request_comment(
         &self,
         pull_request_url: &str,
-        main_user: &str,
+        comment_body: &str,
     ) -> Result<(), TrackError> {
         let reference = parse_github_pull_request_reference(pull_request_url)?;
-        let requested_reviewers_endpoint =
-            github_pull_request_requested_reviewers_endpoint(&reference);
+        let issue_comments_endpoint = github_pull_request_issue_comments_endpoint(&reference);
         self.run_script(
             r#"
 set -eu
 ENDPOINT="$1"
-MAIN_USER="$2"
-gh api --method POST "$ENDPOINT" -f reviewers[]="$MAIN_USER" >/dev/null
+BODY="$2"
+gh api --method POST "$ENDPOINT" -f body="$BODY" >/dev/null
 "#,
-            &[requested_reviewers_endpoint.clone(), main_user.to_owned()],
+            &[issue_comments_endpoint.clone(), comment_body.to_owned()],
         )
         .map_err(|error| {
             contextualize_track_error(
                 error,
                 format!(
-                    "Remote `gh api` on {}@{} could not request reviewer @{} for {} via endpoint `{}`",
-                    self.user, self.host, main_user, pull_request_url, requested_reviewers_endpoint
+                    "Remote `gh api` on {}@{} could not post a PR comment for {} via endpoint `{}`",
+                    self.user, self.host, pull_request_url, issue_comments_endpoint
                 ),
             )
         })?;

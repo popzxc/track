@@ -699,7 +699,6 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
                     reviewer = %event.reviewer,
                     pr_is_open = ?event.pr_is_open,
                     pr_head_oid = %pr_head_oid,
-                    reviewer_already_requested = ?event.reviewer_already_requested,
                     latest_review_state = %latest_review_state,
                     latest_review_submitted_at = %latest_review_submitted_at,
                 );
@@ -712,13 +711,13 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
                 }
             }
 
-            if reconciliation.review_requests_updated > 0
+            if reconciliation.review_notifications_updated > 0
                 || !reconciliation.queued_dispatches.is_empty()
                 || reconciliation.failures > 0
             {
                 tracing::info!(
                     reconciliation_run_id = %reconciliation_run_id,
-                    review_requests_updated = reconciliation.review_requests_updated,
+                    review_notifications_updated = reconciliation.review_notifications_updated,
                     queued_dispatches = reconciliation.queued_dispatches.len(),
                     failures = reconciliation.failures,
                     evaluated_events = reconciliation.events.len(),
