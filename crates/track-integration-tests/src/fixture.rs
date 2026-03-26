@@ -43,10 +43,7 @@ impl RemoteFixture {
         );
         let port = reserve_local_port();
 
-        run_fixturectl(
-            workspace_root,
-            ["build-image", "--image", FIXTURE_IMAGE],
-        );
+        run_fixturectl(workspace_root, ["build-image", "--image", FIXTURE_IMAGE]);
         run_fixturectl(
             workspace_root,
             [
@@ -96,7 +93,11 @@ impl RemoteFixture {
                     .to_string_lossy()
                     .as_ref(),
                 "--known-hosts",
-                runtime_dir.path().join("known_hosts").to_string_lossy().as_ref(),
+                runtime_dir
+                    .path()
+                    .join("known_hosts")
+                    .to_string_lossy()
+                    .as_ref(),
                 "--timeout-seconds",
                 "20",
             ],
@@ -170,7 +171,10 @@ impl RemoteFixture {
             ])
             .arg(format!(
                 "UserKnownHostsFile={}",
-                self.runtime_dir.path().join("known_hosts").to_string_lossy()
+                self.runtime_dir
+                    .path()
+                    .join("known_hosts")
+                    .to_string_lossy()
             ))
             .arg(format!("{FIXTURE_USER}@{FIXTURE_HOST}"))
             .arg("cat")
@@ -189,7 +193,11 @@ impl RemoteFixture {
     }
 
     pub fn read_log_entries(&self, log_name: &str) -> Vec<Value> {
-        let log_path = self.runtime_dir.path().join("logs").join(format!("{log_name}.jsonl"));
+        let log_path = self
+            .runtime_dir
+            .path()
+            .join("logs")
+            .join(format!("{log_name}.jsonl"));
         let Ok(contents) = fs::read_to_string(&log_path) else {
             return Vec::new();
         };
@@ -218,7 +226,10 @@ impl RemoteFixture {
             ])
             .arg(format!(
                 "UserKnownHostsFile={}",
-                self.runtime_dir.path().join("known_hosts").to_string_lossy()
+                self.runtime_dir
+                    .path()
+                    .join("known_hosts")
+                    .to_string_lossy()
             ))
             .arg(format!("{FIXTURE_USER}@{FIXTURE_HOST}"))
             .arg("test")

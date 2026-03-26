@@ -7,8 +7,8 @@ use dialoguer::{theme::ColorfulTheme, Input};
 use crate::config::{
     ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile,
     RemoteAgentReviewFollowUpConfigFile, TrackConfigFile, DEFAULT_LLAMACPP_MODEL_HF_FILE,
-    DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT,
-    DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+    DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
+    DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
 use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{
@@ -537,8 +537,8 @@ pub fn run_configure_command_with_prompter(
                 .or(Some(DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH)),
         )?;
         prompt_remote_agent_key_import(prompter, managed_remote_agent_key_exists()?)?;
-        let existing_review_follow_up = existing_remote_agent
-            .and_then(|remote_agent| remote_agent.review_follow_up.as_ref());
+        let existing_review_follow_up =
+            existing_remote_agent.and_then(|remote_agent| remote_agent.review_follow_up.as_ref());
         let review_follow_up_enabled = prompt_yes_no(
             prompter,
             "Enable automatic GitHub review follow-ups",
@@ -557,9 +557,8 @@ pub fn run_configure_command_with_prompter(
             let main_user = prompt_required_value(
                 prompter,
                 "GitHub user for automatic follow-ups",
-                existing_review_follow_up.and_then(|review_follow_up| {
-                    review_follow_up.main_user.as_deref()
-                }),
+                existing_review_follow_up
+                    .and_then(|review_follow_up| review_follow_up.main_user.as_deref()),
             )?;
 
             Some(RemoteAgentReviewFollowUpConfigFile {

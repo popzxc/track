@@ -392,8 +392,11 @@ impl DispatchRepository {
     }
 
     fn dispatch_directory_for_task(&self, task_id: &str) -> Result<PathBuf, TrackError> {
-        let task_id =
-            validate_single_normal_path_component(task_id, "Task id", ErrorCode::InvalidPathComponent)?;
+        let task_id = validate_single_normal_path_component(
+            task_id,
+            "Task id",
+            ErrorCode::InvalidPathComponent,
+        )?;
 
         Ok(self.dispatches_dir.join(task_id))
     }
@@ -621,12 +624,10 @@ mod tests {
             .delete_dispatch_history_for_task(&task.id)
             .expect("dispatch history should delete");
 
-        assert!(
-            repository
-                .latest_dispatch_for_task(&task.id)
-                .expect("latest dispatch lookup should succeed")
-                .is_none()
-        );
+        assert!(repository
+            .latest_dispatch_for_task(&task.id)
+            .expect("latest dispatch lookup should succeed")
+            .is_none());
     }
 
     #[test]

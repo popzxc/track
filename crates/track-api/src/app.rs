@@ -230,10 +230,12 @@ fn remote_agent_settings_response(
             review_follow_up: Some(
                 remote_agent
                     .review_follow_up
-                    .map(|review_follow_up| RemoteAgentReviewFollowUpSettingsResponse {
-                        enabled: review_follow_up.enabled,
-                        main_user: review_follow_up.main_user,
-                    })
+                    .map(
+                        |review_follow_up| RemoteAgentReviewFollowUpSettingsResponse {
+                            enabled: review_follow_up.enabled,
+                            main_user: review_follow_up.main_user,
+                        },
+                    )
                     .unwrap_or(RemoteAgentReviewFollowUpSettingsResponse {
                         enabled: false,
                         main_user: None,
@@ -642,6 +644,8 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
 
         loop {
             interval.tick().await;
+            let reconciliation_run_id =
+                format!("review-follow-up-{}", now_utc().unix_timestamp_nanos());
 
             let reconcile_state = state.clone();
             let join_result = tokio::task::spawn_blocking(move || {
@@ -659,16 +663,68 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
             let reconciliation = match join_result {
                 Ok(Ok(reconciliation)) => reconciliation,
                 Ok(Err(error)) => {
-                    tracing::warn!("Review follow-up reconciliation failed: {error}");
+                    tracing::warn!(
+                        reconciliation_run_id = %reconciliation_run_id,
+                        "Review follow-up reconciliation failed: {error}"
+                    );
                     continue;
                 }
                 Err(join_error) => {
                     tracing::warn!(
+                        reconciliation_run_id = %reconciliation_run_id,
                         "Review follow-up reconciliation task failed to join: {join_error}"
                     );
                     continue;
                 }
             };
+
+            for event in &reconciliation.events {
+                let branch_name = event.branch_name.as_deref().unwrap_or("");
+                let pull_request_url = event.pull_request_url.as_deref().unwrap_or("");
+                let pr_head_oid = event.pr_head_oid.as_deref().unwrap_or("");
+                let latest_review_state = event.latest_review_state.as_deref().unwrap_or("");
+                let latest_review_submitted_at =
+                    event.latest_review_submitted_at.as_deref().unwrap_or("");
+
+                let task_event = tracing::info_span!(
+                    "review_follow_up_task_event",
+                    reconciliation_run_id = %reconciliation_run_id,
+                    outcome = %event.outcome,
+                    task_id = %event.task_id,
+                    dispatch_id = %event.dispatch_id,
+                    dispatch_status = %event.dispatch_status,
+                    remote_host = %event.remote_host,
+                    branch_name = %branch_name,
+                    pull_request_url = %pull_request_url,
+                    reviewer = %event.reviewer,
+                    pr_is_open = ?event.pr_is_open,
+                    pr_head_oid = %pr_head_oid,
+                    reviewer_already_requested = ?event.reviewer_already_requested,
+                    latest_review_state = %latest_review_state,
+                    latest_review_submitted_at = %latest_review_submitted_at,
+                );
+                let _task_event_guard = task_event.enter();
+
+                if event.outcome.ends_with("_failed") {
+                    tracing::warn!("{}", event.detail);
+                } else {
+                    tracing::info!("{}", event.detail);
+                }
+            }
+
+            if reconciliation.review_requests_updated > 0
+                || !reconciliation.queued_dispatches.is_empty()
+                || reconciliation.failures > 0
+            {
+                tracing::info!(
+                    reconciliation_run_id = %reconciliation_run_id,
+                    review_requests_updated = reconciliation.review_requests_updated,
+                    queued_dispatches = reconciliation.queued_dispatches.len(),
+                    failures = reconciliation.failures,
+                    evaluated_events = reconciliation.events.len(),
+                    "Review follow-up reconciliation applied updates"
+                );
+            }
 
             if !reconciliation.queued_dispatches.is_empty() {
                 bump_task_change_version(&state);

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use track_api::{AppState, build_app, spawn_remote_review_follow_up_reconciler};
+use track_api::{build_app, spawn_remote_review_follow_up_reconciler, AppState};
 use track_core::config::ConfigService;
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::project_repository::ProjectRepository;
@@ -32,6 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_file(true)
+        .with_line_number(true)
         .init();
 
     let config_service = Arc::new(ConfigService::new(None)?);

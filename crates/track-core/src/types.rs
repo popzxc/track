@@ -61,6 +61,17 @@ pub enum DispatchStatus {
 }
 
 impl DispatchStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Canceled => "canceled",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+        }
+    }
+
     pub fn is_active(self) -> bool {
         matches!(self, Self::Preparing | Self::Running)
     }
@@ -245,7 +256,10 @@ pub struct TaskDispatchRecord {
     pub notes: Option<String>,
     #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
-    #[serde(rename = "reviewRequestHeadOid", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "reviewRequestHeadOid",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub review_request_head_oid: Option<String>,
     #[serde(rename = "reviewRequestUser", skip_serializing_if = "Option::is_none")]
     pub review_request_user: Option<String>,

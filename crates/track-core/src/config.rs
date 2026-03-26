@@ -11,8 +11,7 @@ use crate::paths::{
 };
 use crate::types::{
     ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig,
-    RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig,
-    TrackRuntimeConfig,
+    RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig, TrackRuntimeConfig,
 };
 
 pub const DEFAULT_API_PORT: u16 = 3210;
@@ -454,10 +453,9 @@ mod tests {
 
     use super::{
         default_llama_cpp_model_source, ConfigService, RemoteAgentConfigFile,
-        RemoteAgentReviewFollowUpConfigFile, TrackConfigFile,
-        DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
-        DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
-        DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+        RemoteAgentReviewFollowUpConfigFile, TrackConfigFile, DEFAULT_API_PORT,
+        DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT,
+        DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
     use crate::errors::ErrorCode;
     use crate::types::LlamaCppModelSource;
