@@ -124,10 +124,11 @@ Then open <http://localhost:3210>.
 
 The Compose file will build the image if needed and will automatically mount:
 
-- `${HOME}/.track/issues` to `/data/issues`
-- `${HOME}/.track/remote-agent` to `/data/remote-agent`
+- `${HOME}/.track` to `/data`
 - `${HOME}/.config/track/config.json` to `/config/config.json`
 
+Mounting the whole `~/.track` root keeps sibling directories such as
+`issues/`, `reviews/`, and `remote-agent/` writable from inside the container.
 The config mount stays writable because the web UI can update remote-runner
 settings such as `remoteAgent.shellPrelude`.
 

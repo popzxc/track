@@ -28,8 +28,7 @@ pub fn append_follow_up_request(
         return normalized_description.to_owned();
     }
 
-    let follow_up_block =
-        format!("### {timestamp_label}\n\n{normalized_follow_up_request}");
+    let follow_up_block = format!("### {timestamp_label}\n\n{normalized_follow_up_request}");
 
     if normalized_description.contains("## Follow-up requests") {
         format!("{normalized_description}\n\n{follow_up_block}")

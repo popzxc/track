@@ -564,6 +564,8 @@ pub fn run_configure_command_with_prompter(
             Some(RemoteAgentReviewFollowUpConfigFile {
                 enabled: true,
                 main_user: Some(main_user),
+                default_review_prompt: existing_review_follow_up
+                    .and_then(|review_follow_up| review_follow_up.default_review_prompt.clone()),
             })
         } else {
             existing_review_follow_up
@@ -571,6 +573,9 @@ pub fn run_configure_command_with_prompter(
                 .map(|main_user| RemoteAgentReviewFollowUpConfigFile {
                     enabled: false,
                     main_user: Some(main_user),
+                    default_review_prompt: existing_review_follow_up.and_then(|review_follow_up| {
+                        review_follow_up.default_review_prompt.clone()
+                    }),
                 })
         };
 
@@ -805,6 +810,7 @@ mod tests {
             Some(RemoteAgentReviewFollowUpConfigFile {
                 enabled: true,
                 main_user: Some("octocat".to_owned()),
+                default_review_prompt: None,
             })
         );
     }

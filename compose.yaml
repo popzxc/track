@@ -17,12 +17,12 @@ services:
       TRACK_DATA_DIR: /data/issues
       TRACK_CONFIG_PATH: /config/config.json
     volumes:
+      # Mount the whole tracker root instead of only `issues/` so the web UI
+      # can create sibling state such as `reviews/` and keep future root-level
+      # data directories writable without another Compose change.
       - type: bind
-        source: ${HOME}/.track/issues
-        target: /data/issues
-      - type: bind
-        source: ${HOME}/.track/remote-agent
-        target: /data/remote-agent
+        source: ${HOME}/.track
+        target: /data
       - type: bind
         source: ${HOME}/.config/track/config.json
         target: /config/config.json

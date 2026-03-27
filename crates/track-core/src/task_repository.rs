@@ -251,11 +251,8 @@ impl FileTaskRepository {
     }
 
     fn find_task_by_id(&self, id: &str) -> Result<StoredTask, TrackError> {
-        let id = validate_single_normal_path_component(
-            id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
+        let id =
+            validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
 
         if !self.data_dir.exists() {
             return Err(TrackError::new(

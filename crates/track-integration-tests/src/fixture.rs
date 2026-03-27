@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tempfile::TempDir;
-use track_core::config::RemoteAgentConfigFile;
+use track_core::config::{RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile};
 
 const FIXTURE_IMAGE: &str = "track-testing/ssh-fixture:local";
 const FIXTURE_HOST: &str = "127.0.0.1";
@@ -150,7 +150,13 @@ impl RemoteFixture {
             workspace_root: FIXTURE_WORKSPACE_ROOT.to_owned(),
             projects_registry_path: FIXTURE_PROJECTS_REGISTRY_PATH.to_owned(),
             shell_prelude: Some(FIXTURE_SHELL_PRELUDE.to_owned()),
-            review_follow_up: None,
+            review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
+                enabled: false,
+                main_user: Some("octocat".to_owned()),
+                default_review_prompt: Some(
+                    "Focus on bugs, regressions, and missing tests.".to_owned(),
+                ),
+            }),
         }
     }
 

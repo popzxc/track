@@ -1,6 +1,7 @@
 import type {
   ProjectInfo,
   RemoteAgentSettings,
+  ReviewRunRecord,
   RunRecord,
   Task,
   TaskDispatch,
@@ -14,6 +15,16 @@ export interface TaskGroup {
 }
 
 export type DrawerPrimaryAction = 'reopen' | 'cancel' | 'continue' | 'start'
+export type DispatchPresentationKind = 'task' | 'review'
+
+interface DispatchPresentationRecord {
+  status: TaskDispatch['status']
+  updatedAt: string
+  finishedAt?: string
+  summary?: string
+  notes?: string
+  errorMessage?: string
+}
 
 // =============================================================================
 // Queue And Run Presentation
@@ -79,7 +90,7 @@ export function formatTaskTimestamp(task: Task): string {
     : `Updated ${formatDateTime(task.updatedAt)}`
 }
 
-export function isRecentFailure(dispatch: TaskDispatch, now = Date.now()): boolean {
+export function isRecentFailure(dispatch: DispatchPresentationRecord, now = Date.now()): boolean {
   if (dispatch.status !== 'failed') {
     return false
   }
@@ -93,7 +104,10 @@ export function isRecentFailure(dispatch: TaskDispatch, now = Date.now()): boole
   return now - finishedAt <= RECENT_FAILURE_WINDOW_MS
 }
 
-export function dispatchStatusLabel(dispatch?: TaskDispatch | null, now = Date.now()): string {
+export function dispatchStatusLabel(
+  dispatch?: DispatchPresentationRecord | null,
+  now = Date.now(),
+): string {
   if (!dispatch) {
     return 'No run'
   }
@@ -120,7 +134,10 @@ export function dispatchStatusLabel(dispatch?: TaskDispatch | null, now = Date.n
   }
 }
 
-export function dispatchBadgeClass(dispatch?: TaskDispatch | null, now = Date.now()): string {
+export function dispatchBadgeClass(
+  dispatch?: DispatchPresentationRecord | null,
+  now = Date.now(),
+): string {
   if (!dispatch) {
     return 'border-fg2/15 bg-bg0/80 text-fg3'
   }
@@ -162,26 +179,51 @@ export function taskStatusBadgeClass(status: Task['status']): string {
     : 'border-fg2/20 bg-bg3/60 text-fg2'
 }
 
-export function dispatchSummary(dispatch?: TaskDispatch | null): string {
+export function dispatchSummary(
+  dispatch?: DispatchPresentationRecord | ReviewRunRecord | null,
+  kind: DispatchPresentationKind = 'task',
+): string {
   if (!dispatch) {
-    return 'No agent run has been recorded for this task yet.'
+    return kind === 'review'
+      ? 'No PR review run has been recorded yet.'
+      : 'No agent run has been recorded for this task yet.'
   }
 
   switch (dispatch.status) {
     case 'preparing':
-      return dispatch.summary ?? 'Preparing the remote checkout, worktree, and prompt.'
+      return dispatch.summary
+        ?? (kind === 'review'
+          ? 'Preparing the remote checkout, review worktree, and prompt.'
+          : 'Preparing the remote checkout, worktree, and prompt.')
     case 'running':
-      return dispatch.summary ?? 'The remote agent is working in the prepared environment.'
+      return dispatch.summary
+        ?? (kind === 'review'
+          ? 'The remote agent is reviewing the prepared pull request.'
+          : 'The remote agent is working in the prepared environment.')
     case 'succeeded':
-      return dispatch.summary ?? 'The remote agent finished successfully.'
+      return dispatch.summary
+        ?? (kind === 'review'
+          ? 'The remote agent finished the PR review successfully.'
+          : 'The remote agent finished successfully.')
     case 'blocked':
-      return dispatch.summary ?? dispatch.notes ?? 'The run stopped for human follow-up.'
+      return dispatch.summary
+        ?? dispatch.notes
+        ?? (kind === 'review'
+          ? 'The review run stopped for human follow-up.'
+          : 'The run stopped for human follow-up.')
     case 'canceled':
-      return dispatch.summary ?? 'The remote run was canceled.'
+      return dispatch.summary
+        ?? (kind === 'review' ? 'The remote review run was canceled.' : 'The remote run was canceled.')
     case 'failed':
-      return dispatch.errorMessage ?? dispatch.summary ?? 'The remote run failed.'
+      return dispatch.errorMessage
+        ?? dispatch.summary
+        ?? (kind === 'review'
+          ? 'The remote review run failed.'
+          : 'The remote run failed.')
     default:
-      return 'No agent run has been recorded for this task yet.'
+      return kind === 'review'
+        ? 'No PR review run has been recorded yet.'
+        : 'No agent run has been recorded for this task yet.'
   }
 }
 

@@ -15,11 +15,15 @@ use crate::dispatch_repository::DispatchRepository;
 use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{collapse_home_path, path_to_string};
 use crate::project_repository::{ProjectMetadata, ProjectRepository};
+use crate::review_dispatch_repository::ReviewDispatchRepository;
+use crate::review_repository::ReviewRepository;
 use crate::task_description::{append_follow_up_request, parse_task_description};
+use crate::task_id::build_unique_task_id;
 use crate::task_repository::FileTaskRepository;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use crate::types::{
-    DispatchStatus, RemoteAgentDispatchOutcome, RemoteCleanupSummary, RemoteResetSummary, Status,
+    CreateReviewInput, DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentReviewOutcome,
+    RemoteCleanupSummary, RemoteResetSummary, ReviewRecord, ReviewRunRecord, Status,
     TaskDispatchRecord, TaskUpdateInput,
 };
 
@@ -36,6 +40,9 @@ const REMOTE_CODEX_PID_FILE_NAME: &str = "codex.pid";
 // also refreshes the summary at each preparation phase so normal progress keeps
 // pushing this timeout forward instead of relying on one initial timestamp.
 const PREPARING_STALE_AFTER: Duration = Duration::minutes(30);
+
+const REVIEW_WORKTREE_DIRECTORY_NAME: &str = "review-worktrees";
+const REVIEW_RUN_DIRECTORY_NAME: &str = "review-runs";
 
 #[derive(Debug, Default)]
 struct TaskDispatchStartGate {
@@ -157,6 +164,18 @@ struct GithubPullRequestReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubPullRequestMetadata {
+    pull_request_url: String,
+    pull_request_number: u64,
+    pull_request_title: String,
+    repository_full_name: String,
+    repo_url: String,
+    git_url: String,
+    base_branch: String,
+    head_oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GithubPullRequestReviewState {
     is_open: bool,
     head_oid: String,
@@ -172,9 +191,17 @@ struct GithubSubmittedReview {
 #[derive(Debug, Deserialize)]
 struct GithubPullRequestApiResponse {
     state: String,
+    title: String,
     #[serde(rename = "merged_at")]
     merged_at: Option<String>,
+    base: GithubPullRequestBaseApiResponse,
     head: GithubPullRequestHeadApiResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestBaseApiResponse {
+    #[serde(rename = "ref")]
+    branch_ref: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,9 +258,27 @@ pub struct RemoteDispatchService<'a> {
     pub dispatch_repository: &'a DispatchRepository,
     pub project_repository: &'a ProjectRepository,
     pub task_repository: &'a FileTaskRepository,
+    pub review_repository: &'a ReviewRepository,
+    pub review_dispatch_repository: &'a ReviewDispatchRepository,
+}
+
+pub struct RemoteReviewService<'a> {
+    pub config_service: &'a ConfigService,
+    pub project_repository: &'a ProjectRepository,
+    pub review_repository: &'a ReviewRepository,
+    pub review_dispatch_repository: &'a ReviewDispatchRepository,
 }
 
 impl<'a> RemoteDispatchService<'a> {
+    fn review_service(&self) -> RemoteReviewService<'_> {
+        RemoteReviewService {
+            config_service: self.config_service,
+            project_repository: self.project_repository,
+            review_repository: self.review_repository,
+            review_dispatch_repository: self.review_dispatch_repository,
+        }
+    }
+
     // =============================================================================
     // Remote Dispatch Entry Points
     // =============================================================================
@@ -701,19 +746,35 @@ impl<'a> RemoteDispatchService<'a> {
     //
     // - open task: keep referenced worktrees and dispatch metadata
     // - closed task: remove worktrees, keep dispatch metadata
-    // - missing task: remove remote artifacts and local dispatch history
+    // - persisted review: keep local review history, but only keep remote
+    //   artifacts while the review run is still active
+    // - missing task/review: remove remote artifacts and local dispatch history
     //
-    // After reconciling every saved task history, we also sweep the remote
-    // workspace for orphaned `dispatch-*` worktrees and run directories that
-    // no longer have any local record at all.
+    // After reconciling every saved history, we also sweep the remote
+    // workspace for orphaned task/review worktrees and run directories that no
+    // longer have any local record at all. Review-only checkouts are also
+    // treated as disposable cache during this explicit maintenance path
+    // because reviews currently do not support rerun or resume from an old
+    // worktree.
+    // TODO: Revisit review checkout cleanup if manual reviews ever gain
+    // rerun/reopen behavior that should preserve those remote caches.
     pub fn cleanup_unused_remote_artifacts(&self) -> Result<RemoteCleanupSummary, TrackError> {
         let remote_agent = self.load_remote_agent_for_global_cleanup()?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let task_ids_with_history = self.dispatch_repository.task_ids_with_history()?;
+        let review_ids_with_history = self.review_dispatch_repository.review_ids_with_history()?;
+        let tracked_project_names = self
+            .project_repository
+            .list_projects()?
+            .into_iter()
+            .map(|project| project.canonical_name)
+            .collect::<BTreeSet<_>>();
 
         let mut summary = RemoteCleanupSummary::default();
         let mut kept_worktree_paths = BTreeSet::new();
         let mut kept_run_directories = BTreeSet::new();
+        let mut review_workspace_keys = BTreeSet::new();
+        let mut active_review_workspace_keys = BTreeSet::new();
 
         for task_id in task_ids_with_history {
             let dispatch_history = self.dispatch_repository.dispatches_for_task(&task_id)?;
@@ -765,13 +826,63 @@ impl<'a> RemoteDispatchService<'a> {
             }
         }
 
-        let orphan_cleanup_counts = ssh_client.cleanup_orphaned_dispatch_artifacts(
+        for review_id in review_ids_with_history {
+            let dispatch_history = self
+                .review_dispatch_repository
+                .dispatches_for_review(&review_id)?;
+            if dispatch_history.is_empty() {
+                continue;
+            }
+
+            let workspace_key = dispatch_history[0].workspace_key.clone();
+            review_workspace_keys.insert(workspace_key.clone());
+
+            match self.review_repository.get_review(&review_id) {
+                Ok(_) => {
+                    let active_dispatch_history = dispatch_history
+                        .iter()
+                        .filter(|record| record.status.is_active())
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !active_dispatch_history.is_empty() {
+                        kept_worktree_paths
+                            .extend(unique_review_worktree_paths(&active_dispatch_history));
+                        kept_run_directories.extend(unique_review_run_directories(
+                            &active_dispatch_history,
+                            &remote_agent,
+                        ));
+                        active_review_workspace_keys.insert(workspace_key);
+                    }
+                }
+                Err(error) if error.code == ErrorCode::TaskNotFound => {
+                    self.review_dispatch_repository
+                        .delete_dispatch_history_for_review(&review_id)?;
+                    summary.local_dispatch_histories_removed += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        let orphan_cleanup_counts = ssh_client.cleanup_orphaned_remote_artifacts(
             &remote_agent.workspace_root,
             &kept_worktree_paths.into_iter().collect::<Vec<_>>(),
             &kept_run_directories.into_iter().collect::<Vec<_>>(),
         )?;
         summary.remote_worktrees_removed += orphan_cleanup_counts.worktrees_removed;
         summary.remote_run_directories_removed += orphan_cleanup_counts.run_directories_removed;
+
+        let reclaimable_review_workspace_keys = review_workspace_keys
+            .into_iter()
+            .filter(|workspace_key| {
+                !tracked_project_names.contains(workspace_key)
+                    && !active_review_workspace_keys.contains(workspace_key)
+            })
+            .collect::<Vec<_>>();
+        self.cleanup_reclaimable_review_workspaces(
+            &ssh_client,
+            &remote_agent,
+            &reclaimable_review_workspace_keys,
+        )?;
 
         Ok(summary)
     }
@@ -789,17 +900,15 @@ impl<'a> RemoteDispatchService<'a> {
     // Those remain the durable tracker state. The remote workspace root and
     // the remote projects registry are treated as rebuildable cache.
     pub fn reset_remote_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
-        let active_dispatches = self
-            .list_dispatches(None)?
-            .into_iter()
-            .filter(|record| record.status.is_active())
-            .map(|record| format!("{} ({})", record.task_id, record.dispatch_id))
-            .collect::<Vec<_>>();
+        let active_task_dispatches = self.list_dispatches(None)?;
+        let active_review_dispatches = self.review_service().list_dispatches(None)?;
+        let active_dispatches =
+            describe_remote_reset_blockers(&active_task_dispatches, &active_review_dispatches);
         if !active_dispatches.is_empty() {
             return Err(TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
                 format!(
-                    "Stop active remote dispatches before resetting the remote workspace: {}.",
+                    "Stop active remote task runs and PR reviews before resetting the remote workspace: {}.",
                     active_dispatches.join(", ")
                 ),
             ));
@@ -1485,6 +1594,54 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(remote_agent)
     }
 
+    fn cleanup_reclaimable_review_workspaces(
+        &self,
+        ssh_client: &SshClient,
+        remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+        workspace_keys: &[String],
+    ) -> Result<(), TrackError> {
+        if workspace_keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut remote_registry =
+            load_remote_registry(ssh_client, &remote_agent.projects_registry_path)?;
+        let checkout_paths = workspace_keys
+            .iter()
+            .map(|workspace_key| {
+                remote_registry
+                    .projects
+                    .get(workspace_key)
+                    .map(|entry| entry.checkout_path.clone())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}/{}/{}",
+                            remote_agent.workspace_root.trim_end_matches('/'),
+                            workspace_key,
+                            workspace_key
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        ssh_client.cleanup_review_workspace_caches(&checkout_paths)?;
+
+        let mut registry_changed = false;
+        for workspace_key in workspace_keys {
+            registry_changed |= remote_registry.projects.remove(workspace_key).is_some();
+        }
+
+        if registry_changed {
+            write_remote_registry(
+                ssh_client,
+                &remote_agent.projects_registry_path,
+                &remote_registry,
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn resolve_project_checkout_path(
         &self,
         ssh_client: &SshClient,
@@ -1555,6 +1712,849 @@ impl<'a> RemoteDispatchService<'a> {
         validate_project_metadata_for_dispatch(&project.metadata)?;
 
         Ok((remote_agent, task, project.metadata))
+    }
+}
+
+impl<'a> RemoteReviewService<'a> {
+    // =============================================================================
+    // Review Request Entry Points
+    // =============================================================================
+    //
+    // Reviews are intentionally a separate domain from task dispatches. They
+    // still reuse the same remote runner and SSH bootstrap, but they start
+    // from a PR URL, persist their own local records, and ask the agent to
+    // submit a GitHub review directly instead of creating or updating a PR
+    // branch.
+    pub fn create_review(
+        &self,
+        input: CreateReviewInput,
+    ) -> Result<(ReviewRecord, ReviewRunRecord), TrackError> {
+        let validated_input = input.validate()?;
+        let (remote_agent, review_settings) = self.load_review_runtime_prerequisites()?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let pull_request_metadata =
+            ssh_client.fetch_pull_request_metadata(&validated_input.pull_request_url)?;
+        let project_match = self
+            .project_repository
+            .list_projects()?
+            .into_iter()
+            .find(|project| project.metadata.repo_url.trim() == pull_request_metadata.repo_url);
+        let project_metadata_override = project_match
+            .as_ref()
+            .map(|project| project.metadata.clone());
+        let workspace_key = project_match
+            .as_ref()
+            .map(|project| project.canonical_name.clone())
+            .unwrap_or_else(|| build_review_workspace_key(&pull_request_metadata));
+        let review_timestamp = now_utc();
+        let review_id = build_unique_task_id(
+            review_timestamp,
+            &format!(
+                "review {} pr {}",
+                pull_request_metadata.repository_full_name,
+                pull_request_metadata.pull_request_number
+            ),
+            |candidate| self.review_repository.get_review(candidate).is_ok(),
+        );
+        let review = ReviewRecord {
+            id: review_id,
+            pull_request_url: pull_request_metadata.pull_request_url,
+            pull_request_number: pull_request_metadata.pull_request_number,
+            pull_request_title: pull_request_metadata.pull_request_title,
+            repository_full_name: pull_request_metadata.repository_full_name,
+            repo_url: project_metadata_override
+                .as_ref()
+                .map(|metadata| metadata.repo_url.clone())
+                .unwrap_or(pull_request_metadata.repo_url),
+            git_url: project_metadata_override
+                .as_ref()
+                .map(|metadata| metadata.git_url.clone())
+                .unwrap_or(pull_request_metadata.git_url),
+            base_branch: project_metadata_override
+                .as_ref()
+                .map(|metadata| metadata.base_branch.clone())
+                .unwrap_or(pull_request_metadata.base_branch),
+            workspace_key,
+            project: project_match.map(|project| project.canonical_name),
+            main_user: review_settings.main_user,
+            default_review_prompt: review_settings.default_review_prompt,
+            extra_instructions: validated_input.extra_instructions,
+            created_at: review_timestamp,
+            updated_at: review_timestamp,
+        };
+
+        self.review_repository.save_review(&review)?;
+        match self.queue_review_dispatch(&review, &remote_agent) {
+            Ok(dispatch) => Ok((review, dispatch)),
+            Err(error) => {
+                let _ = self.review_repository.delete_review(&review.id);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn launch_prepared_review(
+        &self,
+        mut dispatch_record: ReviewRunRecord,
+    ) -> Result<ReviewRunRecord, TrackError> {
+        if let Some(existing_record) = self
+            .load_saved_review_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)?
+        {
+            if !existing_record.status.is_active() {
+                return Ok(existing_record);
+            }
+        }
+
+        let worktree_path = dispatch_record
+            .worktree_path
+            .clone()
+            .expect("queued review dispatches should store a worktree path");
+        let branch_name = dispatch_record
+            .branch_name
+            .clone()
+            .expect("queued review dispatches should store a branch name");
+        let remote_run_directory =
+            derive_review_run_directory(&worktree_path, &dispatch_record.dispatch_id)?;
+
+        let launch_result = (|| -> Result<(), TrackError> {
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Checking remote review prerequisites.",
+            )? {
+                return Ok(());
+            }
+            let (remote_agent, review) =
+                self.load_review_dispatch_prerequisites(&dispatch_record.review_id)?;
+            let ssh_client = SshClient::new(&remote_agent)?;
+
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Loading the remote project registry.",
+            )? {
+                return Ok(());
+            }
+            let remote_registry =
+                load_remote_registry(&ssh_client, &remote_agent.projects_registry_path)?;
+
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Checking GitHub authentication on the remote machine.",
+            )? {
+                return Ok(());
+            }
+            let github_login = ssh_client.fetch_github_login()?;
+            let repository_name = parse_github_repository_name(&review.repo_url)?;
+            let checkout_path = remote_registry
+                .projects
+                .get(&review.workspace_key)
+                .map(|entry| entry.checkout_path.clone())
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}/{}/{}",
+                        remote_agent.workspace_root.trim_end_matches('/'),
+                        review.workspace_key,
+                        review.workspace_key
+                    )
+                });
+
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Ensuring the remote checkout is up to date.",
+            )? {
+                return Ok(());
+            }
+            let fork_git_url = ssh_client.ensure_checkout(
+                &ProjectMetadata {
+                    repo_url: review.repo_url.clone(),
+                    git_url: review.git_url.clone(),
+                    base_branch: review.base_branch.clone(),
+                    description: None,
+                },
+                &repository_name,
+                &checkout_path,
+                &github_login,
+            )?;
+
+            let mut updated_registry = remote_registry;
+            updated_registry.projects.insert(
+                review.workspace_key.clone(),
+                RemoteProjectRegistryEntry {
+                    checkout_path: checkout_path.clone(),
+                    fork_git_url,
+                    repo_url: review.repo_url.clone(),
+                    git_url: review.git_url.clone(),
+                    base_branch: review.base_branch.clone(),
+                    updated_at: format_iso_8601_millis(now_utc()),
+                },
+            );
+            write_remote_registry(
+                &ssh_client,
+                &remote_agent.projects_registry_path,
+                &updated_registry,
+            )?;
+
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Preparing the review worktree.",
+            )? {
+                return Ok(());
+            }
+            ssh_client.create_review_worktree(
+                &checkout_path,
+                review.pull_request_number,
+                &branch_name,
+                &worktree_path,
+            )?;
+
+            let prompt = build_remote_review_prompt(&review, &branch_name, &worktree_path);
+            let schema = build_remote_review_schema();
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Uploading the review prompt and schema.",
+            )? {
+                return Ok(());
+            }
+            ssh_client.upload_remote_file(
+                &format!("{remote_run_directory}/{REMOTE_PROMPT_FILE_NAME}"),
+                &prompt,
+            )?;
+            ssh_client.upload_remote_file(
+                &format!("{remote_run_directory}/{REMOTE_SCHEMA_FILE_NAME}"),
+                &schema,
+            )?;
+
+            if !self.dispatch_is_still_active(
+                &dispatch_record.review_id,
+                &dispatch_record.dispatch_id,
+            )? {
+                return Ok(());
+            }
+
+            if !self.save_review_preparing_phase(
+                &mut dispatch_record,
+                "Launching the remote review agent.",
+            )? {
+                return Ok(());
+            }
+            ssh_client.launch_codex_dispatch(&remote_run_directory, &worktree_path)?;
+
+            Ok(())
+        })();
+
+        match launch_result {
+            Ok(()) => {
+                if let Some(existing_record) = self.load_saved_review_dispatch(
+                    &dispatch_record.review_id,
+                    &dispatch_record.dispatch_id,
+                )? {
+                    if !existing_record.status.is_active() {
+                        let _ = self.cancel_remote_review_if_possible(&existing_record);
+                        return Ok(existing_record);
+                    }
+                }
+
+                dispatch_record.status = DispatchStatus::Running;
+                dispatch_record.updated_at = now_utc();
+                dispatch_record.finished_at = None;
+                dispatch_record.summary =
+                    Some("The remote agent is reviewing the prepared pull request.".to_owned());
+                dispatch_record.error_message = None;
+                self.review_dispatch_repository
+                    .save_dispatch(&dispatch_record)?;
+                Ok(dispatch_record)
+            }
+            Err(error) => {
+                dispatch_record.status = DispatchStatus::Failed;
+                dispatch_record.updated_at = now_utc();
+                dispatch_record.finished_at = Some(dispatch_record.updated_at);
+                dispatch_record.error_message = Some(error.to_string());
+                self.review_dispatch_repository
+                    .save_dispatch(&dispatch_record)?;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn latest_dispatches_for_reviews(
+        &self,
+        review_ids: &[String],
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        let mut records = Vec::new();
+        for review_id in review_ids {
+            if let Some(record) = self
+                .review_dispatch_repository
+                .latest_dispatch_for_review(review_id)?
+            {
+                records.push(record);
+            }
+        }
+
+        self.refresh_active_review_dispatch_records(records)
+    }
+
+    pub fn list_dispatches(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        let records = self.review_dispatch_repository.list_dispatches(limit)?;
+        self.refresh_active_review_dispatch_records(records)
+    }
+
+    pub fn dispatch_history_for_review(
+        &self,
+        review_id: &str,
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        let mut records = self
+            .review_dispatch_repository
+            .dispatches_for_review(review_id)?;
+        if records
+            .first()
+            .is_some_and(|record| record.status.is_active())
+        {
+            if let Some(refreshed_latest) = self
+                .latest_dispatches_for_reviews(&[review_id.to_owned()])?
+                .into_iter()
+                .next()
+            {
+                if let Some(first_record) = records.first_mut() {
+                    *first_record = refreshed_latest;
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
+    pub fn cancel_dispatch(&self, review_id: &str) -> Result<ReviewRunRecord, TrackError> {
+        let mut latest_dispatch = self
+            .latest_dispatches_for_reviews(&[review_id.to_owned()])?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                TrackError::new(
+                    ErrorCode::DispatchNotFound,
+                    format!("Review {review_id} does not have a remote run to cancel."),
+                )
+            })?;
+
+        if !latest_dispatch.status.is_active() {
+            return Err(TrackError::new(
+                ErrorCode::DispatchNotFound,
+                format!("Review {review_id} does not have an active remote run to cancel."),
+            ));
+        }
+
+        self.cancel_remote_review_if_possible(&latest_dispatch)?;
+
+        latest_dispatch.status = DispatchStatus::Canceled;
+        latest_dispatch.updated_at = now_utc();
+        latest_dispatch.finished_at = Some(latest_dispatch.updated_at);
+        latest_dispatch.summary = Some("Canceled from the web UI.".to_owned());
+        latest_dispatch.notes = None;
+        latest_dispatch.error_message = None;
+        self.review_dispatch_repository
+            .save_dispatch(&latest_dispatch)?;
+
+        Ok(latest_dispatch)
+    }
+
+    pub fn delete_review(&self, review_id: &str) -> Result<(), TrackError> {
+        let review = self.review_repository.get_review(review_id)?;
+        let dispatch_history = self
+            .review_dispatch_repository
+            .dispatches_for_review(review_id)?;
+        if !dispatch_history.is_empty() {
+            if let Err(error) = self.cleanup_review_remote_artifacts(&review, &dispatch_history) {
+                eprintln!("Skipping remote cleanup while deleting review {review_id}: {error}");
+            }
+
+            self.review_dispatch_repository
+                .delete_dispatch_history_for_review(review_id)?;
+        }
+
+        self.review_repository.delete_review(review_id)
+    }
+
+    fn queue_review_dispatch(
+        &self,
+        review: &ReviewRecord,
+        remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+    ) -> Result<ReviewRunRecord, TrackError> {
+        let mut dispatch_record = self
+            .review_dispatch_repository
+            .create_dispatch(review, &remote_agent.host)?;
+        dispatch_record.branch_name = Some(format!("track-review/{}", dispatch_record.dispatch_id));
+        dispatch_record.worktree_path = Some(format!(
+            "{}/{}/{}/{}",
+            remote_agent.workspace_root.trim_end_matches('/'),
+            review.workspace_key,
+            REVIEW_WORKTREE_DIRECTORY_NAME,
+            dispatch_record.dispatch_id
+        ));
+        dispatch_record.updated_at = now_utc();
+        self.review_dispatch_repository
+            .save_dispatch(&dispatch_record)?;
+
+        Ok(dispatch_record)
+    }
+
+    fn refresh_active_review_dispatch_records(
+        &self,
+        records: Vec<ReviewRunRecord>,
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        let remote_agent = match self.config_service.load_runtime_config() {
+            Ok(config) => config.remote_agent,
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::ConfigNotFound
+                        | ErrorCode::InvalidConfig
+                        | ErrorCode::InvalidRemoteAgentConfig
+                ) =>
+            {
+                let error_message = error.to_string();
+                return self.release_active_review_dispatches_after_reconciliation_loss(
+                    records,
+                    "Remote reconciliation is unavailable locally, so active review runs were released.",
+                    &error_message,
+                );
+            }
+            Err(error) => return Err(error),
+        };
+
+        let Some(remote_agent) = remote_agent else {
+            return self.release_active_review_dispatches_after_reconciliation_loss(
+                records,
+                "Remote reconciliation is unavailable locally, so active review runs were released.",
+                "Remote agent configuration is missing locally.",
+            );
+        };
+        if !remote_agent.managed_key_path.exists() {
+            let error_message = format!(
+                "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
+                collapse_home_path(&remote_agent.managed_key_path)
+            );
+            return self.release_active_review_dispatches_after_reconciliation_loss(
+                records,
+                "Remote reconciliation is unavailable locally, so active review runs were released.",
+                &error_message,
+            );
+        }
+
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let snapshots_by_dispatch_id = load_review_snapshots_for_records(&ssh_client, &records)?;
+        let mut refreshed_records = Vec::with_capacity(records.len());
+        for record in records {
+            if !record.status.is_active() {
+                refreshed_records.push(record);
+                continue;
+            }
+
+            let Some(snapshot) = snapshots_by_dispatch_id.get(&record.dispatch_id) else {
+                if let Some(updated) = mark_abandoned_preparing_review_dispatch(record.clone()) {
+                    self.review_dispatch_repository.save_dispatch(&updated)?;
+                    refreshed_records.push(updated);
+                } else {
+                    let updated = self.finalize_review_dispatch_locally(
+                        &record,
+                        DispatchStatus::Blocked,
+                        "Remote reconciliation could not find this review run anymore, so it was released locally.",
+                        Some("Remote review snapshot is missing."),
+                    )?;
+                    refreshed_records.push(updated);
+                }
+                continue;
+            };
+
+            match self.refresh_review_dispatch_record_from_snapshot(record.clone(), snapshot) {
+                Ok(updated) => {
+                    if updated != record {
+                        self.review_dispatch_repository.save_dispatch(&updated)?;
+                    }
+                    refreshed_records.push(updated);
+                }
+                Err(error) => {
+                    if let Some(updated) =
+                        mark_terminal_review_refresh_failure(record.clone(), snapshot, &error)
+                    {
+                        self.review_dispatch_repository.save_dispatch(&updated)?;
+                        refreshed_records.push(updated);
+                    } else {
+                        let error_message = error.to_string();
+                        let updated = self.finalize_review_dispatch_locally(
+                            &record,
+                            DispatchStatus::Blocked,
+                            "Remote reconciliation could not confirm this review run, so it was released locally.",
+                            Some(&error_message),
+                        )?;
+                        refreshed_records.push(updated);
+                    }
+                }
+            }
+        }
+
+        Ok(refreshed_records)
+    }
+
+    fn refresh_review_dispatch_record_from_snapshot(
+        &self,
+        mut record: ReviewRunRecord,
+        snapshot: &RemoteDispatchSnapshot,
+    ) -> Result<ReviewRunRecord, TrackError> {
+        let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
+        if remote_status.is_empty() {
+            if let Some(updated) = mark_abandoned_preparing_review_dispatch(record.clone()) {
+                return Ok(updated);
+            }
+
+            return Ok(record);
+        }
+
+        if remote_status == "running" {
+            if record.status == DispatchStatus::Preparing {
+                record.status = DispatchStatus::Running;
+                record.updated_at = now_utc();
+                record.finished_at = None;
+                record.error_message = None;
+            }
+            return Ok(record);
+        }
+
+        if remote_status == "canceled" {
+            record.status = DispatchStatus::Canceled;
+            record.updated_at = now_utc();
+            record.finished_at = Some(parse_remote_finished_at(
+                snapshot.finished_at.as_deref(),
+                now_utc(),
+            ));
+            record.summary = Some(
+                record
+                    .summary
+                    .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
+            );
+            record.error_message = None;
+            return Ok(record);
+        }
+
+        let now = now_utc();
+        record.updated_at = now;
+        if remote_status == "completed" {
+            let remote_result = snapshot.result.as_deref().ok_or_else(|| {
+                TrackError::new(
+                    ErrorCode::RemoteDispatchFailed,
+                    "Remote review run completed without producing a structured result.",
+                )
+            })?;
+            let outcome = serde_json::from_str::<RemoteAgentReviewOutcome>(remote_result).map_err(
+                |error| {
+                    TrackError::new(
+                        ErrorCode::RemoteDispatchFailed,
+                        format!("Remote review result is not valid JSON: {error}"),
+                    )
+                },
+            )?;
+
+            // The review agent now owns the GitHub side effect directly, just
+            // like the task flow owns its own pushes and PR creation. We keep
+            // the local record intentionally narrow here: enough structured
+            // metadata for status/history, without mirroring GitHub discussion
+            // threads back into local storage.
+            // TODO: If the web UI needs first-class inline-comment history,
+            // persist dedicated review metadata rather than trying to mirror
+            // every GitHub thread inside this local run record.
+            // TODO: If we need to reconcile "review submitted, final JSON not
+            // written" crashes, capture the GitHub review handle in a sidecar
+            // file during the remote run before the final structured result.
+            record.status = outcome.status;
+            record.summary = Some(outcome.summary);
+            record.review_submitted = outcome.review_submitted;
+            record.github_review_id = outcome.github_review_id;
+            record.github_review_url = outcome.github_review_url;
+            record.worktree_path = Some(outcome.worktree_path);
+            record.notes = outcome.notes;
+            record.error_message = None;
+            record.finished_at = Some(parse_remote_finished_at(
+                snapshot.finished_at.as_deref(),
+                now,
+            ));
+
+            return Ok(record);
+        }
+
+        record.status = DispatchStatus::Failed;
+        record.finished_at = Some(parse_remote_finished_at(
+            snapshot.finished_at.as_deref(),
+            now,
+        ));
+        record.error_message = snapshot
+            .stderr
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_owned())
+            .or_else(|| {
+                Some("Remote review run failed before returning a structured result.".to_owned())
+            });
+        Ok(record)
+    }
+
+    fn release_active_review_dispatches_after_reconciliation_loss(
+        &self,
+        records: Vec<ReviewRunRecord>,
+        summary: &str,
+        error_message: &str,
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        let mut refreshed_records = Vec::with_capacity(records.len());
+        for record in records {
+            if record.status.is_active() {
+                refreshed_records.push(self.finalize_review_dispatch_locally(
+                    &record,
+                    DispatchStatus::Blocked,
+                    summary,
+                    Some(error_message),
+                )?);
+            } else {
+                refreshed_records.push(record);
+            }
+        }
+
+        Ok(refreshed_records)
+    }
+
+    fn finalize_review_dispatch_locally(
+        &self,
+        dispatch_record: &ReviewRunRecord,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Result<ReviewRunRecord, TrackError> {
+        let mut updated_record = dispatch_record.clone();
+        let now = now_utc();
+        updated_record.status = status;
+        updated_record.updated_at = now;
+        updated_record.finished_at = Some(now);
+        updated_record.summary = Some(summary.to_owned());
+        updated_record.notes = None;
+        updated_record.error_message = error_message.map(ToOwned::to_owned);
+        self.review_dispatch_repository
+            .save_dispatch(&updated_record)?;
+
+        Ok(updated_record)
+    }
+
+    fn load_saved_review_dispatch(
+        &self,
+        review_id: &str,
+        dispatch_id: &str,
+    ) -> Result<Option<ReviewRunRecord>, TrackError> {
+        self.review_dispatch_repository
+            .get_dispatch(review_id, dispatch_id)
+    }
+
+    fn dispatch_is_still_active(
+        &self,
+        review_id: &str,
+        dispatch_id: &str,
+    ) -> Result<bool, TrackError> {
+        Ok(self
+            .load_saved_review_dispatch(review_id, dispatch_id)?
+            .map(|record| record.status.is_active())
+            .unwrap_or(false))
+    }
+
+    fn save_review_preparing_phase(
+        &self,
+        dispatch_record: &mut ReviewRunRecord,
+        summary: &str,
+    ) -> Result<bool, TrackError> {
+        if let Some(saved_record) = self
+            .load_saved_review_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)?
+        {
+            if !saved_record.status.is_active() {
+                *dispatch_record = saved_record;
+                return Ok(false);
+            }
+        }
+
+        dispatch_record.status = DispatchStatus::Preparing;
+        dispatch_record.summary = Some(summary.to_owned());
+        dispatch_record.updated_at = now_utc();
+        dispatch_record.finished_at = None;
+        dispatch_record.error_message = None;
+        self.review_dispatch_repository
+            .save_dispatch(dispatch_record)?;
+
+        Ok(true)
+    }
+
+    fn cancel_remote_review_if_possible(
+        &self,
+        dispatch_record: &ReviewRunRecord,
+    ) -> Result<(), TrackError> {
+        let config = self.config_service.load_runtime_config()?;
+        let remote_agent = config.remote_agent.ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+            )
+        })?;
+
+        if !remote_agent.managed_key_path.exists() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
+                    collapse_home_path(&remote_agent.managed_key_path)
+                ),
+            ));
+        }
+
+        let Some(worktree_path) = dispatch_record.worktree_path.as_deref() else {
+            return Ok(());
+        };
+        let remote_run_directory =
+            derive_review_run_directory(worktree_path, &dispatch_record.dispatch_id)?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        ssh_client.cancel_codex_dispatch(&remote_run_directory)
+    }
+
+    fn cleanup_review_remote_artifacts(
+        &self,
+        review: &ReviewRecord,
+        dispatch_history: &[ReviewRunRecord],
+    ) -> Result<(), TrackError> {
+        if dispatch_history.is_empty() {
+            return Ok(());
+        }
+
+        let remote_agent = self.load_remote_agent_for_review_cleanup(&review.id)?;
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let checkout_path =
+            self.resolve_review_checkout_path(&ssh_client, &remote_agent, &review.workspace_key)?;
+        let worktree_paths = unique_review_worktree_paths(dispatch_history);
+        let run_directories = unique_review_run_directories(dispatch_history, &remote_agent);
+        let branch_names = dispatch_history
+            .iter()
+            .filter_map(|record| record.branch_name.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        ssh_client.cleanup_review_artifacts(
+            &checkout_path,
+            &branch_names,
+            &worktree_paths,
+            &run_directories,
+        )
+    }
+
+    fn load_remote_agent_for_review_cleanup(
+        &self,
+        review_id: &str,
+    ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
+        let config = self.config_service.load_runtime_config()?;
+        let remote_agent = config.remote_agent.ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Review {review_id} has remote history, but remote-agent configuration is missing so cleanup cannot run."
+                ),
+            )
+        })?;
+
+        if !remote_agent.managed_key_path.exists() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning review {review_id}.",
+                    collapse_home_path(&remote_agent.managed_key_path)
+                ),
+            ));
+        }
+
+        Ok(remote_agent)
+    }
+
+    fn resolve_review_checkout_path(
+        &self,
+        ssh_client: &SshClient,
+        remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+        workspace_key: &str,
+    ) -> Result<String, TrackError> {
+        let remote_registry =
+            load_remote_registry(ssh_client, &remote_agent.projects_registry_path)?;
+
+        Ok(remote_registry
+            .projects
+            .get(workspace_key)
+            .map(|entry| entry.checkout_path.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/{}/{}",
+                    remote_agent.workspace_root.trim_end_matches('/'),
+                    workspace_key,
+                    workspace_key
+                )
+            }))
+    }
+
+    fn load_review_runtime_prerequisites(
+        &self,
+    ) -> Result<
+        (
+            crate::types::RemoteAgentRuntimeConfig,
+            crate::types::RemoteAgentReviewFollowUpRuntimeConfig,
+        ),
+        TrackError,
+    > {
+        let config = self.config_service.load_runtime_config()?;
+        let remote_agent = config.remote_agent.ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                "Remote reviews are not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+            )
+        })?;
+        let review_settings = remote_agent.review_follow_up.clone().ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::InvalidRemoteAgentConfig,
+                "PR reviews require a configured main GitHub user in the remote runner settings.",
+            )
+        })?;
+
+        if !remote_agent.managed_key_path.exists() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
+                    collapse_home_path(&remote_agent.managed_key_path)
+                ),
+            ));
+        }
+
+        if remote_agent
+            .shell_prelude
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Err(TrackError::new(
+                ErrorCode::InvalidRemoteAgentConfig,
+                "Remote runner setup is missing. Open the web UI and add the shell instructions that prepare PATH and toolchains for the remote runner.",
+            ));
+        }
+
+        Ok((remote_agent, review_settings))
+    }
+
+    fn load_review_dispatch_prerequisites(
+        &self,
+        review_id: &str,
+    ) -> Result<(crate::types::RemoteAgentRuntimeConfig, ReviewRecord), TrackError> {
+        let (remote_agent, _review_settings) = self.load_review_runtime_prerequisites()?;
+        let review = self.review_repository.get_review(review_id)?;
+
+        Ok((remote_agent, review))
     }
 }
 
@@ -1720,6 +2720,118 @@ fn derive_remote_run_directory_for_record(
     ))
 }
 
+fn load_review_snapshots_for_records(
+    ssh_client: &SshClient,
+    records: &[ReviewRunRecord],
+) -> Result<BTreeMap<String, RemoteDispatchSnapshot>, TrackError> {
+    let mut dispatch_ids = Vec::new();
+    let mut run_directories = Vec::new();
+
+    for record in records {
+        if !record.status.is_active() {
+            continue;
+        }
+
+        let Some(worktree_path) = record.worktree_path.as_deref() else {
+            continue;
+        };
+        let Ok(run_directory) = derive_review_run_directory(worktree_path, &record.dispatch_id)
+        else {
+            continue;
+        };
+
+        dispatch_ids.push(record.dispatch_id.clone());
+        run_directories.push(run_directory);
+    }
+
+    if run_directories.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let snapshots = ssh_client.read_dispatch_snapshots(&run_directories)?;
+    Ok(dispatch_ids.into_iter().zip(snapshots).collect())
+}
+
+fn derive_review_run_directory(
+    worktree_path: &str,
+    dispatch_id: &str,
+) -> Result<String, TrackError> {
+    worktree_path
+        .rsplit_once(&format!("/{REVIEW_WORKTREE_DIRECTORY_NAME}/"))
+        .map(|(prefix, _suffix)| format!("{prefix}/{REVIEW_RUN_DIRECTORY_NAME}/{dispatch_id}"))
+        .ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                "Could not derive the remote review run directory from the worktree path.",
+            )
+        })
+}
+
+fn derive_review_run_directory_for_record(
+    record: &ReviewRunRecord,
+    remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+) -> Option<String> {
+    if let Some(worktree_path) = record.worktree_path.as_deref() {
+        if let Ok(run_directory) = derive_review_run_directory(worktree_path, &record.dispatch_id) {
+            return Some(run_directory);
+        }
+    }
+
+    if record.workspace_key.trim().is_empty() || remote_agent.workspace_root.trim().is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "{}/{}/{}/{}",
+        remote_agent.workspace_root.trim_end_matches('/'),
+        record.workspace_key,
+        REVIEW_RUN_DIRECTORY_NAME,
+        record.dispatch_id
+    ))
+}
+
+fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord]) -> Vec<String> {
+    dispatch_history
+        .iter()
+        .filter_map(|record| record.worktree_path.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn unique_review_run_directories(
+    dispatch_history: &[ReviewRunRecord],
+    remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+) -> Vec<String> {
+    dispatch_history
+        .iter()
+        .filter_map(|record| derive_review_run_directory_for_record(record, remote_agent))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn describe_remote_reset_blockers(
+    task_dispatches: &[TaskDispatchRecord],
+    review_dispatches: &[ReviewRunRecord],
+) -> Vec<String> {
+    let mut blockers = task_dispatches
+        .iter()
+        .filter(|record| record.status.is_active())
+        .map(|record| format!("task {} ({})", record.task_id, record.dispatch_id))
+        .collect::<Vec<_>>();
+    blockers.extend(
+        review_dispatches
+            .iter()
+            .filter(|record| record.status.is_active())
+            .map(|record| format!("review {} ({})", record.review_id, record.dispatch_id)),
+    );
+    blockers
+}
+
 fn build_remote_dispatch_prompt(
     project_name: &str,
     metadata: &ProjectMetadata,
@@ -1795,6 +2907,66 @@ fn build_remote_dispatch_prompt(
     prompt
 }
 
+fn build_remote_review_prompt(
+    review: &ReviewRecord,
+    branch_name: &str,
+    worktree_path: &str,
+) -> String {
+    let mut prompt = String::new();
+    prompt.push_str("# Remote PR review\n\n");
+    prompt.push_str(
+        "You are reviewing an existing GitHub pull request from a prepared repository worktree.\n",
+    );
+    prompt.push_str("The repository checkout and review worktree are already prepared for you.\n");
+    prompt.push_str("You have full filesystem access, internet access, and `gh` is available.\n");
+    prompt.push_str("This run is for review only: do not push commits, open PRs, or request reviewers yourself.\n");
+    prompt.push_str("You are responsible for submitting the GitHub review yourself before you return the final JSON.\n\n");
+    prompt.push_str("## Pull request context\n\n");
+    prompt.push_str(&format!("- Pull request: {}\n", review.pull_request_url));
+    prompt.push_str(&format!("- Title: {}\n", review.pull_request_title));
+    prompt.push_str(&format!("- Repository: {}\n", review.repository_full_name));
+    prompt.push_str(&format!("- Repo URL: {}\n", review.repo_url));
+    prompt.push_str(&format!("- Base branch: {}\n", review.base_branch));
+    prompt.push_str(&format!("- Prepared branch: {branch_name}\n"));
+    prompt.push_str(&format!("- Working directory: {worktree_path}\n\n"));
+    prompt.push_str("## Review instructions\n\n");
+    prompt.push_str("- Submit one GitHub review in COMMENT mode.\n");
+    prompt.push_str(&format!(
+        "- The first line of the top-level review body must be `@{} requested me to review this PR.`\n",
+        review.main_user
+    ));
+    prompt.push_str("- Prefer inline review comments for concrete file/line findings so people can reply in GitHub threads.\n");
+    prompt.push_str("- Use the top-level review body for the overall summary, major risks, and any no-findings conclusion.\n");
+    prompt.push_str(
+        "- Focus on bugs, regressions, risky behavior changes, missing tests, and edge cases.\n",
+    );
+    prompt.push_str("- Use the checked-out code and `gh` to inspect the PR diff and context instead of guessing.\n");
+    prompt.push_str("- Keep the review concise but concrete.\n");
+    prompt.push_str(
+        "- If you do not find problems, say so explicitly in the top-level review body.\n",
+    );
+    prompt.push_str("- If you cannot complete the review responsibly, explain the blocker in the summary and do not claim the review was submitted.\n");
+    prompt.push_str("- Capture the submitted GitHub review's durable handle from the `gh` response and return it as `githubReviewId` and `githubReviewUrl` when submission succeeds.\n");
+    prompt.push_str("- Return `reviewSubmitted` as `true` only after GitHub confirms that the review submission succeeded.\n\n");
+
+    if let Some(default_review_prompt) = review.default_review_prompt.as_deref() {
+        prompt.push_str("## Default review prompt\n\n");
+        prompt.push_str(default_review_prompt);
+        prompt.push_str("\n\n");
+    }
+
+    if let Some(extra_instructions) = review.extra_instructions.as_deref() {
+        prompt.push_str("## Extra instructions\n\n");
+        prompt.push_str(extra_instructions);
+        prompt.push_str("\n\n");
+    }
+
+    prompt.push_str("## Final response\n\n");
+    prompt.push_str("Return JSON only. The response must match the provided schema exactly.\n");
+
+    prompt
+}
+
 fn build_remote_dispatch_schema() -> String {
     serde_json::to_string_pretty(&json!({
         "type": "object",
@@ -1834,6 +3006,47 @@ fn build_remote_dispatch_schema() -> String {
         }
     }))
     .expect("dispatch schema serialization should succeed")
+}
+
+fn build_remote_review_schema() -> String {
+    serde_json::to_string_pretty(&json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "status",
+            "summary",
+            "reviewSubmitted",
+            "githubReviewId",
+            "githubReviewUrl",
+            "worktreePath",
+            "notes"
+        ],
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["succeeded", "failed", "blocked"]
+            },
+            "summary": {
+                "type": "string"
+            },
+            "reviewSubmitted": {
+                "type": "boolean"
+            },
+            "githubReviewId": {
+                "type": ["string", "null"]
+            },
+            "githubReviewUrl": {
+                "type": ["string", "null"]
+            },
+            "worktreePath": {
+                "type": "string"
+            },
+            "notes": {
+                "type": ["string", "null"]
+            }
+        }
+    }))
+    .expect("review schema serialization should succeed")
 }
 
 fn refresh_dispatch_record_from_snapshot(
@@ -1942,6 +3155,26 @@ fn mark_abandoned_preparing_dispatch(mut record: TaskDispatchRecord) -> Option<T
     Some(record)
 }
 
+fn mark_abandoned_preparing_review_dispatch(
+    mut record: ReviewRunRecord,
+) -> Option<ReviewRunRecord> {
+    if record.status != DispatchStatus::Preparing {
+        return None;
+    }
+
+    let now = now_utc();
+    if now - record.updated_at < PREPARING_STALE_AFTER {
+        return None;
+    }
+
+    record.status = DispatchStatus::Failed;
+    record.updated_at = now;
+    record.finished_at = Some(now);
+    record.error_message =
+        Some("Review preparation stopped before the remote agent launched.".to_owned());
+    Some(record)
+}
+
 fn parse_remote_finished_at(
     value: Option<&str>,
     fallback: time::OffsetDateTime,
@@ -1958,6 +3191,27 @@ fn mark_terminal_refresh_failure(
     snapshot: &RemoteDispatchSnapshot,
     error: &TrackError,
 ) -> Option<TaskDispatchRecord> {
+    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
+    if remote_status != "completed" && remote_status != "launcher_failed" {
+        return None;
+    }
+
+    let now = now_utc();
+    record.status = DispatchStatus::Failed;
+    record.updated_at = now;
+    record.finished_at = Some(parse_remote_finished_at(
+        snapshot.finished_at.as_deref(),
+        now,
+    ));
+    record.error_message = Some(error.to_string());
+    Some(record)
+}
+
+fn mark_terminal_review_refresh_failure(
+    mut record: ReviewRunRecord,
+    snapshot: &RemoteDispatchSnapshot,
+    error: &TrackError,
+) -> Option<ReviewRunRecord> {
     let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
     if remote_status != "completed" && remote_status != "launcher_failed" {
         return None;
@@ -2058,6 +3312,22 @@ fn parse_github_pull_request_reference(
         repository: parts[1].to_owned(),
         number,
     })
+}
+
+fn build_review_workspace_key(pull_request: &GithubPullRequestMetadata) -> String {
+    let slug = slug::slugify(
+        pull_request
+            .repository_full_name
+            .replace('/', "-")
+            .trim()
+            .to_owned(),
+    );
+
+    if slug.is_empty() {
+        "review-repo".to_owned()
+    } else {
+        slug
+    }
 }
 
 fn build_review_follow_up_request(
@@ -2312,6 +3582,67 @@ gh api user --jq .login
         }
 
         Ok(login)
+    }
+
+    fn fetch_pull_request_metadata(
+        &self,
+        pull_request_url: &str,
+    ) -> Result<GithubPullRequestMetadata, TrackError> {
+        let reference = parse_github_pull_request_reference(pull_request_url)?;
+        let pull_request_endpoint = github_pull_request_endpoint(&reference);
+        let pull_request_json = self
+            .run_script(
+                r#"
+set -eu
+ENDPOINT="$1"
+gh api "$ENDPOINT"
+"#,
+                std::slice::from_ref(&pull_request_endpoint),
+            )
+            .map_err(|error| {
+                contextualize_track_error(
+                    error,
+                    format!(
+                        "Remote `gh api` on {}@{} could not fetch PR details for {} via endpoint `{}`",
+                        self.user, self.host, pull_request_url, pull_request_endpoint
+                    ),
+                )
+            })?;
+        let pull_request =
+            serde_json::from_str::<GithubPullRequestApiResponse>(&pull_request_json).map_err(
+                |error| {
+                    TrackError::new(
+                        ErrorCode::RemoteDispatchFailed,
+                        format!(
+                            "GitHub PR details from endpoint `{pull_request_endpoint}` are not valid JSON: {error}"
+                        ),
+                    )
+                },
+            )?;
+
+        if pull_request.state != "open" || pull_request.merged_at.is_some() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Pull request {pull_request_url} is not open anymore."),
+            ));
+        }
+
+        Ok(GithubPullRequestMetadata {
+            pull_request_url: pull_request_url.trim().to_owned(),
+            pull_request_number: reference.number,
+            pull_request_title: pull_request.title,
+            repository_full_name: format!("{}/{}", reference.owner, reference.repository),
+            repo_url: format!(
+                "https://github.com/{}/{}",
+                reference.owner, reference.repository
+            ),
+            git_url: format!(
+                "git@github.com:{}/{}.git",
+                reference.owner, reference.repository
+            ),
+            base_branch: pull_request.base.branch_ref,
+            head_oid: pull_request.head.sha,
+        })
     }
 
     fn fetch_pull_request_review_state(
@@ -2594,6 +3925,56 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstrea
         Ok(())
     }
 
+    fn create_review_worktree(
+        &self,
+        checkout_path: &str,
+        pull_request_number: u64,
+        branch_name: &str,
+        worktree_path: &str,
+    ) -> Result<(), TrackError> {
+        let create_review_worktree_script = format!(
+            r#"
+set -eu
+{path_helpers}
+CHECKOUT_PATH="$(expand_remote_path "$1")"
+PULL_REQUEST_NUMBER="$2"
+BRANCH_NAME="$3"
+WORKTREE_PATH="$(expand_remote_path "$4")"
+
+mkdir -p "$(dirname "$WORKTREE_PATH")"
+
+worktree_is_registered() {{
+  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
+}}
+
+if [ -e "$WORKTREE_PATH" ]; then
+  if worktree_is_registered; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+  else
+    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a review worktree." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" worktree prune >&2
+git -C "$CHECKOUT_PATH" fetch upstream "pull/$PULL_REQUEST_NUMBER/head:$BRANCH_NAME" >&2
+git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$BRANCH_NAME" >&2
+"#,
+            path_helpers = remote_path_helpers_shell(),
+        );
+        self.run_script(
+            &create_review_worktree_script,
+            &[
+                checkout_path.to_owned(),
+                pull_request_number.to_string(),
+                branch_name.to_owned(),
+                worktree_path.to_owned(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
     fn ensure_follow_up_worktree(
         &self,
         checkout_path: &str,
@@ -2861,15 +4242,123 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
         parse_remote_cleanup_counts(&report)
     }
 
-    fn cleanup_orphaned_dispatch_artifacts(
+    fn cleanup_review_artifacts(
+        &self,
+        checkout_path: &str,
+        branch_names: &[String],
+        worktree_paths: &[String],
+        run_directories: &[String],
+    ) -> Result<(), TrackError> {
+        let cleanup_script = format!(
+            r#"
+set -eu
+{path_helpers}
+CHECKOUT_PATH="$(expand_remote_path "$1")"
+shift
+
+BRANCH_NAMES=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--worktrees" ]; then
+    shift
+    break
+  fi
+
+  BRANCH_NAMES+=("$1")
+  shift
+done
+
+WORKTREE_PATHS=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--runs" ]; then
+    shift
+    break
+  fi
+
+  WORKTREE_PATHS+=("$1")
+  shift
+done
+
+RUN_DIRECTORIES=("$@")
+
+kill_if_running() {{
+  PID="$1"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID" 2>/dev/null || true
+  fi
+}}
+
+worktree_is_registered() {{
+  TARGET_WORKTREE="$1"
+  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $TARGET_WORKTREE" >/dev/null 2>&1
+}}
+
+for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
+  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
+  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
+  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
+
+  if [ -f "$LAUNCHER_PID_FILE" ]; then
+    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
+    kill_if_running "$LAUNCHER_PID"
+  fi
+
+  if [ -f "$CODEX_PID_FILE" ]; then
+    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
+    kill_if_running "$CODEX_PID"
+  fi
+
+  if [ -e "$RUN_DIR" ]; then
+    rm -rf "$RUN_DIR"
+  fi
+done
+
+for RAW_WORKTREE_PATH in "${{WORKTREE_PATHS[@]}}"; do
+  WORKTREE_PATH="$(expand_remote_path "$RAW_WORKTREE_PATH")"
+
+  if [ -d "$CHECKOUT_PATH/.git" ] && worktree_is_registered "$WORKTREE_PATH"; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+  fi
+
+  if [ -e "$WORKTREE_PATH" ]; then
+    rm -rf "$WORKTREE_PATH"
+  fi
+done
+
+for BRANCH_NAME in "${{BRANCH_NAMES[@]}}"; do
+  if [ -d "$CHECKOUT_PATH/.git" ]; then
+    git -C "$CHECKOUT_PATH" branch -D "$BRANCH_NAME" >&2 || true
+  fi
+done
+
+if [ -d "$CHECKOUT_PATH/.git" ]; then
+  git -C "$CHECKOUT_PATH" worktree prune >&2 || true
+fi
+"#,
+            path_helpers = remote_path_helpers_shell(),
+            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
+            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
+        );
+
+        let mut arguments = vec![checkout_path.to_owned()];
+        arguments.extend(branch_names.iter().cloned());
+        arguments.push("--worktrees".to_owned());
+        arguments.extend(worktree_paths.iter().cloned());
+        arguments.push("--runs".to_owned());
+        arguments.extend(run_directories.iter().cloned());
+        self.run_script(&cleanup_script, &arguments)?;
+
+        Ok(())
+    }
+
+    fn cleanup_orphaned_remote_artifacts(
         &self,
         workspace_root: &str,
         kept_worktree_paths: &[String],
         kept_run_directories: &[String],
     ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
         // The remote workspace layout is currently automation-owned:
-        // `<workspace>/<project>/<project>` for the checkout plus sibling
-        // `worktrees/` and `dispatches/` directories. That lets a broad sweep
+        // `<workspace>/<name>/<name>` for the checkout plus sibling
+        // task/review worktree and run directories. That lets one broad sweep
         // remove forgotten `dispatch-*` artifacts without needing a second
         // local registry of every worktree ever created.
         // TODO: If the checkout layout ever becomes user-configurable, replace
@@ -2984,6 +4473,24 @@ for PROJECT_DIRECTORY in "$WORKSPACE_ROOT"/*; do
 
     remove_worktree_path "$WORKTREE_PATH"
   done
+
+  for RUN_DIR in "$PROJECT_DIRECTORY"/{review_run_directory}/dispatch-*; do
+    [ -e "$RUN_DIR" ] || continue
+    if path_is_kept "$RUN_DIR" "${{KEEP_RUN_DIRECTORIES[@]}}"; then
+      continue
+    fi
+
+    remove_run_directory "$RUN_DIR"
+  done
+
+  for WORKTREE_PATH in "$PROJECT_DIRECTORY"/{review_worktree_directory}/dispatch-*; do
+    [ -e "$WORKTREE_PATH" ] || continue
+    if path_is_kept "$WORKTREE_PATH" "${{KEEP_WORKTREE_PATHS[@]}}"; then
+      continue
+    fi
+
+    remove_worktree_path "$WORKTREE_PATH"
+  done
 done
 
 printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
@@ -2991,6 +4498,8 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
   "$RUN_DIRECTORIES_REMOVED"
 "#,
             path_helpers = remote_path_helpers_shell(),
+            review_run_directory = REVIEW_RUN_DIRECTORY_NAME,
+            review_worktree_directory = REVIEW_WORKTREE_DIRECTORY_NAME,
             launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
             codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
         );
@@ -3001,6 +4510,40 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
         arguments.extend(kept_run_directories.iter().cloned());
         let report = self.run_script(&cleanup_script, &arguments)?;
         parse_remote_cleanup_counts(&report)
+    }
+
+    fn cleanup_review_workspace_caches(&self, checkout_paths: &[String]) -> Result<(), TrackError> {
+        if checkout_paths.is_empty() {
+            return Ok(());
+        }
+
+        let cleanup_script = format!(
+            r#"
+set -eu
+{path_helpers}
+
+for RAW_CHECKOUT_PATH in "$@"; do
+  CHECKOUT_PATH="$(expand_remote_path "$RAW_CHECKOUT_PATH")"
+  WORKSPACE_PATH="$(dirname "$CHECKOUT_PATH")"
+
+  if [ -d "$CHECKOUT_PATH/.git" ]; then
+    git -C "$CHECKOUT_PATH" worktree prune >&2 || true
+  fi
+
+  if [ -e "$CHECKOUT_PATH" ]; then
+    rm -rf "$CHECKOUT_PATH"
+  fi
+
+  if [ -d "$WORKSPACE_PATH" ]; then
+    rmdir "$WORKSPACE_PATH" 2>/dev/null || true
+  fi
+done
+"#,
+            path_helpers = remote_path_helpers_shell(),
+        );
+        self.run_script(&cleanup_script, checkout_paths)?;
+
+        Ok(())
     }
 
     fn reset_workspace(
@@ -3465,23 +5008,26 @@ mod tests {
     };
     use crate::dispatch_repository::DispatchRepository;
     use crate::project_repository::{ProjectMetadata, ProjectRepository};
+    use crate::review_dispatch_repository::ReviewDispatchRepository;
+    use crate::review_repository::ReviewRepository;
     use crate::task_description::render_task_description;
     use crate::task_repository::FileTaskRepository;
     use crate::test_support::{set_env_var, track_data_env_lock};
     use crate::time_utils::{now_utc, parse_iso_8601_seconds};
     use crate::types::{
-        DispatchStatus, Priority, Status, TaskCreateInput, TaskDispatchRecord, TaskSource,
-        TaskUpdateInput,
+        DispatchStatus, Priority, ReviewRecord, ReviewRunRecord, Status, TaskCreateInput,
+        TaskDispatchRecord, TaskSource, TaskUpdateInput,
     };
     use time::Duration;
 
     use super::{
         build_remote_codex_launcher, build_remote_dispatch_prompt, build_remote_dispatch_schema,
-        build_review_follow_up_request, latest_pull_request_for_branch,
+        build_remote_review_prompt, build_remote_review_schema, build_review_follow_up_request,
+        build_review_workspace_key, describe_remote_reset_blockers, latest_pull_request_for_branch,
         parse_dispatch_snapshot_report, parse_github_pull_request_reference,
         parse_github_repository_name, refresh_dispatch_record_from_snapshot,
         render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
-        RemoteDispatchService, RemoteDispatchSnapshot,
+        GithubPullRequestMetadata, RemoteDispatchService, RemoteDispatchSnapshot,
     };
 
     struct TestContext {
@@ -3490,6 +5036,8 @@ mod tests {
         config_service: ConfigService,
         dispatch_repository: DispatchRepository,
         project_repository: ProjectRepository,
+        review_dispatch_repository: ReviewDispatchRepository,
+        review_repository: ReviewRepository,
         task_repository: FileTaskRepository,
     }
 
@@ -3513,6 +5061,20 @@ mod tests {
                     .expect("dispatch repository should resolve"),
                 project_repository: ProjectRepository::new(Some(data_dir.clone()))
                     .expect("project repository should resolve"),
+                review_dispatch_repository: ReviewDispatchRepository::new(Some(
+                    data_dir
+                        .parent()
+                        .expect("data dir should have a parent")
+                        .join("reviews/.dispatches"),
+                ))
+                .expect("review dispatch repository should resolve"),
+                review_repository: ReviewRepository::new(Some(
+                    data_dir
+                        .parent()
+                        .expect("data dir should have a parent")
+                        .join("reviews"),
+                ))
+                .expect("review repository should resolve"),
                 task_repository: FileTaskRepository::new(Some(data_dir))
                     .expect("task repository should resolve"),
             }
@@ -3524,6 +5086,8 @@ mod tests {
                 dispatch_repository: &self.dispatch_repository,
                 project_repository: &self.project_repository,
                 task_repository: &self.task_repository,
+                review_repository: &self.review_repository,
+                review_dispatch_repository: &self.review_dispatch_repository,
             }
         }
 
@@ -3572,6 +5136,53 @@ mod tests {
                 .expect("dispatch should save");
             dispatch
         }
+
+        fn create_review(&self) -> ReviewRecord {
+            let review = sample_review_record();
+            self.review_repository
+                .save_review(&review)
+                .expect("review should save");
+            review
+        }
+
+        fn create_review_run(
+            &self,
+            review: &ReviewRecord,
+            status: DispatchStatus,
+        ) -> ReviewRunRecord {
+            let timestamp = now_utc();
+            let dispatch_id = format!("dispatch-{}", timestamp.unix_timestamp_nanos());
+            let record = ReviewRunRecord {
+                dispatch_id: dispatch_id.clone(),
+                review_id: review.id.clone(),
+                pull_request_url: review.pull_request_url.clone(),
+                repository_full_name: review.repository_full_name.clone(),
+                workspace_key: review.workspace_key.clone(),
+                status,
+                created_at: timestamp,
+                updated_at: timestamp,
+                finished_at: None,
+                remote_host: "198.51.100.10".to_owned(),
+                branch_name: Some(format!("track-review/{dispatch_id}")),
+                worktree_path: Some(format!(
+                    "~/workspace/{}/{}/{}",
+                    review.workspace_key,
+                    super::REVIEW_WORKTREE_DIRECTORY_NAME,
+                    dispatch_id
+                )),
+                summary: None,
+                review_submitted: false,
+                github_review_id: None,
+                github_review_url: None,
+                notes: None,
+                error_message: None,
+            };
+            self.review_dispatch_repository
+                .save_dispatch(&record)
+                .expect("review run should save");
+
+            record
+        }
     }
 
     fn base_test_config(remote_agent: Option<RemoteAgentConfigFile>) -> TrackConfigFile {
@@ -3601,6 +5212,27 @@ mod tests {
         .expect("dummy SSH key should be written");
         fs::write(remote_agent_dir.join("known_hosts"), "")
             .expect("dummy known_hosts file should be written");
+    }
+
+    fn sample_review_record() -> ReviewRecord {
+        let created_at = now_utc();
+        ReviewRecord {
+            id: "20260326-120000-review-pr-42".to_owned(),
+            pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
+            pull_request_number: 42,
+            pull_request_title: "Fix queue layout".to_owned(),
+            repository_full_name: "acme/project-x".to_owned(),
+            repo_url: "https://github.com/acme/project-x".to_owned(),
+            git_url: "git@github.com:acme/project-x.git".to_owned(),
+            base_branch: "main".to_owned(),
+            workspace_key: "project-x".to_owned(),
+            project: Some("project-x".to_owned()),
+            main_user: "octocat".to_owned(),
+            default_review_prompt: Some("Focus on regressions and missing tests.".to_owned()),
+            extra_instructions: Some("Pay special attention to queue rendering.".to_owned()),
+            created_at,
+            updated_at: created_at,
+        }
     }
 
     #[test]
@@ -3651,6 +5283,40 @@ mod tests {
     }
 
     #[test]
+    fn builds_remote_review_prompt_with_default_and_extra_instructions() {
+        let review = sample_review_record();
+        let prompt = build_remote_review_prompt(
+            &review,
+            "track-review/dispatch-1",
+            "~/workspace/project-x/review-worktrees/dispatch-1",
+        );
+
+        assert!(prompt.contains("You are responsible for submitting the GitHub review yourself"));
+        assert!(prompt.contains("Submit one GitHub review in COMMENT mode."));
+        assert!(prompt.contains("Prefer inline review comments"));
+        assert!(prompt.contains("The first line of the top-level review body must be `@octocat requested me to review this PR.`"));
+        assert!(prompt.contains("Capture the submitted GitHub review's durable handle"));
+        assert!(prompt.contains("Return `reviewSubmitted` as `true` only after GitHub confirms"));
+        assert!(prompt.contains("## Default review prompt"));
+        assert!(prompt.contains("Focus on regressions and missing tests."));
+        assert!(prompt.contains("## Extra instructions"));
+        assert!(prompt.contains("Pay special attention to queue rendering."));
+    }
+
+    #[test]
+    fn review_schema_requires_review_submission_metadata_and_terminal_status_values() {
+        let schema = build_remote_review_schema();
+
+        assert!(schema.contains("\"reviewSubmitted\""));
+        assert!(schema.contains("\"githubReviewId\""));
+        assert!(schema.contains("\"githubReviewUrl\""));
+        assert!(schema.contains("\"succeeded\""));
+        assert!(schema.contains("\"failed\""));
+        assert!(schema.contains("\"blocked\""));
+        assert!(!schema.contains("\"running\""));
+    }
+
+    #[test]
     fn parses_github_repository_name() {
         assert_eq!(
             parse_github_repository_name("https://github.com/acme/project-x")
@@ -3668,6 +5334,22 @@ mod tests {
         assert_eq!(reference.owner, "acme");
         assert_eq!(reference.repository, "project-x");
         assert_eq!(reference.number, 42);
+    }
+
+    #[test]
+    fn builds_review_workspace_key_from_repository_name() {
+        let metadata = GithubPullRequestMetadata {
+            pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
+            pull_request_number: 42,
+            pull_request_title: "Fix queue layout".to_owned(),
+            repository_full_name: "acme/project-x".to_owned(),
+            repo_url: "https://github.com/acme/project-x".to_owned(),
+            git_url: "git@github.com:acme/project-x.git".to_owned(),
+            base_branch: "main".to_owned(),
+            head_oid: "abc123".to_owned(),
+        };
+
+        assert_eq!(build_review_workspace_key(&metadata), "acme-project-x");
     }
 
     #[test]
@@ -4003,6 +5685,25 @@ mod tests {
             )
         );
         assert!(released_dispatch.error_message.is_some());
+    }
+
+    #[test]
+    fn reset_blockers_include_active_review_runs() {
+        let context = TestContext::new(base_test_config(None));
+        let task = context.create_task("project-a", "Keep reset from interrupting live work");
+        let task_dispatch = context.create_running_dispatch(&task);
+        let review = context.create_review();
+        let review_dispatch = context.create_review_run(&review, DispatchStatus::Running);
+
+        let blockers = describe_remote_reset_blockers(&[task_dispatch], &[review_dispatch]);
+
+        assert_eq!(blockers.len(), 2);
+        assert!(blockers
+            .iter()
+            .any(|blocker| blocker.contains(&task.id) && blocker.contains("task")));
+        assert!(blockers
+            .iter()
+            .any(|blocker| blocker.contains(&review.id) && blocker.contains("review")));
     }
 
     #[test]

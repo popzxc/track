@@ -204,7 +204,9 @@ pub struct ApiRuntimeConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAgentReviewFollowUpRuntimeConfig {
+    pub enabled: bool,
     pub main_user: String,
+    pub default_review_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +217,22 @@ pub struct RemoteAgentDispatchOutcome {
     pub pull_request_url: Option<String>,
     #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<String>,
+    #[serde(rename = "worktreePath")]
+    pub worktree_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAgentReviewOutcome {
+    pub status: DispatchStatus,
+    pub summary: String,
+    #[serde(rename = "reviewSubmitted", default, alias = "reviewPosted")]
+    pub review_submitted: bool,
+    #[serde(rename = "githubReviewId", default)]
+    pub github_review_id: Option<String>,
+    #[serde(rename = "githubReviewUrl", default)]
+    pub github_review_url: Option<String>,
     #[serde(rename = "worktreePath")]
     pub worktree_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +281,124 @@ pub struct TaskDispatchRecord {
     pub review_request_head_oid: Option<String>,
     #[serde(rename = "reviewRequestUser", skip_serializing_if = "Option::is_none")]
     pub review_request_user: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRecord {
+    pub id: String,
+    #[serde(rename = "pullRequestUrl")]
+    pub pull_request_url: String,
+    #[serde(rename = "pullRequestNumber")]
+    pub pull_request_number: u64,
+    #[serde(rename = "pullRequestTitle")]
+    pub pull_request_title: String,
+    #[serde(rename = "repositoryFullName")]
+    pub repository_full_name: String,
+    #[serde(rename = "repoUrl")]
+    pub repo_url: String,
+    #[serde(rename = "gitUrl")]
+    pub git_url: String,
+    #[serde(rename = "baseBranch")]
+    pub base_branch: String,
+    #[serde(rename = "workspaceKey")]
+    pub workspace_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(rename = "mainUser")]
+    pub main_user: String,
+    #[serde(
+        rename = "defaultReviewPrompt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_review_prompt: Option<String>,
+    #[serde(rename = "extraInstructions", skip_serializing_if = "Option::is_none")]
+    pub extra_instructions: Option<String>,
+    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    pub created_at: OffsetDateTime,
+    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRunRecord {
+    #[serde(rename = "dispatchId")]
+    pub dispatch_id: String,
+    #[serde(rename = "reviewId")]
+    pub review_id: String,
+    #[serde(rename = "pullRequestUrl")]
+    pub pull_request_url: String,
+    #[serde(rename = "repositoryFullName")]
+    pub repository_full_name: String,
+    #[serde(rename = "workspaceKey")]
+    pub workspace_key: String,
+    pub status: DispatchStatus,
+    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    pub created_at: OffsetDateTime,
+    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    pub updated_at: OffsetDateTime,
+    #[serde(
+        rename = "finishedAt",
+        with = "optional_iso_8601_timestamp",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub finished_at: Option<OffsetDateTime>,
+    #[serde(rename = "remoteHost")]
+    pub remote_host: String,
+    #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(rename = "reviewSubmitted", default, alias = "reviewPosted")]
+    pub review_submitted: bool,
+    #[serde(
+        rename = "githubReviewId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub github_review_id: Option<String>,
+    #[serde(
+        rename = "githubReviewUrl",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub github_review_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateReviewInput {
+    #[serde(rename = "pullRequestUrl")]
+    pub pull_request_url: String,
+    #[serde(rename = "extraInstructions", skip_serializing_if = "Option::is_none")]
+    pub extra_instructions: Option<String>,
+}
+
+impl CreateReviewInput {
+    pub fn validate(self) -> Result<Self, TrackError> {
+        let pull_request_url = self.pull_request_url.trim().to_owned();
+        let extra_instructions = self
+            .extra_instructions
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        if pull_request_url.is_empty() {
+            return Err(TrackError::new(
+                ErrorCode::EmptyInput,
+                "Please provide a pull request URL.",
+            ));
+        }
+
+        Ok(Self {
+            pull_request_url,
+            extra_instructions,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

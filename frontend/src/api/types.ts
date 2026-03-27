@@ -17,6 +17,19 @@ export interface RunsResponse {
   runs: RunRecord[]
 }
 
+export interface ReviewsResponse {
+  reviews: ReviewSummary[]
+}
+
+export interface ReviewRunsResponse {
+  runs: ReviewRunRecord[]
+}
+
+export interface CreateReviewResponse {
+  review: ReviewRecord
+  run: ReviewRunRecord
+}
+
 export interface RemoteAgentSettings {
   configured: boolean
   host?: string
@@ -29,6 +42,7 @@ export interface RemoteAgentSettings {
 export interface RemoteAgentReviewFollowUpSettings {
   enabled: boolean
   mainUser?: string
+  defaultReviewPrompt?: string
 }
 
 export interface RemoteCleanupSummary {
@@ -121,9 +135,58 @@ export interface TaskDispatch {
   errorMessage?: string
 }
 
+export interface ReviewRecord {
+  id: string
+  pullRequestUrl: string
+  pullRequestNumber: number
+  pullRequestTitle: string
+  repositoryFullName: string
+  repoUrl: string
+  gitUrl: string
+  baseBranch: string
+  workspaceKey: string
+  project?: string
+  mainUser: string
+  defaultReviewPrompt?: string
+  extraInstructions?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ReviewRunRecord {
+  dispatchId: string
+  reviewId: string
+  pullRequestUrl: string
+  repositoryFullName: string
+  workspaceKey: string
+  status: DispatchStatus
+  createdAt: string
+  updatedAt: string
+  finishedAt?: string
+  remoteHost: string
+  branchName?: string
+  worktreePath?: string
+  summary?: string
+  reviewSubmitted: boolean
+  githubReviewId?: string
+  githubReviewUrl?: string
+  notes?: string
+  errorMessage?: string
+}
+
+export interface ReviewSummary {
+  review: ReviewRecord
+  latestRun?: ReviewRunRecord
+}
+
 export interface RunRecord {
   task: Task
   dispatch: TaskDispatch
+}
+
+export interface CreateReviewInput {
+  pullRequestUrl: string
+  extraInstructions?: string
 }
 
 export interface TaskUpdateInput {

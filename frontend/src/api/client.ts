@@ -1,9 +1,15 @@
 import type {
+  CreateReviewInput,
+  CreateReviewResponse,
   DeleteTaskResponse,
   DispatchesResponse,
   ProjectInfo,
   ProjectMetadataUpdateInput,
   ProjectsResponse,
+  ReviewRunRecord,
+  ReviewsResponse,
+  ReviewSummary,
+  ReviewRunsResponse,
   RemoteCleanupResponse,
   RemoteCleanupSummary,
   RemoteResetResponse,
@@ -51,6 +57,35 @@ async function readJson<T>(path: string, init?: RequestInit): Promise<T> {
 export async function fetchProjects(): Promise<ProjectInfo[]> {
   const response = await readJson<ProjectsResponse>('/api/projects')
   return response.projects
+}
+
+export async function fetchReviews(): Promise<ReviewSummary[]> {
+  const response = await readJson<ReviewsResponse>('/api/reviews')
+  return response.reviews
+}
+
+export async function createReview(input: CreateReviewInput): Promise<CreateReviewResponse> {
+  return readJson<CreateReviewResponse>('/api/reviews', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchReviewRuns(id: string): Promise<ReviewRunRecord[]> {
+  const response = await readJson<ReviewRunsResponse>(`/api/reviews/${encodeURIComponent(id)}/runs`)
+  return response.runs
+}
+
+export async function cancelReview(id: string): Promise<ReviewRunRecord> {
+  return readJson<ReviewRunRecord>(`/api/reviews/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+  })
+}
+
+export async function deleteReview(id: string): Promise<DeleteTaskResponse> {
+  return readJson<DeleteTaskResponse>(`/api/reviews/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function updateProject(

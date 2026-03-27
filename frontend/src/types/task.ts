@@ -1,9 +1,13 @@
 export type {
+  CreateReviewInput,
   DispatchStatus,
   Priority,
   ProjectInfo,
   ProjectMetadata,
   ProjectMetadataUpdateInput,
+  ReviewRecord,
+  ReviewRunRecord,
+  ReviewSummary,
   RemoteCleanupSummary,
   RemoteResetSummary,
   RemoteAgentSettings,

@@ -8,6 +8,8 @@ pub mod project_catalog;
 pub mod project_discovery;
 pub mod project_repository;
 pub mod remote_agent;
+pub mod review_dispatch_repository;
+pub mod review_repository;
 pub mod task_description;
 pub mod task_id;
 pub mod task_repository;

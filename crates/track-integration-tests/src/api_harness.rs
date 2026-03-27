@@ -14,8 +14,12 @@ use track_api::{build_app, AppState};
 use track_core::config::{ApiConfigFile, ConfigService, LlamaCppConfigFile, TrackConfigFile};
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::project_repository::{ProjectMetadata, ProjectRepository};
+use track_core::review_dispatch_repository::ReviewDispatchRepository;
+use track_core::review_repository::ReviewRepository;
 use track_core::task_repository::FileTaskRepository;
-use track_core::types::{Priority, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput};
+use track_core::types::{
+    Priority, ReviewRunRecord, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
+};
 
 use crate::fixture::RemoteFixture;
 
@@ -32,6 +36,8 @@ pub struct ApiHarness {
     project_repository: Arc<ProjectRepository>,
     task_repository: Arc<FileTaskRepository>,
     dispatches_dir: PathBuf,
+    review_dispatches_dir: PathBuf,
+    reviews_dir: PathBuf,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
 }
@@ -89,6 +95,24 @@ impl ApiHarness {
                 config_service,
                 dispatch_repository,
                 project_repository: project_repository.clone(),
+                review_dispatch_repository: Arc::new(
+                    ReviewDispatchRepository::new(Some(
+                        issues_dir
+                            .parent()
+                            .expect("issues dir parent")
+                            .join("reviews/.dispatches"),
+                    ))
+                    .expect("review dispatch repository should resolve"),
+                ),
+                review_repository: Arc::new(
+                    ReviewRepository::new(Some(
+                        issues_dir
+                            .parent()
+                            .expect("issues dir parent")
+                            .join("reviews"),
+                    ))
+                    .expect("review repository should resolve"),
+                ),
                 task_repository: task_repository.clone(),
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -100,6 +124,14 @@ impl ApiHarness {
             project_repository,
             task_repository,
             dispatches_dir: issues_dir.join(".dispatches"),
+            review_dispatches_dir: issues_dir
+                .parent()
+                .expect("issues directory should have a parent")
+                .join("reviews/.dispatches"),
+            reviews_dir: issues_dir
+                .parent()
+                .expect("issues directory should have a parent")
+                .join("reviews"),
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
         }
@@ -183,6 +215,124 @@ impl ApiHarness {
 
     pub fn dispatch_history_exists(&self, task_id: &str) -> bool {
         self.dispatches_dir.join(task_id).exists()
+    }
+
+    pub fn review_history_exists(&self, review_id: &str) -> bool {
+        self.review_dispatches_dir.join(review_id).exists()
+    }
+
+    pub fn review_record_exists(&self, review_id: &str) -> bool {
+        self.reviews_dir.join(format!("{review_id}.json")).exists()
+    }
+
+    pub async fn create_review(
+        &self,
+        pull_request_url: &str,
+        extra_instructions: Option<&str>,
+    ) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/reviews")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "pullRequestUrl": pull_request_url,
+                            "extraInstructions": extra_instructions,
+                        }))
+                        .expect("review request should serialize"),
+                    ))
+                    .expect("review request should build"),
+            )
+            .await
+            .expect("review request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response_json(response).await
+    }
+
+    pub async fn delete_review(&self, review_id: &str) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/reviews/{review_id}"))
+                    .body(Body::empty())
+                    .expect("review delete request should build"),
+            )
+            .await
+            .expect("review delete request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    pub async fn poll_review_until_terminal(
+        &self,
+        review_id: &str,
+        timeout: Duration,
+    ) -> serde_json::Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let run = self.latest_review_run(review_id).await;
+            let status = run["status"]
+                .as_str()
+                .expect("review run should contain a status");
+            if status != "preparing" && status != "running" {
+                return run;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "review did not reach a terminal state before the timeout.\nlast review run:\n{}",
+                serde_json::to_string_pretty(&run).expect("review run JSON should serialize")
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    async fn latest_review_run(&self, review_id: &str) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/reviews/{review_id}/runs"))
+                    .body(Body::empty())
+                    .expect("review runs request should build"),
+            )
+            .await
+            .expect("review runs request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let json = response_json(response).await;
+        json["runs"]
+            .as_array()
+            .and_then(|runs| runs.first())
+            .cloned()
+            .expect("review runs response should include at least one run")
+    }
+
+    pub async fn cancel_review(&self, review_id: &str) -> ReviewRunRecord {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/reviews/{review_id}/cancel"))
+                    .body(Body::empty())
+                    .expect("review cancel request should build"),
+            )
+            .await
+            .expect("review cancel request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        serde_json::from_value(response_json(response).await)
+            .expect("review cancel response should deserialize")
     }
 
     pub async fn update_task_status(&self, task_id: &str, status: &str) -> serde_json::Value {

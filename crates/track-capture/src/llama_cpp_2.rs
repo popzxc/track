@@ -12,8 +12,8 @@ use llama_cpp_2::model::{
 };
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
-use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use llama_cpp_2::TokenToStringError;
+use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use serde_json::json;
 use track_core::errors::{ErrorCode, TrackError};
 use track_core::paths::path_to_string;

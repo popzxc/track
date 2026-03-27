@@ -5,6 +5,7 @@ use crate::errors::{ErrorCode, TrackError};
 
 pub const DEFAULT_CONFIG_PATH: &str = "~/.config/track/config.json";
 pub const DEFAULT_DATA_DIR: &str = "~/.track/issues";
+pub const REVIEW_DIRECTORY_NAME: &str = "reviews";
 pub const REMOTE_AGENT_DIRECTORY_NAME: &str = "remote-agent";
 pub const DISPATCH_DIRECTORY_NAME: &str = ".dispatches";
 
@@ -106,6 +107,14 @@ pub fn get_managed_remote_agent_known_hosts_path() -> Result<PathBuf, TrackError
 
 pub fn get_dispatches_dir() -> Result<PathBuf, TrackError> {
     Ok(get_data_dir()?.join(DISPATCH_DIRECTORY_NAME))
+}
+
+pub fn get_reviews_dir() -> Result<PathBuf, TrackError> {
+    Ok(get_track_root_dir()?.join(REVIEW_DIRECTORY_NAME))
+}
+
+pub fn get_review_dispatches_dir() -> Result<PathBuf, TrackError> {
+    Ok(get_reviews_dir()?.join(DISPATCH_DIRECTORY_NAME))
 }
 
 pub fn collapse_home_path(path: &Path) -> String {

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use track_core::project_repository::ProjectMetadata;
 use track_integration_tests::api_harness::ApiHarness;
 use track_integration_tests::fixture::RemoteFixture;
@@ -74,15 +74,14 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
             .expect("terminal dispatch should include branchName"),
         format!("track/{dispatch_id}")
     );
-    assert!(
-        terminal_dispatch["worktreePath"]
-            .as_str()
-            .expect("terminal dispatch should include worktreePath")
-            .ends_with(&format!("/project-a/worktrees/{dispatch_id}"))
-    );
+    assert!(terminal_dispatch["worktreePath"]
+        .as_str()
+        .expect("terminal dispatch should include worktreePath")
+        .ends_with(&format!("/project-a/worktrees/{dispatch_id}")));
 
     let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
-    let registry_contents = fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
+    let registry_contents =
+        fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
     assert!(registry_contents.contains("\"project-a\""));
 
     let remote_status = fixture.read_remote_file(&format!("{remote_run_directory}/status.txt"));
@@ -130,8 +129,7 @@ async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
         .await;
     assert_eq!(first_terminal_dispatch["status"], "succeeded");
 
-    let follow_up_request =
-        "Address the PR review comments and keep using the existing PR.";
+    let follow_up_request = "Address the PR review comments and keep using the existing PR.";
     let second_dispatch = harness.follow_up_task(&task.id, follow_up_request).await;
     let second_dispatch_id = second_dispatch["dispatchId"]
         .as_str()
@@ -187,6 +185,109 @@ async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
 
     let remote_status = fixture.read_remote_file(&format!("{follow_up_run_directory}/status.txt"));
     assert_eq!(remote_status.trim(), "completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requesting_a_pr_review_posts_the_review_and_cleans_up_artifacts() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&review_codex_state(
+        0,
+        "Mock Codex reviewed the pull request successfully.",
+        "@octocat requested me to review this PR.\n\nI did not find blocking issues in the fixture diff.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let _metadata_seed_task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Seed project metadata for manual review requests",
+    );
+    let review_response = harness
+        .create_review(
+            "https://github.com/acme/project-a/pull/42",
+            Some("Pay extra attention to missing regression coverage."),
+        )
+        .await;
+    let review_id = review_response["review"]["id"]
+        .as_str()
+        .expect("review response should include a review id")
+        .to_owned();
+    let dispatch_id = review_response["run"]["dispatchId"]
+        .as_str()
+        .expect("review response should include a dispatch id")
+        .to_owned();
+
+    let terminal_run = harness
+        .poll_review_until_terminal(&review_id, Duration::from_secs(20))
+        .await;
+    assert_eq!(
+        terminal_run["status"],
+        "succeeded",
+        "terminal review run: {}",
+        serde_json::to_string_pretty(&terminal_run).expect("terminal review run should serialize")
+    );
+    assert_eq!(terminal_run["reviewSubmitted"], true);
+    assert_eq!(
+        terminal_run["summary"],
+        "Mock Codex reviewed the pull request successfully."
+    );
+    assert_eq!(terminal_run["githubReviewId"], "42001");
+    assert_eq!(
+        terminal_run["githubReviewUrl"],
+        "https://github.com/acme/project-a/pull/42#pullrequestreview-42001"
+    );
+
+    let review_worktree_path = terminal_run["worktreePath"]
+        .as_str()
+        .expect("review run should include a worktree path")
+        .to_owned();
+    let review_run_directory = format!("/home/track/workspace/project-a/review-runs/{dispatch_id}");
+    let remote_prompt = fixture.read_remote_file(&format!("{review_run_directory}/prompt.md"));
+    assert!(remote_prompt.contains("## Default review prompt"));
+    assert!(remote_prompt.contains("## Extra instructions"));
+    assert!(remote_prompt.contains("Pay extra attention to missing regression coverage."));
+
+    let gh_log_entries = fixture.read_log_entries("gh");
+    let review_post_entry = gh_log_entries
+        .iter()
+        .find(|entry| {
+            entry["result"]["endpoint"]
+                .as_str()
+                .is_some_and(|endpoint| endpoint.ends_with("/pulls/42/reviews"))
+        })
+        .expect("gh log should include the posted PR review");
+    assert!(review_post_entry["result"]["reviewBody"]
+        .as_str()
+        .expect("review post log should include the review body")
+        .starts_with("@octocat requested me to review this PR."));
+    assert_eq!(review_post_entry["result"]["reviewId"], "42001");
+    assert_eq!(
+        review_post_entry["result"]["reviewUrl"],
+        "https://github.com/acme/project-a/pull/42#pullrequestreview-42001"
+    );
+
+    assert!(harness.review_record_exists(&review_id));
+    assert!(harness.review_history_exists(&review_id));
+    assert!(fixture.remote_path_exists(&review_worktree_path));
+    assert!(fixture.remote_path_exists(&review_run_directory));
+
+    harness.delete_review(&review_id).await;
+
+    assert!(!harness.review_record_exists(&review_id));
+    assert!(!harness.review_history_exists(&review_id));
+    assert!(!fixture.remote_path_exists(&review_worktree_path));
+    assert!(!fixture.remote_path_exists(&review_run_directory));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -309,7 +410,10 @@ async fn closing_a_task_releases_the_worktree_but_keeps_history_for_reopen() {
     ));
 
     let follow_up_dispatch = harness
-        .follow_up_task(&task.id, "Continue from the existing PR after reopening the task.")
+        .follow_up_task(
+            &task.id,
+            "Continue from the existing PR after reopening the task.",
+        )
         .await;
     let follow_up_dispatch_id = follow_up_dispatch["dispatchId"]
         .as_str()
@@ -565,12 +669,10 @@ async fn resetting_remote_workspace_refuses_while_a_dispatch_is_active() {
     let reset_error = harness
         .reset_remote_agent_workspace_expect_error(StatusCode::BAD_GATEWAY)
         .await;
-    assert!(
-        reset_error["error"]["message"]
-            .as_str()
-            .expect("error response should include a message")
-            .contains("Stop active remote dispatches before resetting the remote workspace")
-    );
+    assert!(reset_error["error"]["message"]
+        .as_str()
+        .expect("error response should include a message")
+        .contains("Stop active remote dispatches before resetting the remote workspace"));
 }
 
 // =============================================================================
@@ -699,31 +801,34 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         project_a_dispatch_two["worktreePath"]
     );
 
-    assert!(
-        project_a_dispatch_one["worktreePath"]
-            .as_str()
-            .expect("project-a task one should have a worktree path")
-            .contains("/project-a/worktrees/")
-    );
-    assert!(
-        project_a_dispatch_two["worktreePath"]
-            .as_str()
-            .expect("project-a task two should have a worktree path")
-            .contains("/project-a/worktrees/")
-    );
-    assert!(
-        project_b_dispatch["worktreePath"]
-            .as_str()
-            .expect("project-b task should have a worktree path")
-            .contains("/project-b/worktrees/")
-    );
+    assert!(project_a_dispatch_one["worktreePath"]
+        .as_str()
+        .expect("project-a task one should have a worktree path")
+        .contains("/project-a/worktrees/"));
+    assert!(project_a_dispatch_two["worktreePath"]
+        .as_str()
+        .expect("project-a task two should have a worktree path")
+        .contains("/project-a/worktrees/"));
+    assert!(project_b_dispatch["worktreePath"]
+        .as_str()
+        .expect("project-b task should have a worktree path")
+        .contains("/project-b/worktrees/"));
 
-    let registry_contents = fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
+    let registry_contents =
+        fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
     assert!(registry_contents.contains("\"project-a\""));
     assert!(registry_contents.contains("\"project-b\""));
 
-    assert_remote_dispatch_artifacts(&fixture, &project_a_task_one.project, project_a_dispatch_one);
-    assert_remote_dispatch_artifacts(&fixture, &project_a_task_two.project, project_a_dispatch_two);
+    assert_remote_dispatch_artifacts(
+        &fixture,
+        &project_a_task_one.project,
+        project_a_dispatch_one,
+    );
+    assert_remote_dispatch_artifacts(
+        &fixture,
+        &project_a_task_two.project,
+        project_a_dispatch_two,
+    );
     assert_remote_dispatch_artifacts(&fixture, &project_b_task.project, project_b_dispatch);
 
     let parallel_codex_logs = fixture
@@ -801,15 +906,27 @@ fn success_codex_state(
     })
 }
 
-fn assert_remote_dispatch_artifacts(
-    fixture: &RemoteFixture,
-    project_name: &str,
-    dispatch: &Value,
-) {
+fn review_codex_state(sleep_seconds: u64, summary: &str, review_body: &str) -> Value {
+    json!({
+        "mode": "success",
+        "sleepSeconds": sleep_seconds,
+        "status": "succeeded",
+        "summary": summary,
+        "pullRequestUrl": "https://github.com/acme/project-a/pull/42",
+        "reviewSubmitted": true,
+        "reviewBody": review_body,
+        "worktreePath": null,
+        "notes": "Recorded by the integration-test fixture.",
+        "createCommit": Value::Null,
+    })
+}
+
+fn assert_remote_dispatch_artifacts(fixture: &RemoteFixture, project_name: &str, dispatch: &Value) {
     let dispatch_id = dispatch["dispatchId"]
         .as_str()
         .expect("dispatch should include a dispatch id");
-    let remote_run_directory = format!("/home/track/workspace/{project_name}/dispatches/{dispatch_id}");
+    let remote_run_directory =
+        format!("/home/track/workspace/{project_name}/dispatches/{dispatch_id}");
 
     let remote_status = fixture.read_remote_file(&format!("{remote_run_directory}/status.txt"));
     assert_eq!(remote_status.trim(), "completed");

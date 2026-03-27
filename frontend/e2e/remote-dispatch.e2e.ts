@@ -6,12 +6,14 @@ import { chromium, type Browser, type Page } from '@playwright/test'
 
 import {
   DISPATCH_TASK_TITLE,
+  E2E_PR_URL,
   FOLLOW_UP_TASK_TITLE,
   FIXTURE_HOST,
   FIXTURE_USER,
   ORPHAN_CLEANUP_DISPATCH_ID,
   ORPHAN_CLEANUP_TASK_ID,
   E2E_PROJECT_NAME,
+  E2E_REVIEW_TITLE,
   FIXTURE_WORKSPACE_ROOT,
 } from '../../testing/e2e/support/constants'
 import { loadFrontendE2EState } from '../../testing/e2e/support/state'
@@ -48,6 +50,16 @@ async function openTaskDrawer(page: Page, taskTitle: string) {
   expect(drawerText).toContain(taskTitle)
 }
 
+async function openReviewDrawer(page: Page, reviewTitle: string) {
+  await page.getByRole('button', { name: 'Reviews' }).click()
+  const reviewRow = page.getByTestId('review-row').filter({ hasText: reviewTitle }).first()
+  await reviewRow.click()
+  await page.getByTestId('review-drawer').waitFor()
+
+  const drawerText = await page.getByTestId('review-drawer').textContent()
+  expect(drawerText).toContain(reviewTitle)
+}
+
 // =============================================================================
 // Stable UI Polling Helpers
 // =============================================================================
@@ -78,6 +90,31 @@ async function waitForRunHistoryLabel(
 
   throw new Error(
     `Timed out waiting for "${expectedLabel}" in the run history for "${taskTitle}". Last visible run history entry:\n${lastRunHistoryText}`,
+  )
+}
+
+async function waitForReviewRunLabel(
+  page: Page,
+  reviewTitle: string,
+  expectedLabel: string,
+  timeoutMs: number,
+) {
+  const deadline = Date.now() + timeoutMs
+  let lastDrawerText = ''
+
+  while (Date.now() < deadline) {
+    await page.reload()
+    await openReviewDrawer(page, reviewTitle)
+    lastDrawerText = (await page.getByTestId('review-drawer').textContent()) ?? ''
+    if (lastDrawerText.includes(expectedLabel)) {
+      return lastDrawerText
+    }
+
+    await page.waitForTimeout(1_000)
+  }
+
+  throw new Error(
+    `Timed out waiting for "${expectedLabel}" in the review drawer for "${reviewTitle}". Last visible review drawer contents:\n${lastDrawerText}`,
   )
 }
 
@@ -125,6 +162,36 @@ function remotePathExists(remotePath: string): boolean {
 }
 
 describe('remote dispatch smoke flow', () => {
+  test('requests a PR review from the UI and deletes it after completion', async () => {
+    const { apiBaseUrl } = loadFrontendE2EState()
+    const page = await browser.newPage()
+
+    try {
+      await page.goto(apiBaseUrl)
+      await page.getByRole('button', { name: 'Reviews' }).click()
+      await page.getByRole('button', { name: 'Request review' }).click()
+      await page.getByTestId('review-request-modal').waitFor()
+      await page.getByTestId('review-request-url').fill(E2E_PR_URL)
+      await page.getByTestId('review-request-extra-instructions').fill('Pay extra attention to regression coverage.')
+      await page.getByTestId('review-request-submit').click()
+      await page.getByTestId('review-drawer').waitFor()
+
+      const drawerText = await waitForReviewRunLabel(page, E2E_REVIEW_TITLE, 'Succeeded', 20_000)
+      expect(drawerText).toContain('Review submitted')
+
+      await page.getByRole('button', { name: 'Delete review' }).click()
+      await page.getByTestId('confirm-dialog').waitFor()
+      await page.getByTestId('confirm-submit').click()
+      await page.waitForTimeout(1_000)
+
+      await page.reload()
+      await page.getByRole('button', { name: 'Reviews' }).click()
+      expect(await page.getByTestId('review-row').count()).toBe(0)
+    } finally {
+      await page.close()
+    }
+  }, 120_000)
+
   test('dispatches from the UI and continues with a follow-up request', async () => {
     const { apiBaseUrl } = loadFrontendE2EState()
     const page = await browser.newPage()

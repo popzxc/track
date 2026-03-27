@@ -5,6 +5,8 @@ import App from './App.vue'
 import {
   buildDispatch,
   buildProject,
+  buildReviewRun,
+  buildReviewSummary,
   buildRemoteAgentSettings,
   buildRunRecord,
   buildTask,
@@ -14,8 +16,10 @@ interface MockJsonRoute {
   method?: string
   path: string
   status?: number
-  body: unknown
+  body: unknown | ((request: { init?: RequestInit; method: string; path: string }) => unknown)
 }
+
+type MockJsonRequest = { init?: RequestInit; method: string; path: string }
 
 function installFetchRoutes(routes: MockJsonRoute[]) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -35,7 +39,11 @@ function installFetchRoutes(routes: MockJsonRoute[]) {
       throw new Error(`Unexpected fetch request: ${method} ${resolvedUrl.pathname}${resolvedUrl.search}`)
     }
 
-    return new Response(JSON.stringify(route.body), {
+    const responseBody = typeof route.body === 'function'
+      ? route.body({ init, method, path: requestPath })
+      : route.body
+
+    return new Response(JSON.stringify(responseBody), {
       status: route.status ?? 200,
       headers: {
         'content-type': 'application/json',
@@ -48,7 +56,13 @@ function installFetchRoutes(routes: MockJsonRoute[]) {
 }
 
 async function mountApp() {
-  const wrapper = mount(App)
+  const wrapper = mount(App, {
+    global: {
+      stubs: {
+        teleport: true,
+      },
+    },
+  })
   await flushPromises()
   await flushPromises()
   return wrapper
@@ -86,6 +100,12 @@ describe('App shell', () => {
         path: '/api/tasks',
         body: {
           tasks: [projectBTask, projectATask],
+        },
+      },
+      {
+        path: '/api/reviews',
+        body: {
+          reviews: [],
         },
       },
       {
@@ -161,6 +181,10 @@ describe('App shell', () => {
         body: { tasks: [task] },
       },
       {
+        path: '/api/reviews',
+        body: { reviews: [] },
+      },
+      {
         path: '/api/dispatches',
         body: { dispatches: [] },
       },
@@ -216,6 +240,10 @@ describe('App shell', () => {
         body: { tasks: [task] },
       },
       {
+        path: '/api/reviews',
+        body: { reviews: [] },
+      },
+      {
         path: '/api/dispatches',
         body: { dispatches: [] },
       },
@@ -256,5 +284,204 @@ describe('App shell', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="run-history-item"]').text()).toContain('Agent running')
+  })
+
+  it('gates manual PR reviews until a main GitHub user is configured', async () => {
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [] },
+      },
+      {
+        path: '/api/reviews',
+        body: { reviews: [] },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          reviewFollowUp: {
+            enabled: false,
+          },
+        }),
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    const reviewsButton = wrapper.findAll('button').find((button) => button.text().includes('Reviews'))
+    await reviewsButton?.trigger('click')
+    await flushPromises()
+
+    const requestReviewButton = wrapper.findAll('button').find((button) => button.text().includes('Request review'))
+    expect(requestReviewButton?.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Set the main GitHub user in Settings to enable PR reviews.')
+  })
+
+  it('creates a review request, opens the review drawer, and deletes it cleanly', async () => {
+    const createdReview = buildReviewSummary()
+    let reviewsBody: { reviews: unknown[] } = { reviews: [] }
+    let submittedReviewRequest: Record<string, unknown> | null = null
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [] },
+      },
+      {
+        path: '/api/reviews',
+        body: () => reviewsBody,
+      },
+      {
+        path: `/api/reviews/${encodeURIComponent(createdReview.review.id)}/runs`,
+        body: {
+          runs: [buildReviewRun({
+            reviewId: createdReview.review.id,
+            pullRequestUrl: createdReview.review.pullRequestUrl,
+          })],
+        },
+      },
+      {
+        method: 'POST',
+        path: '/api/reviews',
+        body: ({ init }: MockJsonRequest) => {
+          submittedReviewRequest = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          reviewsBody = { reviews: [createdReview] }
+
+          return {
+            review: createdReview.review,
+            run: createdReview.latestRun,
+          }
+        },
+      },
+      {
+        method: 'DELETE',
+        path: `/api/reviews/${createdReview.review.id}`,
+        body: () => {
+          reviewsBody = { reviews: [] }
+          return { ok: true }
+        },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          reviewFollowUp: {
+            enabled: false,
+            mainUser: 'octocat',
+            defaultReviewPrompt: 'Focus on risky behavior changes and missing tests.',
+          },
+        }),
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    const reviewsButton = wrapper.findAll('button').find((button) => button.text().includes('Reviews'))
+    await reviewsButton?.trigger('click')
+    await flushPromises()
+
+    const requestReviewButton = wrapper.findAll('button').find((button) => button.text().includes('Request review'))
+    await requestReviewButton?.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="review-request-url"]').setValue(createdReview.review.pullRequestUrl)
+    await wrapper.get('[data-testid="review-request-extra-instructions"]').setValue('Pay attention to queue regressions.')
+    await wrapper.get('[data-testid="review-request-submit"]').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(submittedReviewRequest).toEqual({
+      pullRequestUrl: createdReview.review.pullRequestUrl,
+      extraInstructions: 'Pay attention to queue regressions.',
+    })
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain(createdReview.review.pullRequestTitle)
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Submitted a GitHub review with two inline comments.')
+
+    const deleteReviewButton = wrapper.findAll('button').find((button) => button.text().includes('Delete review'))
+    await deleteReviewButton?.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-submit"]').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="review-drawer"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('No PR reviews yet.')
+  })
+
+  it('shows active PR reviews on the Runs page and in the Runs badge', async () => {
+    const runningReview = buildReviewSummary({
+      latestRun: {
+        status: 'running',
+        summary: 'Reviewing the pull request remotely.',
+        reviewSubmitted: false,
+      },
+    })
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [] },
+      },
+      {
+        path: '/api/reviews',
+        body: { reviews: [runningReview] },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          reviewFollowUp: {
+            enabled: false,
+            mainUser: 'octocat',
+          },
+        }),
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    const runsButton = wrapper.findAll('button').find((button) => button.text().includes('Runs'))
+    expect(runsButton?.text()).toContain('1')
+
+    await runsButton?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Active PR reviews')
+    expect(wrapper.text()).toContain(runningReview.review.pullRequestTitle)
+    expect(wrapper.text()).toContain('Open review')
   })
 })

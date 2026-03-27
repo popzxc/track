@@ -124,6 +124,12 @@ pub struct RemoteAgentReviewFollowUpConfigFile {
     pub enabled: bool,
     #[serde(rename = "mainUser", default, skip_serializing_if = "Option::is_none")]
     pub main_user: Option<String>,
+    #[serde(
+        rename = "defaultReviewPrompt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_review_prompt: Option<String>,
 }
 
 fn default_api_port() -> u16 {
@@ -215,6 +221,8 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
                         .main_user
                         .map(|value| value.trim().to_owned())
                         .filter(|value| !value.is_empty());
+                    let default_review_prompt =
+                        canonicalize_optional_multiline_value(review_follow_up.default_review_prompt);
 
                     if review_follow_up.enabled && main_user.is_none() {
                         return Err(TrackError::new(
@@ -223,13 +231,17 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
                         ));
                     }
 
-                    if !review_follow_up.enabled && main_user.is_none() {
+                    if !review_follow_up.enabled
+                        && main_user.is_none()
+                        && default_review_prompt.is_none()
+                    {
                         return Ok(None);
                     }
 
                     Ok(Some(RemoteAgentReviewFollowUpConfigFile {
                         enabled: review_follow_up.enabled,
                         main_user,
+                        default_review_prompt,
                     }))
                 })
                 .transpose()?
@@ -387,13 +399,13 @@ impl ConfigService {
                     projects_registry_path: remote_agent.projects_registry_path,
                     shell_prelude: remote_agent.shell_prelude,
                     review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
-                        if review_follow_up.enabled {
-                            review_follow_up.main_user.map(|main_user| {
-                                RemoteAgentReviewFollowUpRuntimeConfig { main_user }
-                            })
-                        } else {
-                            None
-                        }
+                        review_follow_up.main_user.map(|main_user| {
+                            RemoteAgentReviewFollowUpRuntimeConfig {
+                                enabled: review_follow_up.enabled,
+                                main_user,
+                                default_review_prompt: review_follow_up.default_review_prompt,
+                            }
+                        })
                     }),
                     managed_key_path: get_managed_remote_agent_key_path()?,
                     managed_known_hosts_path: get_managed_remote_agent_known_hosts_path()?,
@@ -663,6 +675,7 @@ mod tests {
                     review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
                         enabled: true,
                         main_user: None,
+                        default_review_prompt: None,
                     }),
                 }),
             })

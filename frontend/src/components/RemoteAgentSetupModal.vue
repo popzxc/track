@@ -18,6 +18,7 @@ const emit = defineEmits<{
 const shellPrelude = ref('')
 const reviewFollowUpEnabled = ref(false)
 const mainUser = ref('')
+const defaultReviewPrompt = ref('')
 
 watch(
   () => props.settings,
@@ -25,6 +26,7 @@ watch(
     shellPrelude.value = settings?.shellPrelude ?? ''
     reviewFollowUpEnabled.value = settings?.reviewFollowUp?.enabled ?? false
     mainUser.value = settings?.reviewFollowUp?.mainUser ?? ''
+    defaultReviewPrompt.value = settings?.reviewFollowUp?.defaultReviewPrompt ?? ''
   },
   { immediate: true },
 )
@@ -35,6 +37,7 @@ function submit() {
     reviewFollowUp: {
       enabled: reviewFollowUpEnabled.value,
       mainUser: mainUser.value.trim() || undefined,
+      defaultReviewPrompt: defaultReviewPrompt.value.trim() || undefined,
     },
   })
 }
@@ -108,8 +111,9 @@ function submit() {
                   Review follow-up
                 </p>
                 <p class="mt-2 text-sm leading-7 text-fg2">
-                  Automatically request review from one GitHub user after PR updates, then queue a
-                  remote follow-up when that same user leaves comment or changes-requested review feedback.
+                  These settings are shared between manual PR reviews from the web UI and automatic
+                  follow-up after PR updates. Manual reviews need the main GitHub user, while
+                  automatic follow-up also requires the toggle below.
                 </p>
               </div>
 
@@ -136,6 +140,22 @@ function submit() {
             <p class="mt-3 text-sm leading-7 text-fg3">
               Only this user can trigger automatic follow-ups. Approved reviews are ignored.
             </p>
+
+            <label class="mt-4 block text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+              Default review prompt
+              <textarea
+                v-model="defaultReviewPrompt"
+                data-testid="default-review-prompt"
+                rows="6"
+                class="mt-2 w-full border border-fg2/20 bg-bg0 px-4 py-3 text-sm leading-6 text-fg0 outline-none transition hover:border-fg2/40 focus:border-aqua/50 focus:ring-1 focus:ring-aqua/50"
+                placeholder="Focus on bugs, regressions, risky behavior changes, missing tests, and edge cases."
+              />
+            </label>
+
+            <p class="mt-3 text-sm leading-7 text-fg3">
+              This reusable prompt is appended to every manual PR review request before any extra
+              instructions you type for that specific review.
+            </p>
           </section>
         </div>
 
@@ -149,6 +169,7 @@ function submit() {
           </button>
           <button
             type="button"
+            data-testid="save-runner-setup"
             class="border border-aqua/35 bg-aqua/10 px-5 py-2 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:opacity-60"
             :disabled="
               busy ||

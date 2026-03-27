@@ -4,13 +4,18 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ApiClientError,
   cancelDispatch,
+  cancelReview,
   cleanupRemoteAgentArtifacts,
+  createReview,
   createTask,
+  deleteReview,
   deleteTask,
   discardDispatch,
   dispatchTask,
   fetchDispatches,
   fetchProjects,
+  fetchReviewRuns,
+  fetchReviews,
   fetchRemoteAgentSettings,
   fetchRuns,
   fetchTaskRuns,
@@ -25,6 +30,7 @@ import {
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import FollowUpModal from './components/FollowUpModal.vue'
 import ProjectMetadataModal from './components/ProjectMetadataModal.vue'
+import ReviewRequestModal from './components/ReviewRequestModal.vue'
 import RemoteAgentSetupModal from './components/RemoteAgentSetupModal.vue'
 import TaskEditorModal from './components/TaskEditorModal.vue'
 import {
@@ -47,12 +53,16 @@ import {
   type ParsedTaskDescription,
 } from './features/tasks/description'
 import type {
+  CreateReviewInput,
   ProjectInfo,
   ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
   RemoteResetSummary,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
+  ReviewRecord,
+  ReviewRunRecord,
+  ReviewSummary,
   RunRecord,
   Task,
   TaskCreateInput,
@@ -60,7 +70,7 @@ import type {
   TaskFollowUpInput,
 } from './types/task'
 
-type AppPage = 'tasks' | 'runs' | 'projects' | 'settings'
+type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
 type TaskLifecycleMutation = 'closing' | 'reopening' | 'deleting'
 
 const TASK_CHANGE_POLL_INTERVAL_MS = 2_000
@@ -82,24 +92,29 @@ const RUN_POLL_INTERVAL_MS = 60_000
 // needing deep links or significantly more local state.
 const currentPage = ref<AppPage>('tasks')
 const tasks = ref<Task[]>([])
+const reviews = ref<ReviewSummary[]>([])
 const projects = ref<ProjectInfo[]>([])
 const taskProjectOptions = ref<ProjectInfo[]>([])
 const runs = ref<RunRecord[]>([])
 const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
 const selectedTaskRuns = ref<RunRecord[]>([])
+const selectedReviewRuns = ref<ReviewRunRecord[]>([])
 const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
 const showClosed = ref(false)
 const selectedProjectFilter = ref('')
 const selectedTaskId = ref<string | null>(null)
+const selectedReviewId = ref<string | null>(null)
 const pendingSelectedTaskId = ref<string | null>(null)
 const selectedProjectDetailsId = ref<string | null>(null)
 const isTaskDrawerOpen = ref(false)
+const isReviewDrawerOpen = ref(false)
 const taskChangeVersion = ref<number | null>(null)
 const loading = ref(true)
 const refreshing = ref(false)
 const saving = ref(false)
 const dispatchingTaskId = ref<string | null>(null)
 const cancelingDispatchTaskId = ref<string | null>(null)
+const cancelingReviewId = ref<string | null>(null)
 const discardingDispatchTaskId = ref<string | null>(null)
 const followingUpTaskId = ref<string | null>(null)
 const taskLifecycleMutationTaskId = ref<string | null>(null)
@@ -107,11 +122,13 @@ const taskLifecycleMutation = ref<TaskLifecycleMutation | null>(null)
 const errorMessage = ref('')
 
 const creatingTask = ref(false)
+const creatingReview = ref(false)
 const editingTask = ref<Task | null>(null)
 const editingProject = ref<ProjectInfo | null>(null)
 const editingRemoteAgentSetup = ref(false)
 const followingUpTask = ref<Task | null>(null)
 const taskPendingDeletion = ref<Task | null>(null)
+const reviewPendingDeletion = ref<ReviewRecord | null>(null)
 const taskPendingRunnerSetup = ref<Task | null>(null)
 const cleanupPendingConfirmation = ref(false)
 const cleaningUpRemoteArtifacts = ref(false)
@@ -125,6 +142,7 @@ let taskChangePollInFlight = false
 let runPollTimer: number | null = null
 let runPollInFlight = false
 let selectedTaskRunsRequestVersion = 0
+let selectedReviewRunsRequestVersion = 0
 
 // =============================================================================
 // Derived State
@@ -134,12 +152,29 @@ let selectedTaskRunsRequestVersion = 0
 // concepts. The queue stays quiet, while richer context lives in the drawer and
 // the dedicated Runs / Projects pages.
 const visibleTaskCount = computed(() => tasks.value.length)
+const reviewCount = computed(() => reviews.value.length)
 const totalProjectCount = computed(() => availableProjects.value.length)
 const runnerSetupReady = computed(() =>
   Boolean(remoteAgentSettings.value?.configured && remoteAgentSettings.value.shellPrelude?.trim()),
 )
 
 const availableProjects = computed(() => mergeProjects(projects.value, taskProjectOptions.value))
+const reviewRequestDisabledReason = computed(() => {
+  if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
+    return 'Remote dispatch is not configured yet. Re-run `track` locally and add a remote agent host plus SSH key.'
+  }
+
+  if (remoteAgentSettings.value && !runnerSetupReady.value) {
+    return 'Save the runner shell prelude before requesting PR reviews.'
+  }
+
+  if (!remoteAgentSettings.value?.reviewFollowUp?.mainUser?.trim()) {
+    return 'Set the main GitHub user in Settings to enable PR reviews.'
+  }
+
+  return undefined
+})
+const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
 
 // =============================================================================
 // Task Grouping
@@ -225,16 +260,59 @@ const selectedTaskCanDiscardHistory = computed(() =>
   ),
 )
 
+const selectedReviewSummary = computed(() =>
+  reviews.value.find((summary) => summary.review.id === selectedReviewId.value) ?? null,
+)
+
+const selectedReview = computed(() => selectedReviewSummary.value?.review ?? null)
+
+const selectedReviewLatestRun = computed(() => selectedReviewSummary.value?.latestRun ?? null)
+
+const selectedReviewCanCancel = computed(() =>
+  Boolean(
+    selectedReview.value &&
+      selectedReviewLatestRun.value &&
+      (selectedReviewLatestRun.value.status === 'preparing' || selectedReviewLatestRun.value.status === 'running'),
+  ),
+)
+
 const activeRuns = computed(() =>
   runs.value
     .filter((run) => run.dispatch.status === 'preparing' || run.dispatch.status === 'running')
     .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt)),
 )
 
+const activeReviewRuns = computed(() =>
+  reviews.value
+    .filter(
+      (summary) =>
+        summary.latestRun?.status === 'preparing' || summary.latestRun?.status === 'running',
+    )
+    .sort((left, right) => {
+      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.createdAt
+      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.createdAt
+      return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
+    }),
+)
+
+const activeRemoteWorkCount = computed(() => activeRuns.value.length + activeReviewRuns.value.length)
+
 const recentRuns = computed(() =>
   runs.value
     .slice()
     .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
+    .slice(0, 40),
+)
+
+const recentReviewRuns = computed(() =>
+  reviews.value
+    .filter((summary) => Boolean(summary.latestRun))
+    .slice()
+    .sort((left, right) => {
+      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.createdAt
+      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.createdAt
+      return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
+    })
     .slice(0, 40),
 )
 
@@ -368,6 +446,57 @@ function removeTaskRuns(taskId: string) {
   }
 }
 
+function sortReviewSummaries(reviewSummaries: ReviewSummary[]) {
+  return reviewSummaries
+    .slice()
+    .sort((left, right) => Date.parse(right.review.createdAt) - Date.parse(left.review.createdAt))
+}
+
+function replaceSelectedReviewRuns(reviewRuns: ReviewRunRecord[]) {
+  selectedReviewRuns.value = reviewRuns
+    .slice()
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+}
+
+function upsertReviewSummary(review: ReviewRecord, latestRun?: ReviewRunRecord | null) {
+  const existingSummary = reviews.value.find((summary) => summary.review.id === review.id)
+  reviews.value = sortReviewSummaries([
+    {
+      review,
+      latestRun: latestRun ?? existingSummary?.latestRun,
+    },
+    ...reviews.value.filter((summary) => summary.review.id !== review.id),
+  ])
+}
+
+function upsertLatestReviewRun(reviewId: string, latestRun: ReviewRunRecord) {
+  reviews.value = sortReviewSummaries(
+    reviews.value.map((summary) =>
+      summary.review.id === reviewId
+        ? { ...summary, latestRun }
+        : summary),
+  )
+}
+
+function upsertSelectedReviewRun(run: ReviewRunRecord) {
+  if (selectedReviewId.value !== run.reviewId) {
+    return
+  }
+
+  replaceSelectedReviewRuns([
+    run,
+    ...selectedReviewRuns.value.filter((entry) => entry.dispatchId !== run.dispatchId),
+  ])
+}
+
+function removeReview(reviewId: string) {
+  reviews.value = reviews.value.filter((summary) => summary.review.id !== reviewId)
+
+  if (selectedReviewId.value === reviewId) {
+    closeReviewDrawer()
+  }
+}
+
 function selectTask(taskId: string) {
   selectedTaskId.value = taskId
   isTaskDrawerOpen.value = true
@@ -380,6 +509,21 @@ function selectTask(taskId: string) {
 function closeTaskDrawer() {
   isTaskDrawerOpen.value = false
   selectedTaskId.value = null
+}
+
+function selectReview(reviewId: string) {
+  selectedReviewId.value = reviewId
+  isReviewDrawerOpen.value = true
+
+  if (currentPage.value !== 'reviews') {
+    currentPage.value = 'reviews'
+  }
+}
+
+function closeReviewDrawer() {
+  isReviewDrawerOpen.value = false
+  selectedReviewId.value = null
+  selectedReviewRuns.value = []
 }
 
 function openTaskFromRun(run: RunRecord) {
@@ -436,6 +580,10 @@ async function loadTasks() {
   }))
 }
 
+async function loadReviews() {
+  reviews.value = await fetchReviews()
+}
+
 async function loadLatestDispatchesForVisibleTasks() {
   const dispatches = await fetchDispatches(tasks.value.map((task) => task.id))
 
@@ -470,6 +618,29 @@ async function loadSelectedTaskRunHistory() {
   replaceSelectedTaskRuns(taskRuns)
 }
 
+async function loadSelectedReviewRunHistory() {
+  if (!isReviewDrawerOpen.value || !selectedReview.value) {
+    selectedReviewRuns.value = []
+    return
+  }
+
+  const requestVersion = ++selectedReviewRunsRequestVersion
+  const reviewId = selectedReview.value.id
+  const reviewRuns = await fetchReviewRuns(reviewId)
+
+  // The review drawer is also transient, so we apply the same stale-response
+  // protection that task run history already uses.
+  if (
+    requestVersion !== selectedReviewRunsRequestVersion
+    || !isReviewDrawerOpen.value
+    || selectedReview.value?.id !== reviewId
+  ) {
+    return
+  }
+
+  replaceSelectedReviewRuns(reviewRuns)
+}
+
 async function loadRuns() {
   runs.value = await fetchRuns(200)
 }
@@ -486,6 +657,7 @@ async function refreshAll() {
     await Promise.all([
       loadProjects(),
       loadTasks(),
+      loadReviews(),
       syncTaskChangeVersion(),
       loadRemoteAgentSettings().catch(() => {
         // Runner setup is useful context, but the rest of the app should still
@@ -499,6 +671,10 @@ async function refreshAll() {
       loadSelectedTaskRunHistory().catch(() => {
         // The drawer can still show the task body if task-scoped run history
         // is temporarily unavailable.
+      }),
+      loadSelectedReviewRunHistory().catch(() => {
+        // The review drawer can still show the persisted review record if its
+        // run history is temporarily unavailable.
       }),
     ])
   } catch (error) {
@@ -563,6 +739,25 @@ async function createTaskFromWeb(payload: TaskCreateInput) {
     currentPage.value = 'tasks'
     selectedProjectFilter.value = task.project
     showClosed.value = false
+    await refreshAll()
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function createReviewFromWeb(payload: CreateReviewInput) {
+  saving.value = true
+  errorMessage.value = ''
+
+  try {
+    const created = await createReview(payload)
+    creatingReview.value = false
+    currentPage.value = 'reviews'
+    selectReview(created.review.id)
+    upsertReviewSummary(created.review, created.run)
+    replaceSelectedReviewRuns([created.run])
     await refreshAll()
   } catch (error) {
     setFriendlyError(error)
@@ -668,6 +863,27 @@ async function confirmDelete() {
   }
 }
 
+async function confirmReviewDelete() {
+  if (!reviewPendingDeletion.value) {
+    return
+  }
+
+  saving.value = true
+  errorMessage.value = ''
+
+  try {
+    const deletedReviewId = reviewPendingDeletion.value.id
+    await deleteReview(deletedReviewId)
+    reviewPendingDeletion.value = null
+    removeReview(deletedReviewId)
+    await refreshAll()
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    saving.value = false
+  }
+}
+
 async function startRemoteRun(task: Task) {
   if (remoteAgentSettings.value === null) {
     try {
@@ -722,6 +938,21 @@ async function cancelRemoteRun(task: Task) {
     setFriendlyError(error)
   } finally {
     cancelingDispatchTaskId.value = null
+  }
+}
+
+async function cancelReviewRun(review: ReviewRecord) {
+  cancelingReviewId.value = review.id
+  errorMessage.value = ''
+
+  try {
+    const run = await cancelReview(review.id)
+    upsertLatestReviewRun(review.id, run)
+    upsertSelectedReviewRun(run)
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    cancelingReviewId.value = null
   }
 }
 
@@ -797,6 +1028,10 @@ function openNewTaskEditor() {
   creatingTask.value = true
 }
 
+function openNewReviewEditor() {
+  creatingReview.value = true
+}
+
 function openProjectEditor(project = selectedProjectDetails.value) {
   if (!project) {
     return
@@ -813,6 +1048,10 @@ function openRunnerSetup() {
 function closeTaskEditor() {
   editingTask.value = null
   creatingTask.value = false
+}
+
+function closeReviewEditor() {
+  creatingReview.value = false
 }
 
 function closeProjectEditor() {
@@ -834,6 +1073,14 @@ function queueTaskDeletion(task: Task) {
 
 function clearPendingDeletion() {
   taskPendingDeletion.value = null
+}
+
+function queueReviewDeletion(review: ReviewRecord) {
+  reviewPendingDeletion.value = review
+}
+
+function clearPendingReviewDeletion() {
+  reviewPendingDeletion.value = null
 }
 
 function openRemoteCleanupConfirmation() {
@@ -867,6 +1114,7 @@ async function pollForTaskChanges() {
     saving.value ||
     dispatchingTaskId.value !== null ||
     cancelingDispatchTaskId.value !== null ||
+    cancelingReviewId.value !== null ||
     discardingDispatchTaskId.value !== null ||
     followingUpTaskId.value !== null
   ) {
@@ -904,13 +1152,14 @@ async function pollForRunChanges() {
     saving.value ||
     dispatchingTaskId.value !== null ||
     cancelingDispatchTaskId.value !== null ||
+    cancelingReviewId.value !== null ||
     discardingDispatchTaskId.value !== null ||
     followingUpTaskId.value !== null
   ) {
     return
   }
 
-  if (activeRuns.value.length === 0) {
+  if (activeRuns.value.length === 0 && activeReviewRuns.value.length === 0) {
     return
   }
 
@@ -919,10 +1168,15 @@ async function pollForRunChanges() {
   try {
     await Promise.all([
       loadRuns(),
+      loadReviews(),
       loadLatestDispatchesForVisibleTasks(),
       loadSelectedTaskRunHistory().catch(() => {
         // The rest of the run state remains useful even if the drawer history
         // fails to refresh on one background poll.
+      }),
+      loadSelectedReviewRunHistory().catch(() => {
+        // Review history is secondary to the latest status cards, so this poll
+        // stays best-effort for the review drawer as well.
       }),
     ])
   } catch {
@@ -974,6 +1228,19 @@ watch(
 )
 
 watch(
+  reviews,
+  (nextReviews) => {
+    if (
+      selectedReviewId.value &&
+      !nextReviews.some((summary) => summary.review.id === selectedReviewId.value)
+    ) {
+      closeReviewDrawer()
+    }
+  },
+  { immediate: true },
+)
+
+watch(
   availableProjects,
   (nextProjects) => {
     if (
@@ -998,6 +1265,11 @@ watch(currentPage, (nextPage) => {
     isTaskDrawerOpen.value = false
     selectedTaskRuns.value = []
   }
+
+  if (nextPage !== 'reviews') {
+    isReviewDrawerOpen.value = false
+    selectedReviewRuns.value = []
+  }
 })
 
 watch([isTaskDrawerOpen, selectedTask], ([drawerOpen, task]) => {
@@ -1013,6 +1285,21 @@ watch([isTaskDrawerOpen, selectedTask], ([drawerOpen, task]) => {
   }
 
   void loadSelectedTaskRunHistory().catch(setFriendlyError)
+})
+
+watch([isReviewDrawerOpen, selectedReview], ([drawerOpen, review]) => {
+  if (!review) {
+    isReviewDrawerOpen.value = false
+    selectedReviewRuns.value = []
+    return
+  }
+
+  if (!drawerOpen) {
+    selectedReviewRuns.value = []
+    return
+  }
+
+  void loadSelectedReviewRunHistory().catch(setFriendlyError)
 })
 
 onMounted(() => {
@@ -1086,6 +1373,19 @@ onBeforeUnmount(() => {
               type="button"
               class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
               :class="
+                currentPage === 'reviews'
+                  ? 'border-aqua/35 bg-aqua/10 text-aqua'
+                  : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
+              "
+              @click="currentPage = 'reviews'"
+            >
+              <span>Reviews</span>
+              <span class="text-xs text-fg3">{{ reviewCount }}</span>
+            </button>
+            <button
+              type="button"
+              class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
+              :class="
                 currentPage === 'runs'
                   ? 'border-aqua/35 bg-aqua/10 text-aqua'
                   : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
@@ -1093,7 +1393,7 @@ onBeforeUnmount(() => {
               @click="currentPage = 'runs'"
             >
               <span>Runs</span>
-              <span class="text-xs text-fg3">{{ activeRuns.length }}</span>
+              <span class="text-xs text-fg3">{{ activeRemoteWorkCount }}</span>
             </button>
             <button
               type="button"
@@ -1125,12 +1425,16 @@ onBeforeUnmount(() => {
 
           <div class="mt-6 border-t border-fg2/10 pt-4 text-sm text-fg2">
             <div class="flex items-center justify-between">
-              <span>Active runs</span>
-              <span>{{ activeRuns.length }}</span>
+              <span>Active remote work</span>
+              <span>{{ activeRemoteWorkCount }}</span>
             </div>
             <div class="mt-2 flex items-center justify-between">
               <span>Visible tasks</span>
               <span>{{ visibleTaskCount }}</span>
+            </div>
+            <div class="mt-2 flex items-center justify-between">
+              <span>Reviews</span>
+              <span>{{ reviewCount }}</span>
             </div>
             <div class="mt-2 flex items-center justify-between">
               <span>Projects</span>
@@ -1278,6 +1582,98 @@ onBeforeUnmount(() => {
               </div>
             </section>
 
+            <section v-else-if="currentPage === 'reviews'" class="space-y-4">
+              <div class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel">
+                <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <h1 class="font-display text-3xl text-fg0 sm:text-4xl">
+                      Reviews
+                    </h1>
+                    <p class="mt-2 text-sm text-fg3">
+                      Standalone PR reviews with persisted history and cleanup.
+                    </p>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      class="border border-aqua/35 bg-aqua/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      :disabled="!canRequestReview"
+                      @click="openNewReviewEditor"
+                    >
+                      Request review
+                    </button>
+                    <button
+                      v-if="reviewRequestDisabledReason"
+                      type="button"
+                      class="border border-fg2/20 bg-bg0 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-fg1 transition hover:border-fg1/35 hover:text-fg0"
+                      @click="currentPage = 'settings'"
+                    >
+                      Open settings
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                v-if="reviewRequestDisabledReason"
+                class="border border-yellow/25 bg-yellow/8 px-4 py-3 text-sm leading-6 text-yellow shadow-panel"
+              >
+                {{ reviewRequestDisabledReason }}
+              </div>
+
+              <div v-if="reviews.length === 0" class="border border-fg2/20 bg-bg1/95 px-4 py-12 text-center shadow-panel">
+                <p class="font-display text-2xl text-fg0">
+                  No PR reviews yet.
+                </p>
+                <p class="mt-3 text-sm leading-6 text-fg2">
+                  Request a review from a GitHub PR URL and it will show up here with its run history.
+                </p>
+              </div>
+
+              <div v-else class="space-y-4">
+                <article
+                  v-for="summary in reviews"
+                  :key="summary.review.id"
+                  :data-review-id="summary.review.id"
+                  class="border border-fg2/20 bg-bg1/95 shadow-panel transition hover:border-fg1/25"
+                >
+                  <button
+                    type="button"
+                    data-testid="review-row"
+                    class="w-full px-4 py-5 text-left transition hover:bg-bg0/35"
+                    @click="selectReview(summary.review.id)"
+                  >
+                    <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div class="min-w-0">
+                        <p class="text-xs tracking-[0.08em] text-fg3">
+                          {{ summary.review.repositoryFullName }} / PR #{{ summary.review.pullRequestNumber }}
+                        </p>
+                        <h2 class="mt-3 whitespace-pre-wrap text-xl leading-8 text-fg0">
+                          {{ summary.review.pullRequestTitle }}
+                        </h2>
+                        <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
+                          <span class="border px-2 py-1" :class="dispatchBadgeClass(summary.latestRun)">
+                            {{ dispatchStatusLabel(summary.latestRun) }}
+                          </span>
+                          <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
+                            @{{ summary.review.mainUser }}
+                          </span>
+                          <span class="text-fg3">Created {{ formatDateTime(summary.review.createdAt) }}</span>
+                          <span v-if="summary.latestRun?.reviewSubmitted" class="text-green">
+                            Review submitted
+                          </span>
+                        </div>
+                        <p class="mt-4 text-sm leading-7 text-fg2">
+                          {{ dispatchSummary(summary.latestRun, 'review') }}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                </article>
+              </div>
+            </section>
+
             <section v-else-if="currentPage === 'runs'" class="space-y-4">
               <div class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel">
                 <h1 class="font-display text-3xl text-fg0 sm:text-4xl">
@@ -1292,10 +1688,10 @@ onBeforeUnmount(() => {
                 <div class="flex items-center justify-between gap-3">
                   <div>
                     <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                      Running now
+                      Active task runs
                     </p>
                     <p class="mt-2 text-sm text-fg2">
-                      Live remote work that is still preparing or actively running.
+                      Task agents that are still preparing or actively running.
                     </p>
                   </div>
                   <span class="text-xs text-fg3">{{ activeRuns.length }}</span>
@@ -1305,7 +1701,7 @@ onBeforeUnmount(() => {
                   v-if="activeRuns.length === 0"
                   class="mt-4 border border-dashed border-fg2/15 px-4 py-6 text-sm text-fg3"
                 >
-                  Nothing is running at the moment.
+                  No task runs are active at the moment.
                 </div>
 
                 <div v-else class="mt-4 space-y-3">
@@ -1346,6 +1742,77 @@ onBeforeUnmount(() => {
                           type="button"
                           class="border border-aqua/30 bg-aqua/10 px-4 py-3 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
                           @click="openExternal(run.dispatch.pullRequestUrl)"
+                        >
+                          View PR
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </section>
+
+              <section class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                      Active PR reviews
+                    </p>
+                    <p class="mt-2 text-sm text-fg2">
+                      Standalone review runs that are still preparing or actively running.
+                    </p>
+                  </div>
+                  <span class="text-xs text-fg3">{{ activeReviewRuns.length }}</span>
+                </div>
+
+                <div
+                  v-if="activeReviewRuns.length === 0"
+                  class="mt-4 border border-dashed border-fg2/15 px-4 py-6 text-sm text-fg3"
+                >
+                  No PR reviews are running right now.
+                </div>
+
+                <div v-else class="mt-4 space-y-3">
+                  <article
+                    v-for="summary in activeReviewRuns"
+                    :key="summary.latestRun?.dispatchId ?? summary.review.id"
+                    class="border border-fg2/15 bg-bg0/60 p-4"
+                  >
+                    <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div class="min-w-0">
+                        <p class="text-xs tracking-[0.08em] text-fg3">
+                          {{ summary.review.repositoryFullName }}
+                        </p>
+                        <h2 class="mt-3 whitespace-pre-wrap text-xl leading-8 text-fg0">
+                          {{ summary.review.pullRequestTitle }}
+                        </h2>
+                        <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
+                          <span class="border px-2 py-1" :class="dispatchBadgeClass(summary.latestRun)">
+                            {{ dispatchStatusLabel(summary.latestRun) }}
+                          </span>
+                          <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
+                            @{{ summary.review.mainUser }}
+                          </span>
+                          <span class="text-fg3">
+                            Started {{ formatDateTime(summary.latestRun?.createdAt ?? summary.review.createdAt) }}
+                          </span>
+                        </div>
+                        <p class="mt-4 text-sm leading-7 text-fg2">
+                          {{ dispatchSummary(summary.latestRun, 'review') }}
+                        </p>
+                      </div>
+
+                      <div class="flex shrink-0 flex-wrap gap-2">
+                        <button
+                          type="button"
+                          class="border border-fg2/20 bg-bg0 px-4 py-3 text-xs font-semibold tracking-[0.08em] text-fg1 transition hover:border-fg1/35 hover:text-fg0"
+                          @click="selectReview(summary.review.id)"
+                        >
+                          Open review
+                        </button>
+                        <button
+                          type="button"
+                          class="border border-aqua/30 bg-aqua/10 px-4 py-3 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
+                          @click="openExternal(summary.review.pullRequestUrl)"
                         >
                           View PR
                         </button>
@@ -1416,6 +1883,83 @@ onBeforeUnmount(() => {
                           type="button"
                           class="border border-aqua/30 bg-aqua/10 px-4 py-3 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
                           @click="openExternal(run.dispatch.pullRequestUrl)"
+                        >
+                          View PR
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </section>
+
+              <section class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                      Recent PR reviews
+                    </p>
+                    <p class="mt-2 text-sm text-fg2">
+                      The latest standalone review outcomes, including submitted reviews and failures.
+                    </p>
+                  </div>
+                  <span class="text-xs text-fg3">{{ recentReviewRuns.length }}</span>
+                </div>
+
+                <div
+                  v-if="recentReviewRuns.length === 0"
+                  class="mt-4 border border-dashed border-fg2/15 px-4 py-6 text-sm text-fg3"
+                >
+                  No PR review history has been recorded yet.
+                </div>
+
+                <div v-else class="mt-4 space-y-3">
+                  <article
+                    v-for="summary in recentReviewRuns"
+                    :key="summary.latestRun?.dispatchId ?? summary.review.id"
+                    class="border border-fg2/15 bg-bg0/60 p-4"
+                  >
+                    <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div class="min-w-0">
+                        <p class="text-xs tracking-[0.08em] text-fg3">
+                          {{ summary.review.repositoryFullName }}
+                        </p>
+                        <h2 class="mt-3 whitespace-pre-wrap text-lg leading-8 text-fg0">
+                          {{ summary.review.pullRequestTitle }}
+                        </h2>
+                        <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
+                          <span class="border px-2 py-1" :class="dispatchBadgeClass(summary.latestRun)">
+                            {{ dispatchStatusLabel(summary.latestRun) }}
+                          </span>
+                          <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
+                            @{{ summary.review.mainUser }}
+                          </span>
+                          <span class="text-fg3">
+                            Started {{ formatDateTime(summary.latestRun?.createdAt ?? summary.review.createdAt) }}
+                          </span>
+                          <span v-if="summary.latestRun?.finishedAt" class="text-fg3">
+                            • Finished {{ formatDateTime(summary.latestRun?.finishedAt) }}
+                          </span>
+                          <span v-if="summary.latestRun?.reviewSubmitted" class="text-green">
+                            Review submitted
+                          </span>
+                        </div>
+                        <p class="mt-4 text-sm leading-7 text-fg2">
+                          {{ dispatchSummary(summary.latestRun, 'review') }}
+                        </p>
+                      </div>
+
+                      <div class="flex shrink-0 flex-wrap gap-2">
+                        <button
+                          type="button"
+                          class="border border-fg2/20 bg-bg0 px-4 py-3 text-xs font-semibold tracking-[0.08em] text-fg1 transition hover:border-fg1/35 hover:text-fg0"
+                          @click="selectReview(summary.review.id)"
+                        >
+                          Open review
+                        </button>
+                        <button
+                          type="button"
+                          class="border border-aqua/30 bg-aqua/10 px-4 py-3 text-xs font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
+                          @click="openExternal(summary.review.pullRequestUrl)"
                         >
                           View PR
                         </button>
@@ -1579,7 +2123,7 @@ onBeforeUnmount(() => {
                   Settings
                 </h1>
                 <p class="mt-2 text-sm text-fg3">
-                  Remote runner configuration
+                  Remote runner configuration for task dispatches and PR reviews
                 </p>
               </div>
 
@@ -1642,10 +2186,10 @@ onBeforeUnmount(() => {
                       </div>
                       <div class="border border-fg2/15 bg-bg0/60 p-4">
                         <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                          Review follow-up
+                          Main GitHub user
                         </dt>
                         <dd class="mt-2 text-sm text-fg1">
-                          {{ remoteAgentSettings?.reviewFollowUp?.enabled ? 'Enabled' : 'Disabled' }}
+                          {{ remoteAgentSettings?.reviewFollowUp?.mainUser || 'Not set' }}
                         </dd>
                       </div>
                     </dl>
@@ -1682,11 +2226,11 @@ onBeforeUnmount(() => {
                     <pre class="mt-4 overflow-x-auto whitespace-pre-wrap text-sm leading-7 text-fg1">{{ remoteAgentSettings?.shellPrelude || 'No shell prelude has been saved yet.' }}</pre>
                     <div class="mt-6 border-t border-fg2/10 pt-4">
                       <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                        Review follow-up
+                        Review settings
                       </p>
                       <div class="mt-4 space-y-2 text-sm leading-7 text-fg1">
                         <p>
-                          Status:
+                          Automatic follow-up:
                           <span class="text-fg0">
                             {{ remoteAgentSettings?.reviewFollowUp?.enabled ? 'Enabled' : 'Disabled' }}
                           </span>
@@ -1695,6 +2239,12 @@ onBeforeUnmount(() => {
                           Main user:
                           <span class="text-fg0">
                             {{ remoteAgentSettings?.reviewFollowUp?.mainUser || 'Not set' }}
+                          </span>
+                        </p>
+                        <p>
+                          Default review prompt:
+                          <span class="text-fg0">
+                            {{ remoteAgentSettings?.reviewFollowUp?.defaultReviewPrompt || 'Not set' }}
                           </span>
                         </p>
                       </div>
@@ -1796,10 +2346,10 @@ onBeforeUnmount(() => {
                           Use this when the remote VM has drifted into an ambiguous state and you want the next dispatch to rebuild everything from local tracker data.
                         </p>
                         <p
-                          v-if="activeRuns.length > 0"
+                          v-if="activeRemoteWorkCount > 0"
                           class="text-yellow"
                         >
-                          Stop active runs before resetting the remote workspace.
+                          Stop active task runs and PR reviews before resetting the remote workspace.
                         </p>
                       </div>
                     </div>
@@ -1808,7 +2358,7 @@ onBeforeUnmount(() => {
                       type="button"
                       data-testid="settings-reset-button"
                       class="border border-red/30 bg-red/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-red transition hover:bg-red/15 disabled:cursor-not-allowed disabled:opacity-60"
-                      :disabled="resettingRemoteWorkspace || !remoteAgentSettings?.configured || activeRuns.length > 0"
+                      :disabled="resettingRemoteWorkspace || !remoteAgentSettings?.configured || activeRemoteWorkCount > 0"
                       @click="openRemoteResetConfirmation"
                     >
                       {{ resettingRemoteWorkspace ? 'Resetting...' : 'Reset remote workspace' }}
@@ -2170,6 +2720,265 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
+    <div
+      v-if="currentPage === 'reviews' && isReviewDrawerOpen && selectedReview"
+      class="fixed inset-0 z-40 flex justify-end bg-bg0/70 backdrop-blur-[2px]"
+      @click.self="closeReviewDrawer"
+    >
+      <aside
+        data-testid="review-drawer"
+        class="h-full w-full max-w-[980px] overflow-y-auto border-l border-fg2/20 bg-bg1 shadow-panel"
+      >
+        <div class="space-y-5 p-5 sm:p-6">
+          <div class="flex items-start justify-between gap-4 border-b border-fg2/10 pb-5">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-fg3">
+                <span>{{ selectedReview.repositoryFullName }}</span>
+                <span class="text-fg3/40">/</span>
+                <span>PR #{{ selectedReview.pullRequestNumber }}</span>
+              </div>
+
+              <h2 class="mt-3 whitespace-pre-wrap font-display text-3xl leading-tight text-fg0 sm:text-4xl">
+                {{ selectedReview.pullRequestTitle }}
+              </h2>
+
+              <div class="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold tracking-[0.08em]">
+                <span class="border px-2 py-1" :class="dispatchBadgeClass(selectedReviewLatestRun)">
+                  {{ dispatchStatusLabel(selectedReviewLatestRun) }}
+                </span>
+                <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
+                  @{{ selectedReview.mainUser }}
+                </span>
+                <span
+                  class="border px-2 py-1"
+                  :class="selectedReviewLatestRun?.reviewSubmitted ? 'border-green/30 bg-green/10 text-green' : 'border-fg2/15 bg-bg0 text-fg2'"
+                >
+                  {{ selectedReviewLatestRun?.reviewSubmitted ? 'Review submitted' : 'Submission not confirmed' }}
+                </span>
+              </div>
+
+              <p class="mt-4 text-sm leading-7 text-fg2">
+                Created {{ formatDateTime(selectedReview.createdAt) }}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              class="border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg2 transition hover:border-fg1/35 hover:text-fg0"
+              @click="closeReviewDrawer"
+            >
+              Close
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-if="selectedReviewCanCancel"
+              type="button"
+              class="border border-orange/30 bg-orange/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-orange transition hover:bg-orange/15 disabled:opacity-60"
+              :disabled="cancelingReviewId === selectedReview.id"
+              @click="cancelReviewRun(selectedReview)"
+            >
+              {{ cancelingReviewId === selectedReview.id ? 'Canceling...' : 'Cancel review run' }}
+            </button>
+
+            <button
+              type="button"
+              class="border border-aqua/30 bg-aqua/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
+              @click="openExternal(selectedReview.pullRequestUrl)"
+            >
+              View PR
+            </button>
+
+            <button
+              v-if="selectedReviewLatestRun?.githubReviewUrl"
+              type="button"
+              class="border border-green/30 bg-green/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-green transition hover:bg-green/15"
+              @click="openExternal(selectedReviewLatestRun.githubReviewUrl)"
+            >
+              View submitted review
+            </button>
+
+            <button
+              type="button"
+              class="border border-red/30 bg-red/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-red transition hover:bg-red/15 disabled:opacity-60"
+              :disabled="saving"
+              @click="queueReviewDeletion(selectedReview)"
+            >
+              Delete review
+            </button>
+          </div>
+
+          <section class="border border-fg2/15 bg-bg0/60 p-4">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+              Latest status
+            </p>
+            <p class="mt-4 text-sm leading-7 text-fg1">
+              {{ dispatchSummary(selectedReviewLatestRun, 'review') }}
+            </p>
+            <p class="mt-4 text-xs leading-6 text-fg3">
+              The actual review discussion lives on GitHub, including any inline comments the agent submitted.
+            </p>
+            <dl class="mt-4 grid gap-4 text-sm md:grid-cols-2 xl:grid-cols-3">
+              <div>
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Pull request
+                </dt>
+                <dd class="mt-1 break-all text-fg1">
+                  {{ selectedReview.pullRequestUrl }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Base branch
+                </dt>
+                <dd class="mt-1 text-fg1">
+                  {{ selectedReview.baseBranch }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Workspace key
+                </dt>
+                <dd class="mt-1 break-all text-fg1">
+                  {{ selectedReview.workspaceKey }}
+                </dd>
+              </div>
+              <div v-if="selectedReviewLatestRun?.githubReviewUrl">
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Submitted review
+                </dt>
+                <dd class="mt-1 break-all text-fg1">
+                  {{ selectedReviewLatestRun.githubReviewUrl }}
+                </dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="grid gap-4 xl:grid-cols-2">
+            <section class="border border-fg2/15 bg-bg0/60 p-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                Default review prompt
+              </p>
+              <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
+                {{ selectedReview.defaultReviewPrompt || 'No default review prompt was saved for this review.' }}
+              </div>
+            </section>
+
+            <section class="border border-fg2/15 bg-bg0/60 p-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                Extra instructions
+              </p>
+              <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
+                {{ selectedReview.extraInstructions || 'No extra instructions were provided for this review.' }}
+              </div>
+            </section>
+          </section>
+
+          <section class="border border-fg2/15 bg-bg0/60 p-4">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                  Review run history
+                </p>
+                <p class="mt-2 text-sm text-fg2">
+                  Review requests are immutable, so creating a new review is the way to re-run one.
+                </p>
+              </div>
+              <span class="text-xs text-fg3">{{ selectedReviewRuns.length }}</span>
+            </div>
+
+            <div
+              v-if="selectedReviewRuns.length === 0"
+              class="mt-4 border border-dashed border-fg2/15 px-4 py-6 text-sm text-fg3"
+            >
+              This review has no run history yet.
+            </div>
+
+            <div v-else class="mt-4 space-y-3">
+              <article
+                v-for="(run, index) in selectedReviewRuns"
+                :key="run.dispatchId"
+                class="border border-fg2/15 bg-bg1/70 p-4"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
+                      <span
+                        v-if="index === 0"
+                        class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2"
+                      >
+                        Latest
+                      </span>
+                      <span class="border px-2 py-1" :class="dispatchBadgeClass(run)">
+                        {{ dispatchStatusLabel(run) }}
+                      </span>
+                      <span class="text-fg3">Started {{ formatDateTime(run.createdAt) }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <p class="mt-4 text-sm leading-7 text-fg1">
+                  {{ dispatchSummary(run, 'review') }}
+                </p>
+
+                <dl class="mt-4 grid gap-4 text-sm md:grid-cols-2 xl:grid-cols-3">
+                  <div v-if="run.finishedAt">
+                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                      Finished
+                    </dt>
+                    <dd class="mt-1 text-fg1">
+                      {{ formatDateTime(run.finishedAt) }}
+                    </dd>
+                  </div>
+                  <div v-if="run.branchName">
+                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                      Branch
+                    </dt>
+                    <dd class="mt-1 break-all text-fg1">
+                      {{ run.branchName }}
+                    </dd>
+                  </div>
+                  <div v-if="run.worktreePath">
+                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                      Worktree
+                    </dt>
+                    <dd class="mt-1 break-all text-fg1">
+                      {{ run.worktreePath }}
+                    </dd>
+                  </div>
+                </dl>
+
+                <details
+                  v-if="run.notes"
+                  class="mt-4 border border-fg2/15 bg-bg0/70 p-4"
+                >
+                  <summary class="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                    Run notes
+                  </summary>
+                  <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
+                    {{ run.notes }}
+                  </div>
+                </details>
+
+                <details
+                  v-if="run.errorMessage"
+                  class="mt-4 border border-red/20 bg-red/5 p-4"
+                >
+                  <summary class="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-red">
+                    Error details
+                  </summary>
+                  <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-red">
+                    {{ run.errorMessage }}
+                  </div>
+                </details>
+              </article>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </div>
+
     <TaskEditorModal
       :busy="saving"
       :default-project="defaultCreateProject"
@@ -2179,6 +2988,14 @@ onBeforeUnmount(() => {
       :task="editingTask"
       @cancel="closeTaskEditor"
       @save="creatingTask ? createTaskFromWeb($event) : saveTaskEdits($event)"
+    />
+
+    <ReviewRequestModal
+      :busy="saving"
+      :main-user="remoteAgentSettings?.reviewFollowUp?.mainUser"
+      :open="creatingReview"
+      @cancel="closeReviewEditor"
+      @save="createReviewFromWeb"
     />
 
     <ProjectMetadataModal
@@ -2218,6 +3035,19 @@ onBeforeUnmount(() => {
       title="Delete task"
       @cancel="clearPendingDeletion"
       @confirm="confirmDelete"
+    />
+
+    <ConfirmDialog
+      :busy="saving"
+      confirm-busy-label="Deleting..."
+      confirm-label="Delete review"
+      confirm-variant="danger"
+      :description="reviewPendingDeletion ? `Delete the saved review for ${reviewPendingDeletion.repositoryFullName} PR #${reviewPendingDeletion.pullRequestNumber}? This removes local history and remote review artifacts.` : ''"
+      eyebrow="Destructive action"
+      :open="reviewPendingDeletion !== null"
+      title="Delete PR review"
+      @cancel="clearPendingReviewDeletion"
+      @confirm="confirmReviewDelete"
     />
 
     <ConfirmDialog

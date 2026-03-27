@@ -55,6 +55,10 @@ def repo_name_from_url(repo_url: str) -> str:
     return repo_url.rstrip("/").removesuffix(".git").split("/")[-1]
 
 
+def repo_owner_from_url(repo_url: str) -> str:
+    return repo_url.rstrip("/").removesuffix(".git").split("/")[-2]
+
+
 def runtime_path_inside_fixture(runtime_dir: Path, host_path: Path) -> Path:
     return FIXTURE_RUNTIME_MOUNT / host_path.resolve().relative_to(runtime_dir.resolve())
 
@@ -225,6 +229,10 @@ def command_seed_repo(args: argparse.Namespace) -> None:
     ensure_runtime_layout(runtime_dir)
 
     repo_name = args.repo_name or repo_name_from_url(args.repo_url)
+    repo_owner = repo_owner_from_url(args.repo_url)
+    pull_request_number = 42
+    pull_request_title = f"Review fixture change for {repo_name}"
+    pull_request_branch = f"fixture/pr-{pull_request_number}"
     upstream_bare_path = runtime_dir / "git" / "upstream" / f"{repo_name}.git"
     fork_bare_path = runtime_dir / "git" / args.fork_owner / f"{repo_name}.git"
     upstream_bare_path_in_fixture = runtime_path_inside_fixture(runtime_dir, upstream_bare_path)
@@ -253,18 +261,74 @@ def command_seed_repo(args: argparse.Namespace) -> None:
             run(["git", "-C", str(working_copy), "add", "README.md"])
             run(["git", "-C", str(working_copy), "commit", "-m", "chore: seed fixture repository"])
 
+            run(["git", "-C", str(working_copy), "checkout", "-b", pull_request_branch])
+            (working_copy / "REVIEW_TARGET.md").write_text(
+                "# Review fixture change\n\nThis branch exists so PR review flows have a concrete diff.\n",
+                encoding="utf-8",
+            )
+            run(["git", "-C", str(working_copy), "add", "REVIEW_TARGET.md"])
+            run(
+                [
+                    "git",
+                    "-C",
+                    str(working_copy),
+                    "commit",
+                    "-m",
+                    "feat: add fixture change for review testing",
+                ]
+            )
+
             upstream_bare_path.parent.mkdir(parents=True, exist_ok=True)
             run(["git", "clone", "--bare", str(working_copy), str(upstream_bare_path)])
+            pull_request_head_sha = run(
+                ["git", "-C", str(working_copy), "rev-parse", "HEAD"],
+                capture_output=True,
+            ).stdout.strip()
+            run(
+                [
+                    "git",
+                    "--git-dir",
+                    str(upstream_bare_path),
+                    "update-ref",
+                    f"refs/pull/{pull_request_number}/head",
+                    pull_request_head_sha,
+                ]
+            )
+
+    pull_request_head_sha = run(
+        [
+            "git",
+            "--git-dir",
+            str(upstream_bare_path),
+            "rev-parse",
+            f"refs/pull/{pull_request_number}/head",
+        ],
+        capture_output=True,
+    ).stdout.strip()
 
     gh_state_path = runtime_dir / "state" / "gh.json"
     gh_state = load_json(gh_state_path, {"login": args.fork_owner, "repositories": {}})
     gh_state["login"] = args.login or gh_state.get("login") or args.fork_owner
     gh_state.setdefault("repositories", {})
     gh_state["repositories"][args.repo_url] = {
+        "owner": repo_owner,
         "name": repo_name,
         "upstreamBarePath": str(upstream_bare_path_in_fixture),
         "forkOwner": args.fork_owner,
         "forkBarePath": str(fork_bare_path_in_fixture),
+        "pullRequests": {
+            str(pull_request_number): {
+                "number": pull_request_number,
+                "title": pull_request_title,
+                "state": "open",
+                "mergedAt": None,
+                "baseRef": args.base_branch,
+                "headRef": pull_request_branch,
+                "headSha": pull_request_head_sha,
+                "reviews": [],
+                "comments": [],
+            }
+        },
     }
     write_json(gh_state_path, gh_state)
 
@@ -274,6 +338,9 @@ def command_seed_repo(args: argparse.Namespace) -> None:
                 "forkBarePath": str(fork_bare_path),
                 "forkBarePathInFixture": str(fork_bare_path_in_fixture),
                 "ghStatePath": str(gh_state_path),
+                "pullRequestHeadSha": pull_request_head_sha,
+                "pullRequestNumber": pull_request_number,
+                "pullRequestTitle": pull_request_title,
                 "repoName": repo_name,
                 "repoUrl": args.repo_url,
                 "upstreamBarePath": str(upstream_bare_path),

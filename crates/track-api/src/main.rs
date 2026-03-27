@@ -9,6 +9,8 @@ use track_api::{build_app, spawn_remote_review_follow_up_reconciler, AppState};
 use track_core::config::ConfigService;
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::project_repository::ProjectRepository;
+use track_core::review_dispatch_repository::ReviewDispatchRepository;
+use track_core::review_repository::ReviewRepository;
 use track_core::task_repository::FileTaskRepository;
 
 fn configured_port(config_service: &ConfigService) -> String {
@@ -45,6 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_service,
         dispatch_repository: Arc::new(DispatchRepository::new(None)?),
         project_repository: Arc::new(ProjectRepository::new(None)?),
+        review_dispatch_repository: Arc::new(ReviewDispatchRepository::new(None)?),
+        review_repository: Arc::new(ReviewRepository::new(None)?),
         task_repository: Arc::new(FileTaskRepository::new(None)?),
         task_change_version: Arc::new(AtomicU64::new(0)),
     };

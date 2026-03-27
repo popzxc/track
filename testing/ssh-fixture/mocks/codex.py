@@ -30,6 +30,10 @@ def load_state() -> dict[str, Any]:
             "pullRequestUrl": None,
             "branchName": None,
             "worktreePath": None,
+            "reviewSubmitted": False,
+            "githubReviewId": None,
+            "githubReviewUrl": None,
+            "reviewBody": None,
             "notes": None,
         },
     )
@@ -147,6 +151,60 @@ def emit_event(event_type: str, payload: dict[str, Any]) -> None:
     print(json.dumps({"event": event_type, **payload}), flush=True)
 
 
+def schema_properties(schema_path: Path) -> dict[str, Any]:
+    return json.loads(schema_path.read_text(encoding="utf-8")).get("properties", {})
+
+
+def parse_pull_request_reference(pull_request_url: str) -> tuple[str, str, str]:
+    trimmed = pull_request_url.strip().rstrip("/")
+    parts = [part for part in trimmed.split("/") if part]
+    if len(parts) < 5 or parts[-2] != "pull":
+        raise ValueError(f"Unsupported pull request URL in mock codex state: {pull_request_url}")
+
+    return parts[-4], parts[-3], parts[-1]
+
+
+def pull_request_url_from_prompt(prompt: str) -> str | None:
+    for line in prompt.splitlines():
+        prefix = "- Pull request: "
+        if line.startswith(prefix):
+            return line[len(prefix):].strip() or None
+
+    return None
+
+
+def submit_mock_review(prompt: str, state: dict[str, Any]) -> dict[str, Any]:
+    pull_request_url = (state.get("pullRequestUrl") or pull_request_url_from_prompt(prompt) or "").strip()
+    if not pull_request_url:
+        raise ValueError("Mock Codex review submission requires a pull request URL.")
+
+    owner, repository_name, number = parse_pull_request_reference(pull_request_url)
+    review_body = (
+        state.get("reviewBody")
+        or "@octocat requested me to review this PR.\n\nMock review body from the fixture."
+    )
+    review_event = (state.get("reviewEvent") or "COMMENT").strip().upper() or "COMMENT"
+    endpoint = f"repos/{owner}/{repository_name}/pulls/{number}/reviews"
+    completed = subprocess.run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "POST",
+            endpoint,
+            "-f",
+            f"body={review_body}",
+            "-f",
+            f"event={review_event}",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
 def main(argv: list[str]) -> int:
     prompt = sys.stdin.read()
     state = load_state()
@@ -161,6 +219,7 @@ def main(argv: list[str]) -> int:
         if not schema_path.exists():
             raise ValueError(f"Expected output schema at {schema_path}, but it was not present.")
 
+        schema = schema_properties(schema_path)
         write_prompt_snapshot(run_directory, prompt)
 
         emit_event("started", {"worktreePath": str(worktree_path)})
@@ -179,14 +238,56 @@ def main(argv: list[str]) -> int:
         # TODO: Add richer event stream shaping when the app starts asserting on
         # `events.jsonl` contents rather than only terminal result files.
         apply_mock_changes(worktree_path, state.get("createCommit"))
-        result_payload = {
-            "status": state.get("status", "succeeded"),
-            "summary": state.get("summary", "Mock Codex completed successfully."),
-            "pullRequestUrl": state.get("pullRequestUrl"),
-            "branchName": state.get("branchName") or current_branch_name(worktree_path),
-            "worktreePath": state.get("worktreePath") or str(worktree_path),
-            "notes": state.get("notes"),
-        }
+        if "pullRequestUrl" not in schema:
+            review_submitted = bool(state.get("reviewSubmitted", False))
+            review_payload: dict[str, Any] | None = None
+            if review_submitted:
+                review_payload = submit_mock_review(prompt, state)
+
+            result_payload = {
+                "status": state.get("status", "succeeded"),
+                "summary": state.get("summary", "Mock Codex completed the review successfully."),
+                "worktreePath": state.get("worktreePath") or str(worktree_path),
+                "notes": state.get("notes"),
+            }
+            if "reviewSubmitted" in schema:
+                result_payload["reviewSubmitted"] = review_submitted
+            if "githubReviewId" in schema:
+                result_payload["githubReviewId"] = (
+                    (
+                        state.get("githubReviewId")
+                        or (
+                            str(review_payload.get("id"))
+                            if review_payload and review_payload.get("id") is not None
+                            else None
+                        )
+                    )
+                    if review_submitted
+                    else None
+                )
+            if "githubReviewUrl" in schema:
+                result_payload["githubReviewUrl"] = (
+                    (
+                        state.get("githubReviewUrl")
+                        or (review_payload.get("html_url") if review_payload else None)
+                    )
+                    if review_submitted
+                    else None
+                )
+            if "reviewBody" in schema:
+                result_payload["reviewBody"] = (
+                    state.get("reviewBody")
+                    or "@octocat requested me to review this PR.\n\nMock review body from the fixture."
+                )
+        else:
+            result_payload = {
+                "status": state.get("status", "succeeded"),
+                "summary": state.get("summary", "Mock Codex completed successfully."),
+                "pullRequestUrl": state.get("pullRequestUrl"),
+                "branchName": state.get("branchName") or current_branch_name(worktree_path),
+                "worktreePath": state.get("worktreePath") or str(worktree_path),
+                "notes": state.get("notes"),
+            }
 
         ensure_parent(output_path)
         output_path.write_text(json.dumps(result_payload, indent=2) + "\n", encoding="utf-8")

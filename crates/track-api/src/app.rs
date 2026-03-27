@@ -18,13 +18,15 @@ use track_core::errors::{ErrorCode, TrackError};
 use track_core::project_repository::{
     ProjectMetadataUpdateInput, ProjectRecord, ProjectRepository,
 };
-use track_core::remote_agent::RemoteDispatchService;
+use track_core::remote_agent::{RemoteDispatchService, RemoteReviewService};
+use track_core::review_dispatch_repository::ReviewDispatchRepository;
+use track_core::review_repository::ReviewRepository;
 use track_core::task_repository::FileTaskRepository;
 use track_core::task_sort::sort_tasks;
 use track_core::time_utils::now_utc;
 use track_core::types::{
-    RemoteCleanupSummary, RemoteResetSummary, Task, TaskCreateInput, TaskDispatchRecord,
-    TaskSource, TaskUpdateInput,
+    CreateReviewInput, RemoteCleanupSummary, RemoteResetSummary, ReviewRecord, ReviewRunRecord,
+    Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
 };
 
 #[derive(Clone)]
@@ -32,6 +34,8 @@ pub struct AppState {
     pub config_service: Arc<ConfigService>,
     pub dispatch_repository: Arc<DispatchRepository>,
     pub project_repository: Arc<ProjectRepository>,
+    pub review_dispatch_repository: Arc<ReviewDispatchRepository>,
+    pub review_repository: Arc<ReviewRepository>,
     pub task_repository: Arc<FileTaskRepository>,
     pub task_change_version: Arc<AtomicU64>,
 }
@@ -156,6 +160,29 @@ struct RunsResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ReviewSummaryResponse {
+    review: ReviewRecord,
+    #[serde(rename = "latestRun", skip_serializing_if = "Option::is_none")]
+    latest_run: Option<ReviewRunRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewsResponse {
+    reviews: Vec<ReviewSummaryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewRunsResponse {
+    runs: Vec<ReviewRunRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateReviewResponse {
+    review: ReviewRecord,
+    run: ReviewRunRecord,
+}
+
+#[derive(Debug, Serialize)]
 struct RemoteAgentSettingsResponse {
     configured: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +202,11 @@ struct RemoteAgentReviewFollowUpSettingsResponse {
     enabled: bool,
     #[serde(rename = "mainUser", skip_serializing_if = "Option::is_none")]
     main_user: Option<String>,
+    #[serde(
+        rename = "defaultReviewPrompt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    default_review_prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -234,11 +266,13 @@ fn remote_agent_settings_response(
                         |review_follow_up| RemoteAgentReviewFollowUpSettingsResponse {
                             enabled: review_follow_up.enabled,
                             main_user: review_follow_up.main_user,
+                            default_review_prompt: review_follow_up.default_review_prompt,
                         },
                     )
                     .unwrap_or(RemoteAgentReviewFollowUpSettingsResponse {
                         enabled: false,
                         main_user: None,
+                        default_review_prompt: None,
                     }),
             ),
         },
@@ -301,6 +335,7 @@ async fn patch_remote_agent_settings(
                 .map(|review_follow_up| RemoteAgentReviewFollowUpConfigFile {
                     enabled: review_follow_up.enabled,
                     main_user: review_follow_up.main_user,
+                    default_review_prompt: review_follow_up.default_review_prompt,
                 })
                 .or(existing_remote_agent.review_follow_up),
         )
@@ -319,6 +354,8 @@ async fn cleanup_remote_agent_artifacts(
             dispatch_repository: &cleanup_state.dispatch_repository,
             project_repository: &cleanup_state.project_repository,
             task_repository: &cleanup_state.task_repository,
+            review_repository: &cleanup_state.review_repository,
+            review_dispatch_repository: &cleanup_state.review_dispatch_repository,
         };
 
         dispatch_service.cleanup_unused_remote_artifacts()
@@ -340,6 +377,8 @@ async fn reset_remote_agent_workspace(
             dispatch_repository: &reset_state.dispatch_repository,
             project_repository: &reset_state.project_repository,
             task_repository: &reset_state.task_repository,
+            review_repository: &reset_state.review_repository,
+            review_dispatch_repository: &reset_state.review_dispatch_repository,
         };
 
         dispatch_service.reset_remote_workspace()
@@ -399,6 +438,8 @@ async fn list_dispatches(
             dispatch_repository: &state.dispatch_repository,
             project_repository: &state.project_repository,
             task_repository: &state.task_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
         };
 
         dispatch_service.latest_dispatches_for_tasks(&task_ids)
@@ -422,6 +463,8 @@ async fn list_runs(
             dispatch_repository: &state.dispatch_repository,
             project_repository: &state.project_repository,
             task_repository: &state.task_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
         };
 
         let dispatches = dispatch_service.list_dispatches(limit)?;
@@ -459,6 +502,8 @@ async fn list_task_runs(
             dispatch_repository: &state.dispatch_repository,
             project_repository: &state.project_repository,
             task_repository: &state.task_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
         };
 
         let task = state.task_repository.get_task(&task_id)?;
@@ -479,6 +524,67 @@ async fn list_task_runs(
     .map_err(ApiError::from_track_error)?;
 
     Ok(Json(RunsResponse { runs }))
+}
+
+async fn list_reviews(State(state): State<AppState>) -> Result<Json<ReviewsResponse>, ApiError> {
+    let state = state.clone();
+    let reviews = tokio::task::spawn_blocking(move || {
+        let review_service = RemoteReviewService {
+            config_service: &state.config_service,
+            project_repository: &state.project_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
+        };
+
+        let reviews = state.review_repository.list_reviews()?;
+        let review_ids = reviews
+            .iter()
+            .map(|review| review.id.clone())
+            .collect::<Vec<_>>();
+        let latest_runs = review_service.latest_dispatches_for_reviews(&review_ids)?;
+        let latest_runs_by_review_id = latest_runs
+            .into_iter()
+            .map(|run| (run.review_id.clone(), run))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        Ok::<Vec<ReviewSummaryResponse>, TrackError>(
+            reviews
+                .into_iter()
+                .map(|review| ReviewSummaryResponse {
+                    latest_run: latest_runs_by_review_id.get(&review.id).cloned(),
+                    review,
+                })
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Review list refresh failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(ReviewsResponse { reviews }))
+}
+
+async fn list_review_runs(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ReviewRunsResponse>, ApiError> {
+    let state = state.clone();
+    let review_id = id.clone();
+    let runs = tokio::task::spawn_blocking(move || {
+        let review_service = RemoteReviewService {
+            config_service: &state.config_service,
+            project_repository: &state.project_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
+        };
+
+        review_service.dispatch_history_for_review(&review_id)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Review runs refresh failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(ReviewRunsResponse { runs }))
 }
 
 // =============================================================================
@@ -545,6 +651,8 @@ async fn patch_task(
             dispatch_repository: &patch_state.dispatch_repository,
             project_repository: &patch_state.project_repository,
             task_repository: &patch_state.task_repository,
+            review_repository: &patch_state.review_repository,
+            review_dispatch_repository: &patch_state.review_dispatch_repository,
         };
 
         dispatch_service.update_task(&task_id, validated_input)
@@ -588,12 +696,66 @@ async fn delete_task(
             dispatch_repository: &delete_state.dispatch_repository,
             project_repository: &delete_state.project_repository,
             task_repository: &delete_state.task_repository,
+            review_repository: &delete_state.review_repository,
+            review_dispatch_repository: &delete_state.review_dispatch_repository,
         };
 
         dispatch_service.delete_task(&task_id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Delete task failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+    bump_task_change_version(&state);
+
+    Ok(Json(DeleteTaskResponse { ok: true }))
+}
+
+async fn create_review(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<CreateReviewResponse>, ApiError> {
+    let input = serde_json::from_slice::<CreateReviewInput>(&body)
+        .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+
+    let queue_state = state.clone();
+    let (review, run) = tokio::task::spawn_blocking(move || {
+        let review_service = RemoteReviewService {
+            config_service: &queue_state.config_service,
+            project_repository: &queue_state.project_repository,
+            review_repository: &queue_state.review_repository,
+            review_dispatch_repository: &queue_state.review_dispatch_repository,
+        };
+
+        review_service.create_review(input)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Create review failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+    bump_task_change_version(&state);
+
+    spawn_review_launch(state.clone(), run.clone());
+
+    Ok(Json(CreateReviewResponse { review, run }))
+}
+
+async fn delete_review(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<DeleteTaskResponse>, ApiError> {
+    let delete_state = state.clone();
+    let review_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        let review_service = RemoteReviewService {
+            config_service: &delete_state.config_service,
+            project_repository: &delete_state.project_repository,
+            review_repository: &delete_state.review_repository,
+            review_dispatch_repository: &delete_state.review_dispatch_repository,
+        };
+
+        review_service.delete_review(&review_id)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Delete review failed to join: {error}")))?
     .map_err(ApiError::from_track_error)?;
     bump_task_change_version(&state);
 
@@ -610,6 +772,8 @@ fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
                 dispatch_repository: &launch_state.dispatch_repository,
                 project_repository: &launch_state.project_repository,
                 task_repository: &launch_state.task_repository,
+                review_repository: &launch_state.review_repository,
+                review_dispatch_repository: &launch_state.review_dispatch_repository,
             };
 
             dispatch_service.launch_prepared_dispatch(launch_dispatch)
@@ -637,6 +801,45 @@ fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
     });
 }
 
+fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRecord) {
+    tokio::spawn(async move {
+        let launch_state = state.clone();
+        let launch_dispatch = queued_dispatch.clone();
+        let join_result = tokio::task::spawn_blocking(move || {
+            let review_service = RemoteReviewService {
+                config_service: &launch_state.config_service,
+                project_repository: &launch_state.project_repository,
+                review_repository: &launch_state.review_repository,
+                review_dispatch_repository: &launch_state.review_dispatch_repository,
+            };
+
+            review_service.launch_prepared_review(launch_dispatch)
+        })
+        .await;
+
+        if let Err(join_error) = join_result {
+            if let Some(mut saved_dispatch) = state
+                .review_dispatch_repository
+                .get_dispatch(&queued_dispatch.review_id, &queued_dispatch.dispatch_id)
+                .ok()
+                .flatten()
+            {
+                if saved_dispatch.status.is_active() {
+                    saved_dispatch.status = track_core::types::DispatchStatus::Failed;
+                    saved_dispatch.updated_at = now_utc();
+                    saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
+                    saved_dispatch.error_message = Some(format!(
+                        "Background review task stopped unexpectedly: {join_error}"
+                    ));
+                    let _ = state
+                        .review_dispatch_repository
+                        .save_dispatch(&saved_dispatch);
+                }
+            }
+        }
+    });
+}
+
 pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -654,6 +857,8 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
                     dispatch_repository: &reconcile_state.dispatch_repository,
                     project_repository: &reconcile_state.project_repository,
                     task_repository: &reconcile_state.task_repository,
+                    review_repository: &reconcile_state.review_repository,
+                    review_dispatch_repository: &reconcile_state.review_dispatch_repository,
                 };
 
                 dispatch_service.reconcile_review_follow_up()
@@ -748,6 +953,8 @@ async fn dispatch_task(
             dispatch_repository: &queue_state.dispatch_repository,
             project_repository: &queue_state.project_repository,
             task_repository: &queue_state.task_repository,
+            review_repository: &queue_state.review_repository,
+            review_dispatch_repository: &queue_state.review_dispatch_repository,
         };
 
         dispatch_service.queue_dispatch(&task_id)
@@ -777,6 +984,8 @@ async fn follow_up_task(
             dispatch_repository: &queue_state.dispatch_repository,
             project_repository: &queue_state.project_repository,
             task_repository: &queue_state.task_repository,
+            review_repository: &queue_state.review_repository,
+            review_dispatch_repository: &queue_state.review_dispatch_repository,
         };
 
         dispatch_service.queue_follow_up_dispatch(&task_id, &input.request)
@@ -802,12 +1011,36 @@ async fn cancel_task_dispatch(
             dispatch_repository: &state.dispatch_repository,
             project_repository: &state.project_repository,
             task_repository: &state.task_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
         };
 
         dispatch_service.cancel_dispatch(&id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Cancel dispatch task failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(canceled_dispatch))
+}
+
+async fn cancel_review_dispatch(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ReviewRunRecord>, ApiError> {
+    let state = state.clone();
+    let canceled_dispatch = tokio::task::spawn_blocking(move || {
+        let review_service = RemoteReviewService {
+            config_service: &state.config_service,
+            project_repository: &state.project_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
+        };
+
+        review_service.cancel_dispatch(&id)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Cancel review task failed to join: {error}")))?
     .map_err(ApiError::from_track_error)?;
 
     Ok(Json(canceled_dispatch))
@@ -824,6 +1057,8 @@ async fn discard_task_dispatch(
             dispatch_repository: &state.dispatch_repository,
             project_repository: &state.project_repository,
             task_repository: &state.task_repository,
+            review_repository: &state.review_repository,
+            review_dispatch_repository: &state.review_dispatch_repository,
         };
 
         dispatch_service.discard_dispatch_history(&id)
@@ -860,6 +1095,10 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
         )
         .route("/remote-agent/reset", post(reset_remote_agent_workspace))
         .route("/dispatches", get(list_dispatches))
+        .route("/reviews", get(list_reviews).post(create_review))
+        .route("/reviews/{id}", axum::routing::delete(delete_review))
+        .route("/reviews/{id}/runs", get(list_review_runs))
+        .route("/reviews/{id}/cancel", post(cancel_review_dispatch))
         .route("/runs", get(list_runs))
         .route("/tasks", get(list_tasks).post(create_task))
         .route("/tasks/{id}/runs", get(list_task_runs))
@@ -910,8 +1149,13 @@ mod tests {
     use track_core::dispatch_repository::DispatchRepository;
     use track_core::project_catalog::ProjectInfo;
     use track_core::project_repository::ProjectRepository;
+    use track_core::review_dispatch_repository::ReviewDispatchRepository;
+    use track_core::review_repository::ReviewRepository;
     use track_core::task_repository::FileTaskRepository;
-    use track_core::types::{DispatchStatus, Priority, TaskCreateInput, TaskSource};
+    use track_core::time_utils::now_utc;
+    use track_core::types::{
+        DispatchStatus, Priority, ReviewRecord, ReviewRunRecord, TaskCreateInput, TaskSource,
+    };
 
     use super::{build_app, AppState};
 
@@ -927,6 +1171,20 @@ mod tests {
         Arc::new(
             ConfigService::new(Some(directory.path().join("config.json")))
                 .expect("config service should resolve"),
+        )
+    }
+
+    fn review_repository(directory: &TempDir) -> Arc<ReviewRepository> {
+        Arc::new(
+            ReviewRepository::new(Some(directory.path().join("reviews")))
+                .expect("review repository should resolve"),
+        )
+    }
+
+    fn review_dispatch_repository(directory: &TempDir) -> Arc<ReviewDispatchRepository> {
+        Arc::new(
+            ReviewDispatchRepository::new(Some(directory.path().join("reviews/.dispatches")))
+                .expect("review dispatch repository should resolve"),
         )
     }
 
@@ -988,6 +1246,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository: repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1033,6 +1293,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository: repository.clone(),
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1118,6 +1380,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1201,6 +1465,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1270,6 +1536,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1299,6 +1567,129 @@ mod tests {
             .expect("runs should be an array")
             .iter()
             .all(|run| run["task"]["id"] == task.id));
+    }
+
+    #[tokio::test]
+    async fn lists_reviews_with_latest_run_and_review_history() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let static_root = static_root(&directory);
+        let review_repository = review_repository(&directory);
+        let review_dispatch_repository = review_dispatch_repository(&directory);
+        let created_at = now_utc();
+        let review = ReviewRecord {
+            id: "20260326-120000-review-pr-42".to_owned(),
+            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
+            pull_request_number: 42,
+            pull_request_title: "Fix queue layout".to_owned(),
+            repository_full_name: "acme/project-a".to_owned(),
+            repo_url: "https://github.com/acme/project-a".to_owned(),
+            git_url: "git@github.com:acme/project-a.git".to_owned(),
+            base_branch: "main".to_owned(),
+            workspace_key: "project-a".to_owned(),
+            project: Some("project-a".to_owned()),
+            main_user: "octocat".to_owned(),
+            default_review_prompt: Some("Focus on regressions.".to_owned()),
+            extra_instructions: Some("Pay attention to queue layout.".to_owned()),
+            created_at,
+            updated_at: created_at,
+        };
+        review_repository
+            .save_review(&review)
+            .expect("review should save");
+        review_dispatch_repository
+            .save_dispatch(&ReviewRunRecord {
+                dispatch_id: "review-dispatch-1".to_owned(),
+                review_id: review.id.clone(),
+                pull_request_url: review.pull_request_url.clone(),
+                repository_full_name: review.repository_full_name.clone(),
+                workspace_key: review.workspace_key.clone(),
+                status: DispatchStatus::Succeeded,
+                created_at,
+                updated_at: created_at,
+                finished_at: Some(created_at),
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: Some("track-review/review-dispatch-1".to_owned()),
+                worktree_path: Some("/tmp/review-worktree".to_owned()),
+                summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
+                review_submitted: true,
+                github_review_id: Some("1001".to_owned()),
+                github_review_url: Some(
+                    "https://github.com/acme/project-a/pull/42#pullrequestreview-1001".to_owned(),
+                ),
+                notes: None,
+                error_message: None,
+            })
+            .expect("review run should save");
+
+        let app = build_app(
+            AppState {
+                config_service: config_service(&directory),
+                dispatch_repository: Arc::new(
+                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
+                        .expect("dispatch repository should resolve"),
+                ),
+                project_repository: Arc::new(
+                    ProjectRepository::new(Some(directory.path().join("issues")))
+                        .expect("project repository should resolve"),
+                ),
+                review_dispatch_repository,
+                review_repository,
+                task_repository: Arc::new(
+                    FileTaskRepository::new(Some(directory.path().join("issues")))
+                        .expect("task repository should resolve"),
+                ),
+                task_change_version: Arc::new(AtomicU64::new(0)),
+            },
+            &static_root,
+        );
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/reviews")
+                    .body(Body::empty())
+                    .expect("review list request should build"),
+            )
+            .await
+            .expect("review list request should succeed");
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = axum::body::to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .expect("review list response body should be readable");
+        let list_json: serde_json::Value =
+            serde_json::from_slice(&list_body).expect("review list response should be valid json");
+        assert_eq!(list_json["reviews"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            list_json["reviews"][0]["latestRun"]["reviewSubmitted"],
+            true
+        );
+
+        let runs_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/reviews/{}/runs", review.id))
+                    .body(Body::empty())
+                    .expect("review runs request should build"),
+            )
+            .await
+            .expect("review runs request should succeed");
+        assert_eq!(runs_response.status(), StatusCode::OK);
+        let runs_body = axum::body::to_bytes(runs_response.into_body(), usize::MAX)
+            .await
+            .expect("review runs response body should be readable");
+        let runs_json: serde_json::Value =
+            serde_json::from_slice(&runs_body).expect("review runs response should be valid json");
+        assert_eq!(runs_json["runs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(runs_json["runs"][0]["reviewSubmitted"], true);
+        assert_eq!(
+            runs_json["runs"][0]["summary"],
+            "Submitted a GitHub review with two inline comments."
+        );
+        assert_eq!(
+            runs_json["runs"][0]["githubReviewUrl"],
+            "https://github.com/acme/project-a/pull/42#pullrequestreview-1001"
+        );
     }
 
     #[tokio::test]
@@ -1341,6 +1732,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1412,6 +1805,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository: repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1475,6 +1870,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository: repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1557,6 +1954,8 @@ mod tests {
                         .expect("dispatch repository should resolve"),
                 ),
                 project_repository,
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository: Arc::new(
                     FileTaskRepository::new(Some(directory.path().join("issues")))
                         .expect("task repository should resolve"),
@@ -1642,6 +2041,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -1685,6 +2086,8 @@ mod tests {
                     ProjectRepository::new(Some(directory.path().join("issues")))
                         .expect("project repository should resolve"),
                 ),
+                review_dispatch_repository: review_dispatch_repository(&directory),
+                review_repository: review_repository(&directory),
                 task_repository: Arc::new(
                     FileTaskRepository::new(Some(directory.path().join("issues")))
                         .expect("task repository should resolve"),
@@ -1721,7 +2124,7 @@ mod tests {
                     .uri("/api/remote-agent")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"shellPrelude":"export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"","reviewFollowUp":{"enabled":true,"mainUser":"octocat"}}"#,
+                        r#"{"shellPrelude":"export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"","reviewFollowUp":{"enabled":true,"mainUser":"octocat","defaultReviewPrompt":"Focus on regressions and missing tests."}}"#,
                     ))
                     .expect("patch request should build"),
             )
@@ -1739,5 +2142,9 @@ mod tests {
         );
         assert_eq!(patch_json["reviewFollowUp"]["enabled"], true);
         assert_eq!(patch_json["reviewFollowUp"]["mainUser"], "octocat");
+        assert_eq!(
+            patch_json["reviewFollowUp"]["defaultReviewPrompt"],
+            "Focus on regressions and missing tests."
+        );
     }
 }

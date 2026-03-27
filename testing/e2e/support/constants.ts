@@ -24,6 +24,7 @@ export const E2E_REPO_URL = 'https://github.com/acme/project-a'
 // GitHub authentication inside the mock box and matches the live Rust fixture.
 export const E2E_GIT_URL = `/srv/track-testing/git/upstream/${E2E_PROJECT_NAME}.git`
 export const E2E_PR_URL = 'https://github.com/acme/project-a/pull/42'
+export const E2E_REVIEW_TITLE = 'Review fixture change for project-a'
 
 export const DISPATCH_TASK_TITLE = 'Dispatch browser smoke test'
 export const FOLLOW_UP_TASK_TITLE = 'Continue browser smoke test'
