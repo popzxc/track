@@ -6,19 +6,13 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use track_api::{build_app, spawn_remote_review_follow_up_reconciler, AppState};
-use track_core::config::ConfigService;
+use track_core::backend_config::RemoteAgentConfigService;
 use track_core::dispatch_repository::DispatchRepository;
+use track_core::migration_service::MigrationService;
 use track_core::project_repository::ProjectRepository;
 use track_core::review_dispatch_repository::ReviewDispatchRepository;
 use track_core::review_repository::ReviewRepository;
 use track_core::task_repository::FileTaskRepository;
-
-fn configured_port(config_service: &ConfigService) -> String {
-    match config_service.load_runtime_config() {
-        Ok(config) => config.api.port.to_string(),
-        Err(_) => "3210".to_owned(),
-    }
-}
 
 fn static_root() -> PathBuf {
     if let Ok(path) = env::var("TRACK_STATIC_ROOT") {
@@ -38,18 +32,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_line_number(true)
         .init();
 
-    let config_service = Arc::new(ConfigService::new(None)?);
-    let port = env::var("PORT").unwrap_or_else(|_| configured_port(&config_service));
+    let config_service = Arc::new(RemoteAgentConfigService::new(None)?);
+    let dispatch_repository = Arc::new(DispatchRepository::new(None)?);
+    let project_repository = Arc::new(ProjectRepository::new(None)?);
+    let review_dispatch_repository = Arc::new(ReviewDispatchRepository::new(None)?);
+    let review_repository = Arc::new(ReviewRepository::new(None)?);
+    let task_repository = Arc::new(FileTaskRepository::new(None)?);
+    let migration_service = Arc::new(MigrationService::new(
+        (*config_service).clone(),
+        (*project_repository).clone(),
+        (*task_repository).clone(),
+        (*dispatch_repository).clone(),
+        (*review_repository).clone(),
+        (*review_dispatch_repository).clone(),
+    )?);
+    let port = env::var("PORT").unwrap_or_else(|_| "3210".to_owned());
     let address = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&address).await?;
 
     let state = AppState {
         config_service,
-        dispatch_repository: Arc::new(DispatchRepository::new(None)?),
-        project_repository: Arc::new(ProjectRepository::new(None)?),
-        review_dispatch_repository: Arc::new(ReviewDispatchRepository::new(None)?),
-        review_repository: Arc::new(ReviewRepository::new(None)?),
-        task_repository: Arc::new(FileTaskRepository::new(None)?),
+        dispatch_repository,
+        migration_service,
+        project_repository,
+        review_dispatch_repository,
+        review_repository,
+        task_repository,
         task_change_version: Arc::new(AtomicU64::new(0)),
     };
     spawn_remote_review_follow_up_reconciler(state.clone());

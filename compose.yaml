@@ -8,21 +8,23 @@ services:
         TRACK_UID: "${TRACK_UID:-1000}"
         TRACK_GID: "${TRACK_GID:-1000}"
     # The runtime image creates a real in-container user that matches the host
-    # UID/GID. That keeps bind-mounted files writable from both Docker and the
-    # CLI while also giving SSH a proper passwd entry for the running user.
+    # UID/GID. The migration release still bind-mounts legacy data read-only,
+    # and the matching passwd entry keeps SSH and file ownership predictable.
     ports:
       - "${TRACK_WEB_PORT:-3210}:3210"
     environment:
       PORT: "3210"
-      TRACK_DATA_DIR: /data/issues
-      TRACK_CONFIG_PATH: /config/config.json
+      TRACK_STATE_DIR: /home/track/backend-state
+      TRACK_LEGACY_ROOT: /home/track/legacy-home/.track
+      TRACK_LEGACY_CONFIG_PATH: /home/track/legacy-home/.config/track/config.json
     volumes:
-      # Mount the whole tracker root instead of only `issues/` so the web UI
-      # can create sibling state such as `reviews/` and keep future root-level
-      # data directories writable without another Compose change.
+      - type: volume
+        source: track-backend-state
+        target: /home/track/backend-state
       - type: bind
-        source: ${HOME}/.track
-        target: /data
-      - type: bind
-        source: ${HOME}/.config/track/config.json
-        target: /config/config.json
+        source: ${HOME}
+        target: /home/track/legacy-home
+        read_only: true
+
+volumes:
+  track-backend-state:

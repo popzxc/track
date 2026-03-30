@@ -58,7 +58,6 @@ export function buildRunRecord(
 export function buildProject(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
   return {
     canonicalName: 'project-a',
-    path: '/workspace/project-a',
     aliases: ['proj-a'],
     metadata: {
       repoUrl: 'https://github.com/acme/project-a',

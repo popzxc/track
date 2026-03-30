@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -32,11 +32,18 @@ fn has_git_marker(path: &Path) -> bool {
 }
 
 pub fn discover_projects(config: &TrackRuntimeConfig) -> Result<ProjectCatalog, TrackError> {
+    discover_projects_from_roots(&config.project_roots, &config.project_aliases)
+}
+
+pub fn discover_projects_from_roots(
+    project_roots: &[PathBuf],
+    project_aliases: &BTreeMap<String, String>,
+) -> Result<ProjectCatalog, TrackError> {
     let mut discovered_projects = BTreeMap::<String, ProjectInfo>::new();
 
     // We discover canonical project names from the filesystem first and only
     // then layer aliases on top. That keeps aliases from inventing projects.
-    for root in &config.project_roots {
+    for root in project_roots {
         if !root.exists() {
             continue;
         }
@@ -95,7 +102,7 @@ pub fn discover_projects(config: &TrackRuntimeConfig) -> Result<ProjectCatalog, 
         }
     }
 
-    for (alias, canonical_name) in &config.project_aliases {
+    for (alias, canonical_name) in project_aliases {
         if let Some(project) = discovered_projects.get_mut(&canonical_name.to_lowercase()) {
             project.aliases.push(alias.clone());
         }

@@ -256,9 +256,8 @@ export function mergeProjects(...projectGroups: ProjectInfo[][]): ProjectInfo[] 
 
       byCanonicalName.set(project.canonicalName, {
         canonicalName: project.canonicalName,
-        path: project.path || existing.path,
         aliases: Array.from(new Set([...existing.aliases, ...project.aliases])),
-        metadata: project.metadata ?? existing.metadata,
+        metadata: mergeProjectMetadata(existing.metadata, project.metadata),
       })
     }
   }
@@ -266,6 +265,35 @@ export function mergeProjects(...projectGroups: ProjectInfo[][]): ProjectInfo[] 
   return Array.from(byCanonicalName.values()).sort((left, right) =>
     left.canonicalName.localeCompare(right.canonicalName),
   )
+}
+
+function mergeProjectMetadata(left: ProjectInfo['metadata'], right: ProjectInfo['metadata']): ProjectInfo['metadata'] {
+  // Tasks can introduce placeholder project records before the backend project
+  // catalog finishes loading. We keep the richer non-empty values so those
+  // placeholders never erase persisted registration metadata.
+  return {
+    repoUrl: choosePreferredProjectField(left.repoUrl, right.repoUrl),
+    gitUrl: choosePreferredProjectField(left.gitUrl, right.gitUrl),
+    baseBranch: choosePreferredProjectField(left.baseBranch, right.baseBranch),
+    description: choosePreferredProjectDescription(left.description, right.description),
+  }
+}
+
+function choosePreferredProjectField(left: string, right: string): string {
+  const trimmedRight = right.trim()
+  if (trimmedRight.length > 0) {
+    return right
+  }
+
+  return left
+}
+
+function choosePreferredProjectDescription(left?: string, right?: string): string | undefined {
+  if (right && right.trim().length > 0) {
+    return right
+  }
+
+  return left
 }
 
 export function getRunStartDisabledReason(

@@ -1,265 +1,216 @@
-use std::fs;
 use std::path::PathBuf;
 
+use sqlx::Row;
+
+use crate::database::DatabaseContext;
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
-use crate::paths::{get_reviews_dir, path_to_string};
+use crate::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
 use crate::types::ReviewRecord;
 
+#[derive(Debug, Clone)]
 pub struct ReviewRepository {
-    reviews_dir: PathBuf,
+    database: DatabaseContext,
 }
 
 impl ReviewRepository {
-    pub fn new(reviews_dir: Option<PathBuf>) -> Result<Self, TrackError> {
-        Ok(Self {
-            reviews_dir: match reviews_dir {
-                Some(reviews_dir) => reviews_dir,
-                None => get_reviews_dir()?,
-            },
-        })
+    pub fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+        let database = DatabaseContext::new(database_path)?;
+        database.initialize()?;
+
+        Ok(Self { database })
     }
 
-    pub fn reviews_dir(&self) -> &PathBuf {
-        &self.reviews_dir
+    pub fn reviews_dir(&self) -> &std::path::Path {
+        self.database.database_path()
     }
 
     pub fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
-        fs::create_dir_all(&self.reviews_dir).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!(
-                    "Could not create the reviews directory at {}: {error}",
-                    path_to_string(&self.reviews_dir)
-                ),
-            )
-        })?;
+        let review = review.clone();
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                sqlx::query(
+                    r#"
+                    INSERT INTO reviews (
+                        id, pull_request_url, pull_request_number, pull_request_title,
+                        repository_full_name, repo_url, git_url, base_branch, workspace_key,
+                        project, main_user, default_review_prompt, extra_instructions,
+                        created_at, updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    ON CONFLICT(id) DO UPDATE SET
+                        pull_request_url = excluded.pull_request_url,
+                        pull_request_number = excluded.pull_request_number,
+                        pull_request_title = excluded.pull_request_title,
+                        repository_full_name = excluded.repository_full_name,
+                        repo_url = excluded.repo_url,
+                        git_url = excluded.git_url,
+                        base_branch = excluded.base_branch,
+                        workspace_key = excluded.workspace_key,
+                        project = excluded.project,
+                        main_user = excluded.main_user,
+                        default_review_prompt = excluded.default_review_prompt,
+                        extra_instructions = excluded.extra_instructions,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(&review.id)
+                .bind(&review.pull_request_url)
+                .bind(review.pull_request_number as i64)
+                .bind(&review.pull_request_title)
+                .bind(&review.repository_full_name)
+                .bind(&review.repo_url)
+                .bind(&review.git_url)
+                .bind(&review.base_branch)
+                .bind(&review.workspace_key)
+                .bind(review.project.as_deref())
+                .bind(&review.main_user)
+                .bind(review.default_review_prompt.as_deref())
+                .bind(review.extra_instructions.as_deref())
+                .bind(format_iso_8601_millis(review.created_at))
+                .bind(format_iso_8601_millis(review.updated_at))
+                .execute(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::TaskWriteFailed,
+                        format!("Could not save review {}: {error}", review.id),
+                    )
+                })?;
 
-        let serialized = serde_json::to_string_pretty(review).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!("Could not serialize the review record: {error}"),
-            )
-        })?;
-
-        fs::write(self.review_path(&review.id)?, format!("{serialized}\n")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!(
-                    "Could not write the review record for {}: {error}",
-                    review.id
-                ),
-            )
+                Ok(())
+            })
         })
     }
 
     pub fn list_reviews(&self) -> Result<Vec<ReviewRecord>, TrackError> {
-        if !self.reviews_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries = fs::read_dir(&self.reviews_dir).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!(
-                    "Could not read the reviews directory at {}: {error}",
-                    path_to_string(&self.reviews_dir)
-                ),
-            )
-        })?;
-
-        let mut reviews = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                TrackError::new(
-                    ErrorCode::TaskWriteFailed,
-                    format!(
-                        "Could not read a review entry under {}: {error}",
-                        path_to_string(&self.reviews_dir)
-                    ),
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT
+                        id, pull_request_url, pull_request_number, pull_request_title,
+                        repository_full_name, repo_url, git_url, base_branch, workspace_key,
+                        project, main_user, default_review_prompt, extra_instructions,
+                        created_at, updated_at
+                    FROM reviews
+                    ORDER BY updated_at DESC
+                    "#,
                 )
-            })?;
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::TaskWriteFailed,
+                        format!("Could not list reviews from SQLite: {error}"),
+                    )
+                })?;
 
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-
-            match self.read_review_path(&path) {
-                Ok(review) => reviews.push(review),
-                Err(error) => {
-                    eprintln!(
-                        "Skipping malformed review record at {}: {}",
-                        path_to_string(&path),
-                        error
-                    );
-                }
-            }
-        }
-
-        reviews.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-        Ok(reviews)
-    }
-
-    pub fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
-        let path = self.review_path(id)?;
-        if !path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::TaskNotFound,
-                format!("Review {id} was not found."),
-            ));
-        }
-
-        self.read_review_path(&path)
-    }
-
-    pub fn delete_review(&self, id: &str) -> Result<(), TrackError> {
-        let path = self.review_path(id)?;
-        if !path.exists() {
-            return Ok(());
-        }
-
-        fs::remove_file(&path).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!(
-                    "Could not delete the review record at {}: {error}",
-                    path_to_string(&path)
-                ),
-            )
+                rows.into_iter().map(review_from_row).collect()
+            })
         })
     }
 
-    fn review_path(&self, id: &str) -> Result<PathBuf, TrackError> {
-        let id = validate_single_normal_path_component(
+    pub fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
+        let review_id = validate_single_normal_path_component(
             id,
             "Review id",
             ErrorCode::InvalidPathComponent,
         )?;
 
-        Ok(self.reviews_dir.join(format!("{id}.json")))
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let row = sqlx::query(
+                    r#"
+                    SELECT
+                        id, pull_request_url, pull_request_number, pull_request_title,
+                        repository_full_name, repo_url, git_url, base_branch, workspace_key,
+                        project, main_user, default_review_prompt, extra_instructions,
+                        created_at, updated_at
+                    FROM reviews
+                    WHERE id = ?1
+                    "#,
+                )
+                .bind(&review_id)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::TaskWriteFailed,
+                        format!("Could not load review {review_id}: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    TrackError::new(
+                        ErrorCode::TaskNotFound,
+                        format!("Review {review_id} was not found."),
+                    )
+                })?;
+
+                review_from_row(row)
+            })
+        })
     }
 
-    fn read_review_path(&self, path: &PathBuf) -> Result<ReviewRecord, TrackError> {
-        let raw_review = fs::read_to_string(path).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!(
-                    "Could not read the review record at {}: {error}",
-                    path_to_string(path)
-                ),
-            )
-        })?;
+    pub fn delete_review(&self, id: &str) -> Result<(), TrackError> {
+        let review_id = validate_single_normal_path_component(
+            id,
+            "Review id",
+            ErrorCode::InvalidPathComponent,
+        )?;
 
-        serde_json::from_str::<ReviewRecord>(&raw_review).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!(
-                    "Review record at {} is not valid JSON: {error}",
-                    path_to_string(path)
-                ),
-            )
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                sqlx::query("DELETE FROM reviews WHERE id = ?1")
+                    .bind(&review_id)
+                    .execute(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::TaskWriteFailed,
+                            format!("Could not delete review {review_id}: {error}"),
+                        )
+                    })?;
+
+                Ok(())
+            })
         })
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::fs;
+fn review_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRecord, TrackError> {
+    let id = row.get::<String, _>("id");
+    let created_at =
+        parse_iso_8601_millis(&row.get::<String, _>("created_at")).map_err(|error| {
+            TrackError::new(
+                ErrorCode::TaskWriteFailed,
+                format!("Review {id} has an invalid created_at timestamp: {error}"),
+            )
+        })?;
+    let updated_at =
+        parse_iso_8601_millis(&row.get::<String, _>("updated_at")).map_err(|error| {
+            TrackError::new(
+                ErrorCode::TaskWriteFailed,
+                format!("Review {id} has an invalid updated_at timestamp: {error}"),
+            )
+        })?;
 
-    use tempfile::TempDir;
-
-    use super::ReviewRepository;
-    use crate::time_utils::now_utc;
-    use crate::types::ReviewRecord;
-
-    fn sample_review() -> ReviewRecord {
-        let created_at = now_utc();
-        ReviewRecord {
-            id: "20260326-120000-review-pr-42".to_owned(),
-            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
-            pull_request_number: 42,
-            pull_request_title: "Fix queue layout".to_owned(),
-            repository_full_name: "acme/project-a".to_owned(),
-            repo_url: "https://github.com/acme/project-a".to_owned(),
-            git_url: "git@github.com:acme/project-a.git".to_owned(),
-            base_branch: "main".to_owned(),
-            workspace_key: "project-a".to_owned(),
-            project: Some("project-a".to_owned()),
-            main_user: "octocat".to_owned(),
-            default_review_prompt: Some("Look for risky behavior changes.".to_owned()),
-            extra_instructions: Some("Pay attention to queue rendering.".to_owned()),
-            created_at,
-            updated_at: created_at,
-        }
-    }
-
-    #[test]
-    fn saves_and_lists_reviews_newest_first() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let repository =
-            ReviewRepository::new(Some(directory.path().join("reviews"))).expect("repository");
-
-        let review = sample_review();
-        repository.save_review(&review).expect("review should save");
-
-        let reviews = repository.list_reviews().expect("reviews should load");
-        assert_eq!(reviews.len(), 1);
-        assert_eq!(reviews[0].id, review.id);
-        assert_eq!(reviews[0].pull_request_url, review.pull_request_url);
-        assert_eq!(reviews[0].main_user, review.main_user);
-        assert_eq!(
-            reviews[0].default_review_prompt,
-            review.default_review_prompt
-        );
-    }
-
-    #[test]
-    fn lists_reviews_by_latest_update_time() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let repository =
-            ReviewRepository::new(Some(directory.path().join("reviews"))).expect("repository");
-
-        let older_review = sample_review();
-        let newer_review = ReviewRecord {
-            id: "20260326-120100-review-pr-43".to_owned(),
-            updated_at: older_review.updated_at + time::Duration::minutes(5),
-            ..sample_review()
-        };
-
-        repository
-            .save_review(&older_review)
-            .expect("older review should save");
-        repository
-            .save_review(&newer_review)
-            .expect("newer review should save");
-
-        let reviews = repository.list_reviews().expect("reviews should load");
-
-        assert_eq!(reviews.len(), 2);
-        assert_eq!(reviews[0].id, newer_review.id);
-        assert_eq!(reviews[1].id, older_review.id);
-    }
-
-    #[test]
-    fn skips_malformed_review_records_during_listing() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let reviews_dir = directory.path().join("reviews");
-        let repository = ReviewRepository::new(Some(reviews_dir.clone())).expect("repository");
-
-        let review = sample_review();
-        repository.save_review(&review).expect("review should save");
-        fs::write(reviews_dir.join("broken-review.json"), "{not valid json")
-            .expect("broken review should be written");
-
-        let reviews = repository
-            .list_reviews()
-            .expect("listing should skip malformed review records");
-
-        assert_eq!(reviews.len(), 1);
-        assert_eq!(reviews[0].id, review.id);
-    }
+    Ok(ReviewRecord {
+        id,
+        pull_request_url: row.get::<String, _>("pull_request_url"),
+        pull_request_number: row.get::<i64, _>("pull_request_number") as u64,
+        pull_request_title: row.get::<String, _>("pull_request_title"),
+        repository_full_name: row.get::<String, _>("repository_full_name"),
+        repo_url: row.get::<String, _>("repo_url"),
+        git_url: row.get::<String, _>("git_url"),
+        base_branch: row.get::<String, _>("base_branch"),
+        workspace_key: row.get::<String, _>("workspace_key"),
+        project: row.get::<Option<String>, _>("project"),
+        main_user: row.get::<String, _>("main_user"),
+        default_review_prompt: row.get::<Option<String>, _>("default_review_prompt"),
+        extra_instructions: row.get::<Option<String>, _>("extra_instructions"),
+        created_at,
+        updated_at,
+    })
 }

@@ -5,18 +5,24 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{StatusCode, Uri};
+use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
+use axum::{extract::Request, response::Response as AxumResponse};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
+use track_core::backend_config::RemoteAgentConfigService;
 use track_core::config::{
-    ConfigService, RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile,
+    RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile, DEFAULT_REMOTE_AGENT_PORT,
+    DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::errors::{ErrorCode, TrackError};
+use track_core::migration::{MigrationImportSummary, MigrationStatus};
+use track_core::migration_service::MigrationService;
 use track_core::project_repository::{
-    ProjectMetadataUpdateInput, ProjectRecord, ProjectRepository,
+    ProjectMetadataUpdateInput, ProjectRecord, ProjectRepository, ProjectUpsertInput,
 };
 use track_core::remote_agent::{RemoteDispatchService, RemoteReviewService};
 use track_core::review_dispatch_repository::ReviewDispatchRepository;
@@ -31,8 +37,9 @@ use track_core::types::{
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config_service: Arc<ConfigService>,
+    pub config_service: Arc<RemoteAgentConfigService>,
     pub dispatch_repository: Arc<DispatchRepository>,
+    pub migration_service: Arc<MigrationService>,
     pub project_repository: Arc<ProjectRepository>,
     pub review_dispatch_repository: Arc<ReviewDispatchRepository>,
     pub review_repository: Arc<ReviewRepository>,
@@ -67,6 +74,7 @@ impl ApiError {
             | ErrorCode::InvalidProjectMetadata
             | ErrorCode::InvalidRemoteAgentConfig
             | ErrorCode::InvalidTaskUpdate
+            | ErrorCode::MigrationRequired
             | ErrorCode::ConfigNotFound
             | ErrorCode::InvalidConfig
             | ErrorCode::InvalidConfigInput
@@ -80,6 +88,7 @@ impl ApiError {
             | ErrorCode::RemoteAgentNotConfigured
             | ErrorCode::ProjectWriteFailed
             | ErrorCode::TaskWriteFailed => StatusCode::BAD_REQUEST,
+            ErrorCode::MigrationFailed => StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::ProjectNotFound | ErrorCode::DispatchNotFound => StatusCode::NOT_FOUND,
             ErrorCode::RemoteDispatchFailed => StatusCode::BAD_GATEWAY,
         };
@@ -224,6 +233,16 @@ struct TaskChangeVersionResponse {
     version: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct MigrationStatusResponse {
+    migration: MigrationStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct MigrationImportResponse {
+    summary: MigrationImportSummary,
+}
+
 #[derive(Debug, Deserialize)]
 struct TaskListQuery {
     #[serde(rename = "includeClosed")]
@@ -242,6 +261,40 @@ struct UpdateRemoteAgentSettingsInput {
     shell_prelude: String,
     #[serde(rename = "reviewFollowUp")]
     review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PutRemoteAgentInput {
+    host: String,
+    user: String,
+    #[serde(default = "default_remote_agent_port")]
+    port: u16,
+    #[serde(
+        rename = "workspaceRoot",
+        default = "default_remote_agent_workspace_root"
+    )]
+    workspace_root: String,
+    #[serde(
+        rename = "projectsRegistryPath",
+        default = "default_remote_projects_registry_path"
+    )]
+    projects_registry_path: String,
+    #[serde(rename = "shellPrelude")]
+    shell_prelude: Option<String>,
+    #[serde(rename = "reviewFollowUp")]
+    review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
+    #[serde(rename = "sshPrivateKey")]
+    ssh_private_key: String,
+    #[serde(rename = "knownHosts")]
+    known_hosts: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PutProjectInput {
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(flatten)]
+    metadata: ProjectMetadataUpdateInput,
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,6 +340,18 @@ fn remote_agent_settings_response(
     }
 }
 
+fn default_remote_agent_port() -> u16 {
+    DEFAULT_REMOTE_AGENT_PORT
+}
+
+fn default_remote_agent_workspace_root() -> String {
+    DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned()
+}
+
+fn default_remote_projects_registry_path() -> String {
+    DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned()
+}
+
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { ok: true })
 }
@@ -298,6 +363,29 @@ async fn list_projects(State(state): State<AppState>) -> Result<Json<ProjectsRes
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(ProjectsResponse { projects }))
+}
+
+async fn migration_status(
+    State(state): State<AppState>,
+) -> Result<Json<MigrationStatusResponse>, ApiError> {
+    let migration = state
+        .migration_service
+        .status()
+        .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(MigrationStatusResponse { migration }))
+}
+
+async fn import_legacy_data(
+    State(state): State<AppState>,
+) -> Result<Json<MigrationImportResponse>, ApiError> {
+    let summary = state
+        .migration_service
+        .import_legacy()
+        .map_err(ApiError::from_track_error)?;
+    bump_task_change_version(&state);
+
+    Ok(Json(MigrationImportResponse { summary }))
 }
 
 async fn get_remote_agent_settings(
@@ -323,7 +411,7 @@ async fn patch_remote_agent_settings(
         .map_err(ApiError::from_track_error)?
         .ok_or_else(|| ApiError::from_track_error(TrackError::new(
             ErrorCode::RemoteAgentNotConfigured,
-            "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+            "Remote dispatch is not configured yet. Run `track remote-agent configure ...` locally to register the remote host and SSH key first.",
         )))?;
 
     let remote_agent = state
@@ -338,6 +426,39 @@ async fn patch_remote_agent_settings(
                     default_review_prompt: review_follow_up.default_review_prompt,
                 })
                 .or(existing_remote_agent.review_follow_up),
+        )
+        .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(remote_agent_settings_response(Some(remote_agent))))
+}
+
+async fn put_remote_agent_settings(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<RemoteAgentSettingsResponse>, ApiError> {
+    let input = serde_json::from_slice::<PutRemoteAgentInput>(&body)
+        .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+
+    let remote_agent = state
+        .config_service
+        .replace_remote_agent_config(
+            RemoteAgentConfigFile {
+                host: input.host,
+                user: input.user,
+                port: input.port,
+                workspace_root: input.workspace_root,
+                projects_registry_path: input.projects_registry_path,
+                shell_prelude: input.shell_prelude,
+                review_follow_up: input.review_follow_up.map(|review_follow_up| {
+                    RemoteAgentReviewFollowUpConfigFile {
+                        enabled: review_follow_up.enabled,
+                        main_user: review_follow_up.main_user,
+                        default_review_prompt: review_follow_up.default_review_prompt,
+                    }
+                }),
+            },
+            &input.ssh_private_key,
+            input.known_hosts.as_deref(),
         )
         .map_err(ApiError::from_track_error)?;
 
@@ -404,6 +525,26 @@ async fn patch_project(
             &canonical_name,
             input.validate().map_err(ApiError::from_track_error)?,
         )
+        .map_err(ApiError::from_track_error)?;
+
+    Ok(Json(project))
+}
+
+async fn put_project(
+    State(state): State<AppState>,
+    AxumPath(canonical_name): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<ProjectRecord>, ApiError> {
+    let input = serde_json::from_slice::<PutProjectInput>(&body)
+        .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+
+    let project = state
+        .project_repository
+        .upsert_project(ProjectUpsertInput {
+            canonical_name,
+            aliases: input.aliases,
+            metadata: input.metadata,
+        })
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(project))
@@ -668,9 +809,17 @@ async fn patch_task(
 async fn create_task(State(state): State<AppState>, body: Bytes) -> Result<Json<Task>, ApiError> {
     let input = serde_json::from_slice::<TaskCreateInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+    let TaskCreateInput {
+        project,
+        priority,
+        description,
+        source,
+    } = input;
     let validated_input = TaskCreateInput {
-        source: Some(TaskSource::Web),
-        ..input
+        project,
+        priority,
+        description,
+        source: source.or(Some(TaskSource::Web)),
     }
     .validate()
     .map_err(ApiError::from_track_error)?;
@@ -1108,16 +1257,48 @@ async fn api_not_found() -> ApiError {
     }
 }
 
+async fn enforce_migration_gate(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<AxumResponse, ApiError> {
+    let migration = state
+        .migration_service
+        .status()
+        .map_err(ApiError::from_track_error)?;
+    if migration.requires_migration {
+        return Err(ApiError::from_track_error(TrackError::new(
+            ErrorCode::MigrationRequired,
+            "Legacy track data must be imported before the backend can serve normal API routes.",
+        )));
+    }
+
+    Ok(next.run(request).await)
+}
+
 pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
     // The deployed app still serves both API routes and the frontend from one
     // process so Docker can expose a single local port.
     let static_root = static_root.as_ref().to_path_buf();
-    let api_router = Router::new()
+    let migration_router = Router::new()
+        .route("/migration/status", get(migration_status))
+        .route("/migration/import", post(import_legacy_data));
+
+    // The migration release has two distinct backend modes. Migration routes
+    // stay available at all times so the UI and CLI can recover gracefully,
+    // while the rest of the API refuses normal work until the legacy import
+    // finishes.
+    let application_router = Router::new()
         .route("/projects", get(list_projects))
-        .route("/projects/{canonical_name}", patch(patch_project))
+        .route(
+            "/projects/{canonical_name}",
+            put(put_project).patch(patch_project),
+        )
         .route(
             "/remote-agent",
-            get(get_remote_agent_settings).patch(patch_remote_agent_settings),
+            get(get_remote_agent_settings)
+                .put(put_remote_agent_settings)
+                .patch(patch_remote_agent_settings),
         )
         .route(
             "/remote-agent/cleanup",
@@ -1145,7 +1326,10 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             "/events/tasks-changed",
             axum::routing::post(notify_task_change),
         )
-        .fallback(api_not_found);
+        .fallback(api_not_found)
+        .route_layer(from_fn_with_state(state.clone(), enforce_migration_gate));
+
+    let api_router = migration_router.merge(application_router);
 
     Router::new()
         .route("/health", get(health))
@@ -1164,24 +1348,33 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicU64;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::ServiceExt;
+    use track_core::backend_config::{BackendConfigRepository, RemoteAgentConfigService};
     use track_core::config::{
-        ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
-        DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
+        RemoteAgentConfigFile, DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
         DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
+    use track_core::database::DatabaseContext;
     use track_core::dispatch_repository::DispatchRepository;
+    use track_core::migration_service::MigrationService;
+    use track_core::paths::{
+        get_backend_managed_remote_agent_key_path,
+        get_backend_managed_remote_agent_known_hosts_path,
+    };
     use track_core::project_catalog::ProjectInfo;
-    use track_core::project_repository::ProjectRepository;
+    use track_core::project_repository::{ProjectMetadata, ProjectRepository};
     use track_core::review_dispatch_repository::ReviewDispatchRepository;
     use track_core::review_repository::ReviewRepository;
+    use track_core::settings_repository::SettingsRepository;
     use track_core::task_repository::FileTaskRepository;
     use track_core::time_utils::now_utc;
     use track_core::types::{
@@ -1198,45 +1391,200 @@ mod tests {
         root
     }
 
-    fn config_service(directory: &TempDir) -> Arc<ConfigService> {
+    fn database_path(directory: &TempDir) -> PathBuf {
+        directory.path().join("backend").join("track.sqlite")
+    }
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous_value: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set_path(key: &'static str, value: PathBuf) -> Self {
+            let previous_value = std::env::var_os(key);
+            std::env::set_var(key, value);
+
+            Self {
+                key,
+                previous_value,
+            }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match self.previous_value.take() {
+                Some(previous_value) => std::env::set_var(self.key, previous_value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    struct TestEnvironment {
+        _env_lock: std::sync::MutexGuard<'static, ()>,
+        _track_state_dir_guard: ScopedEnvVar,
+        _track_legacy_root_guard: ScopedEnvVar,
+        _track_legacy_config_guard: ScopedEnvVar,
+    }
+
+    impl TestEnvironment {
+        fn new(directory: &TempDir) -> Self {
+            let env_lock = test_env_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let backend_state_dir = directory.path().join("backend");
+            let legacy_root = directory.path().join("legacy-root");
+            let legacy_config_path = directory.path().join("legacy-config/config.json");
+
+            Self {
+                _env_lock: env_lock,
+                _track_state_dir_guard: ScopedEnvVar::set_path(
+                    "TRACK_STATE_DIR",
+                    backend_state_dir,
+                ),
+                _track_legacy_root_guard: ScopedEnvVar::set_path("TRACK_LEGACY_ROOT", legacy_root),
+                _track_legacy_config_guard: ScopedEnvVar::set_path(
+                    "TRACK_LEGACY_CONFIG_PATH",
+                    legacy_config_path,
+                ),
+            }
+        }
+    }
+
+    fn config_service(directory: &TempDir) -> Arc<RemoteAgentConfigService> {
+        let database = DatabaseContext::new(Some(database_path(directory)))
+            .expect("database context should resolve");
+        let settings =
+            SettingsRepository::new(Some(database)).expect("settings repository should resolve");
+        let repository = BackendConfigRepository::new(Some(settings))
+            .expect("backend config repository should resolve");
+
         Arc::new(
-            ConfigService::new(Some(directory.path().join("config.json")))
-                .expect("config service should resolve"),
+            RemoteAgentConfigService::new(Some(repository))
+                .expect("remote-agent config service should resolve"),
+        )
+    }
+
+    fn dispatch_repository(directory: &TempDir) -> Arc<DispatchRepository> {
+        Arc::new(
+            DispatchRepository::new(Some(database_path(directory)))
+                .expect("dispatch repository should resolve"),
+        )
+    }
+
+    fn project_repository(directory: &TempDir) -> Arc<ProjectRepository> {
+        Arc::new(
+            ProjectRepository::new(Some(database_path(directory)))
+                .expect("project repository should resolve"),
         )
     }
 
     fn review_repository(directory: &TempDir) -> Arc<ReviewRepository> {
         Arc::new(
-            ReviewRepository::new(Some(directory.path().join("reviews")))
+            ReviewRepository::new(Some(database_path(directory)))
                 .expect("review repository should resolve"),
         )
     }
 
     fn review_dispatch_repository(directory: &TempDir) -> Arc<ReviewDispatchRepository> {
         Arc::new(
-            ReviewDispatchRepository::new(Some(directory.path().join("reviews/.dispatches")))
+            ReviewDispatchRepository::new(Some(database_path(directory)))
                 .expect("review dispatch repository should resolve"),
         )
     }
 
-    fn configured_remote_agent_config_service(directory: &TempDir) -> Arc<ConfigService> {
+    fn task_repository(directory: &TempDir) -> Arc<FileTaskRepository> {
+        Arc::new(
+            FileTaskRepository::new(Some(database_path(directory)))
+                .expect("task repository should resolve"),
+        )
+    }
+
+    fn migration_service(
+        config_service: &Arc<RemoteAgentConfigService>,
+        dispatch_repository: &Arc<DispatchRepository>,
+        project_repository: &Arc<ProjectRepository>,
+        review_dispatch_repository: &Arc<ReviewDispatchRepository>,
+        review_repository: &Arc<ReviewRepository>,
+        task_repository: &Arc<FileTaskRepository>,
+    ) -> Arc<MigrationService> {
+        Arc::new(
+            MigrationService::new(
+                (**config_service).clone(),
+                (**project_repository).clone(),
+                (**task_repository).clone(),
+                (**dispatch_repository).clone(),
+                (**review_repository).clone(),
+                (**review_dispatch_repository).clone(),
+            )
+            .expect("migration service should resolve"),
+        )
+    }
+
+    fn app_state(
+        config_service: Arc<RemoteAgentConfigService>,
+        dispatch_repository: Arc<DispatchRepository>,
+        project_repository: Arc<ProjectRepository>,
+        review_dispatch_repository: Arc<ReviewDispatchRepository>,
+        review_repository: Arc<ReviewRepository>,
+        task_repository: Arc<FileTaskRepository>,
+    ) -> AppState {
+        let migration_service = migration_service(
+            &config_service,
+            &dispatch_repository,
+            &project_repository,
+            &review_dispatch_repository,
+            &review_repository,
+            &task_repository,
+        );
+
+        AppState {
+            config_service,
+            dispatch_repository,
+            migration_service,
+            project_repository,
+            review_dispatch_repository,
+            review_repository,
+            task_repository,
+            task_change_version: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn register_project(project_repository: &ProjectRepository, canonical_name: &str) {
+        project_repository
+            .upsert_project_by_name(
+                canonical_name,
+                ProjectMetadata {
+                    repo_url: format!("https://example.com/{canonical_name}"),
+                    git_url: format!("git@example.com:{canonical_name}.git"),
+                    base_branch: "main".to_owned(),
+                    description: None,
+                },
+                Vec::new(),
+            )
+            .expect("project should save");
+    }
+
+    fn configured_remote_agent_config_service(
+        directory: &TempDir,
+    ) -> Arc<RemoteAgentConfigService> {
         let service = config_service(directory);
         service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec![],
-                project_aliases: Default::default(),
-                api: ApiConfigFile::default(),
-                llama_cpp: LlamaCppConfigFile::default(),
-                remote_agent: Some(RemoteAgentConfigFile {
-                    host: "192.0.2.25".to_owned(),
-                    user: "builder".to_owned(),
-                    port: DEFAULT_REMOTE_AGENT_PORT,
-                    workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
-                    projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
-                    shell_prelude: Some(". \"$HOME/.cargo/env\"".to_owned()),
-                    review_follow_up: None,
-                }),
-            })
+            .save_remote_agent_config(Some(&RemoteAgentConfigFile {
+                host: "192.0.2.25".to_owned(),
+                user: "builder".to_owned(),
+                port: DEFAULT_REMOTE_AGENT_PORT,
+                workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
+                projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                shell_prelude: Some(". \"$HOME/.cargo/env\"".to_owned()),
+                review_follow_up: None,
+            }))
             .expect("remote-agent config should save");
         service
     }
@@ -1244,11 +1592,11 @@ mod tests {
     #[tokio::test]
     async fn lists_tasks_with_backend_sorting() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let repository = task_repository(&directory);
         repository
             .create_task(TaskCreateInput {
                 project: "project-a".to_owned(),
@@ -1267,21 +1615,14 @@ mod tests {
             .expect("second task should be created");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
-                task_repository: repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                repository,
+            ),
             &static_root,
         );
 
@@ -1307,28 +1648,21 @@ mod tests {
     #[tokio::test]
     async fn creates_tasks_from_the_web_api() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let repository = task_repository(&directory);
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
-                task_repository: repository.clone(),
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                repository.clone(),
+            ),
             &static_root,
         );
 
@@ -1365,17 +1699,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preserves_cli_source_when_task_is_created_through_the_api() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
+        let static_root = static_root(&directory);
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let repository = task_repository(&directory);
+
+        let app = build_app(
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                repository.clone(),
+            ),
+            &static_root,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"project":"project-a","priority":"high","description":"Create a task from the CLI","source":"cli"}"#,
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("response should be valid json");
+        assert_eq!(json["source"], "cli");
+
+        let stored = repository
+            .list_tasks(false, Some("project-a"))
+            .expect("stored tasks should load");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].source, Some(TaskSource::Cli));
+    }
+
+    #[tokio::test]
     async fn lists_dispatches_for_single_and_repeated_task_ids() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("task repository should resolve"),
-        );
-        let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                .expect("dispatch repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        register_project(&project_repository, "project-b");
+        let task_repository = task_repository(&directory);
+        let dispatch_repository = dispatch_repository(&directory);
 
         let first_task = task_repository
             .create_task(TaskCreateInput {
@@ -1404,18 +1786,14 @@ mod tests {
             .expect("second dispatch should be created");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
+            app_state(
+                config_service(&directory),
                 dispatch_repository,
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
                 task_repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            ),
             &static_root,
         );
 
@@ -1465,15 +1843,12 @@ mod tests {
     #[tokio::test]
     async fn lists_runs_with_task_context() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("task repository should resolve"),
-        );
-        let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                .expect("dispatch repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let task_repository = task_repository(&directory);
+        let dispatch_repository = dispatch_repository(&directory);
 
         let task = task_repository
             .create_task(TaskCreateInput {
@@ -1489,18 +1864,14 @@ mod tests {
             .expect("dispatch should be created");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
+            app_state(
+                config_service(&directory),
                 dispatch_repository,
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
                 task_repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            ),
             &static_root,
         );
 
@@ -1532,15 +1903,12 @@ mod tests {
     #[tokio::test]
     async fn lists_task_scoped_runs_without_global_limit_truncation() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("task repository should resolve"),
-        );
-        let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                .expect("dispatch repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let task_repository = task_repository(&directory);
+        let dispatch_repository = dispatch_repository(&directory);
 
         let task = task_repository
             .create_task(TaskCreateInput {
@@ -1560,18 +1928,14 @@ mod tests {
             .expect("second dispatch should be created");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
+            app_state(
+                config_service(&directory),
                 dispatch_repository,
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
                 task_repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            ),
             &static_root,
         );
 
@@ -1603,6 +1967,7 @@ mod tests {
     #[tokio::test]
     async fn lists_reviews_with_latest_run_and_review_history() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
         let review_repository = review_repository(&directory);
         let review_dispatch_repository = review_dispatch_repository(&directory);
@@ -1655,24 +2020,14 @@ mod tests {
             .expect("review run should save");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository(&directory),
                 review_dispatch_repository,
                 review_repository,
-                task_repository: Arc::new(
-                    FileTaskRepository::new(Some(directory.path().join("issues")))
-                        .expect("task repository should resolve"),
-                ),
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+                task_repository(&directory),
+            ),
             &static_root,
         );
 
@@ -1728,15 +2083,12 @@ mod tests {
     #[tokio::test]
     async fn discards_dispatch_history_for_a_task() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("task repository should resolve"),
-        );
-        let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                .expect("dispatch repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let task_repository = task_repository(&directory);
+        let dispatch_repository = dispatch_repository(&directory);
 
         let task = task_repository
             .create_task(TaskCreateInput {
@@ -1758,18 +2110,14 @@ mod tests {
             .expect("terminal dispatch should save");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: dispatch_repository.clone(),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
+            app_state(
+                config_service(&directory),
+                dispatch_repository.clone(),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
                 task_repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            ),
             &static_root,
         );
 
@@ -1812,12 +2160,11 @@ mod tests {
     #[tokio::test]
     async fn patches_and_deletes_tasks() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-
-        let repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let repository = task_repository(&directory);
         let created = repository
             .create_task(TaskCreateInput {
                 project: "project-a".to_owned(),
@@ -1828,21 +2175,14 @@ mod tests {
             .expect("task should be created");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
-                task_repository: repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                repository,
+            ),
             &static_root,
         );
 
@@ -1878,11 +2218,11 @@ mod tests {
     #[tokio::test]
     async fn bumps_task_change_version_for_notify_and_mutations() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
+        register_project(&project_repository, "project-a");
+        let repository = task_repository(&directory);
         let created = repository
             .create_task(TaskCreateInput {
                 project: "project-a".to_owned(),
@@ -1893,21 +2233,14 @@ mod tests {
             .expect("task should be created");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
-                task_repository: repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                repository,
+            ),
             &static_root,
         );
 
@@ -1959,6 +2292,7 @@ mod tests {
     #[tokio::test]
     async fn lists_and_updates_project_metadata() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
         let project_path = directory.path().join("workspace/project-a");
         fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
@@ -1967,10 +2301,7 @@ mod tests {
             "[remote \"origin\"]\n\turl = git@github.com:acme/project-a.git\n",
         )
         .expect("git config should be written");
-        let project_repository = Arc::new(
-            ProjectRepository::new(Some(directory.path().join("issues")))
-                .expect("project repository should resolve"),
-        );
+        let project_repository = project_repository(&directory);
         project_repository
             .ensure_project(&ProjectInfo {
                 canonical_name: "project-a".to_owned(),
@@ -1980,21 +2311,14 @@ mod tests {
             .expect("project should initialize");
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
                 project_repository,
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
-                task_repository: Arc::new(
-                    FileTaskRepository::new(Some(directory.path().join("issues")))
-                        .expect("task repository should resolve"),
-                ),
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                task_repository(&directory),
+            ),
             &static_root,
         );
 
@@ -2047,86 +2371,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_persisted_projects_even_without_project_metadata_file() {
+    async fn rejects_task_creation_for_unknown_projects() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(directory.path().join("issues")))
-                .expect("task repository should resolve"),
-        );
-        task_repository
-            .create_task(TaskCreateInput {
-                project: "project-a".to_owned(),
-                priority: Priority::Medium,
-                description: "Project exists because a task exists".to_owned(),
-                source: Some(TaskSource::Cli),
-            })
-            .expect("task should be created");
+        let project_repository = project_repository(&directory);
+        let task_repository = task_repository(&directory);
 
         let app = build_app(
-            AppState {
-                config_service: config_service(&directory),
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
+            app_state(
+                config_service(&directory),
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
                 task_repository,
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            ),
             &static_root,
         );
 
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/projects")
-                    .body(Body::empty())
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"project":"project-a","priority":"medium","description":"This project does not exist yet"}"#,
+                    ))
                     .expect("request should build"),
             )
             .await
             .expect("request should succeed");
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body should be readable");
         let json: serde_json::Value =
             serde_json::from_slice(&body).expect("response should be valid json");
-        assert_eq!(json["projects"][0]["canonicalName"], "project-a");
-        assert_eq!(json["projects"][0]["metadata"]["repoUrl"], "");
-        assert_eq!(json["projects"][0]["metadata"]["baseBranch"], "main");
+        assert_eq!(json["error"]["code"], "PROJECT_NOT_FOUND");
     }
 
     #[tokio::test]
     async fn gets_and_updates_remote_agent_shell_prelude() {
         let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
         let static_root = static_root(&directory);
         let config_service = configured_remote_agent_config_service(&directory);
+        let project_repository = project_repository(&directory);
 
         let app = build_app(
-            AppState {
+            app_state(
                 config_service,
-                dispatch_repository: Arc::new(
-                    DispatchRepository::new(Some(directory.path().join("issues/.dispatches")))
-                        .expect("dispatch repository should resolve"),
-                ),
-                project_repository: Arc::new(
-                    ProjectRepository::new(Some(directory.path().join("issues")))
-                        .expect("project repository should resolve"),
-                ),
-                review_dispatch_repository: review_dispatch_repository(&directory),
-                review_repository: review_repository(&directory),
-                task_repository: Arc::new(
-                    FileTaskRepository::new(Some(directory.path().join("issues")))
-                        .expect("task repository should resolve"),
-                ),
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+                dispatch_repository(&directory),
+                project_repository,
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                task_repository(&directory),
+            ),
             &static_root,
         );
 
@@ -2178,6 +2480,54 @@ mod tests {
         assert_eq!(
             patch_json["reviewFollowUp"]["defaultReviewPrompt"],
             "Focus on regressions and missing tests."
+        );
+    }
+
+    #[tokio::test]
+    async fn puts_remote_agent_config_for_a_fresh_install() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let _environment = TestEnvironment::new(&directory);
+        let static_root = static_root(&directory);
+        let config_service = config_service(&directory);
+
+        let app = build_app(
+            app_state(
+                config_service,
+                dispatch_repository(&directory),
+                project_repository(&directory),
+                review_dispatch_repository(&directory),
+                review_repository(&directory),
+                task_repository(&directory),
+            ),
+            &static_root,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/remote-agent")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"host":"192.0.2.25","user":"builder","port":22,"workspaceRoot":"~/workspace","projectsRegistryPath":"~/track-projects.json","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","reviewFollowUp":{"enabled":false,"mainUser":"octocat","defaultReviewPrompt":"Focus on regressions."},"sshPrivateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n","knownHosts":"github.com ssh-ed25519 AAAA"}"#,
+                    ))
+                    .expect("put request should build"),
+            )
+            .await
+            .expect("put request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let key_path =
+            get_backend_managed_remote_agent_key_path().expect("managed key path should resolve");
+        let known_hosts_path = get_backend_managed_remote_agent_known_hosts_path()
+            .expect("managed known_hosts path should resolve");
+        assert_eq!(
+            fs::read_to_string(&key_path).expect("managed key should be readable"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&known_hosts_path).expect("known_hosts should be readable"),
+            "github.com ssh-ed25519 AAAA"
         );
     }
 }

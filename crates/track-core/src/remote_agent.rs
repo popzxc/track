@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::Duration;
 
-use crate::config::ConfigService;
+use crate::backend_config::RemoteAgentConfigService;
 use crate::dispatch_repository::DispatchRepository;
 use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{collapse_home_path, path_to_string};
@@ -311,7 +311,7 @@ impl Default for RemoteProjectRegistryFile {
 }
 
 pub struct RemoteDispatchService<'a> {
-    pub config_service: &'a ConfigService,
+    pub config_service: &'a RemoteAgentConfigService,
     pub dispatch_repository: &'a DispatchRepository,
     pub project_repository: &'a ProjectRepository,
     pub task_repository: &'a FileTaskRepository,
@@ -320,7 +320,7 @@ pub struct RemoteDispatchService<'a> {
 }
 
 pub struct RemoteReviewService<'a> {
-    pub config_service: &'a ConfigService,
+    pub config_service: &'a RemoteAgentConfigService,
     pub project_repository: &'a ProjectRepository,
     pub review_repository: &'a ReviewRepository,
     pub review_dispatch_repository: &'a ReviewDispatchRepository,
@@ -1056,7 +1056,7 @@ impl<'a> RemoteDispatchService<'a> {
     pub fn reconcile_review_follow_up(
         &self,
     ) -> Result<RemoteReviewFollowUpReconciliation, TrackError> {
-        let runtime_config = match self.config_service.load_runtime_config() {
+        let remote_agent = match self.config_service.load_remote_agent_runtime_config() {
             Ok(config) => config,
             Err(error)
                 if matches!(
@@ -1070,8 +1070,7 @@ impl<'a> RemoteDispatchService<'a> {
             }
             Err(error) => return Err(error),
         };
-
-        let Some(remote_agent) = runtime_config.remote_agent else {
+        let Some(remote_agent) = remote_agent else {
             return Ok(RemoteReviewFollowUpReconciliation::default());
         };
         let Some(review_follow_up) = remote_agent.review_follow_up.clone() else {
@@ -1263,8 +1262,8 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         records: Vec<TaskDispatchRecord>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let remote_agent = match self.config_service.load_runtime_config() {
-            Ok(config) => config.remote_agent,
+        let remote_agent = match self.config_service.load_remote_agent_runtime_config() {
+            Ok(config) => config,
             Err(error)
                 if matches!(
                     error.code,
@@ -1446,8 +1445,10 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<(), TrackError> {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
@@ -1604,8 +1605,10 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         task_id: &str,
     ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 format!(
@@ -1630,13 +1633,15 @@ impl<'a> RemoteDispatchService<'a> {
     fn load_remote_agent_for_global_cleanup(
         &self,
     ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
-            TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                "Remote cleanup cannot run because remote-agent configuration is missing.",
-            )
-        })?;
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
+                TrackError::new(
+                    ErrorCode::RemoteAgentNotConfigured,
+                    "Remote cleanup cannot run because remote-agent configuration is missing.",
+                )
+            })?;
 
         if !remote_agent.managed_key_path.exists() {
             return Err(TrackError::new(
@@ -1733,8 +1738,10 @@ impl<'a> RemoteDispatchService<'a> {
         ),
         TrackError,
     > {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
@@ -2255,8 +2262,8 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         records: Vec<ReviewRunRecord>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let remote_agent = match self.config_service.load_runtime_config() {
-            Ok(config) => config.remote_agent,
+        let remote_agent = match self.config_service.load_remote_agent_runtime_config() {
+            Ok(config) => config,
             Err(error)
                 if matches!(
                     error.code,
@@ -2544,8 +2551,10 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         dispatch_record: &ReviewRunRecord,
     ) -> Result<(), TrackError> {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
@@ -2605,8 +2614,10 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         review_id: &str,
     ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 format!(
@@ -2663,8 +2674,10 @@ impl<'a> RemoteReviewService<'a> {
     fn load_review_runner_prerequisites(
         &self,
     ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
-        let config = self.config_service.load_runtime_config()?;
-        let remote_agent = config.remote_agent.ok_or_else(|| {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()?
+            .ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 "Remote reviews are not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
@@ -5267,8 +5280,9 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::backend_config::RemoteAgentConfigService;
     use crate::config::{
-        ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
+        ApiConfigFile, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
     };
     use crate::dispatch_repository::DispatchRepository;
     use crate::project_repository::{ProjectMetadata, ProjectRepository};
@@ -5298,8 +5312,10 @@ mod tests {
 
     struct TestContext {
         _directory: TempDir,
+        _env_lock_guard: std::sync::MutexGuard<'static, ()>,
+        _track_state_dir_guard: crate::test_support::EnvVarGuard,
         data_dir: PathBuf,
-        config_service: ConfigService,
+        config_service: RemoteAgentConfigService,
         dispatch_repository: DispatchRepository,
         project_repository: ProjectRepository,
         review_dispatch_repository: ReviewDispatchRepository,
@@ -5310,38 +5326,36 @@ mod tests {
     impl TestContext {
         fn new(config: TrackConfigFile) -> Self {
             let directory = TempDir::new().expect("tempdir should be created");
-            let config_path = directory.path().join("config.json");
-            let data_dir = directory.path().join("issues");
-            let dispatches_dir = data_dir.join(".dispatches");
+            let env_lock_guard = track_data_env_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state_root = directory.path().join("state");
+            let track_state_dir_guard = set_env_var("TRACK_STATE_DIR", &state_root);
+            let data_dir = state_root.join("issues");
+            let database_path = state_root.join("track.sqlite");
             let config_service =
-                ConfigService::new(Some(config_path)).expect("config service should resolve");
+                RemoteAgentConfigService::new(None).expect("config service should resolve");
             config_service
-                .save_config_file(&config)
-                .expect("config should save");
+                .save_remote_agent_config(config.remote_agent.as_ref())
+                .expect("remote-agent config should save");
 
             Self {
                 _directory: directory,
+                _env_lock_guard: env_lock_guard,
+                _track_state_dir_guard: track_state_dir_guard,
                 data_dir: data_dir.clone(),
                 config_service,
-                dispatch_repository: DispatchRepository::new(Some(dispatches_dir))
+                dispatch_repository: DispatchRepository::new(Some(database_path.clone()))
                     .expect("dispatch repository should resolve"),
-                project_repository: ProjectRepository::new(Some(data_dir.clone()))
+                project_repository: ProjectRepository::new(Some(database_path.clone()))
                     .expect("project repository should resolve"),
                 review_dispatch_repository: ReviewDispatchRepository::new(Some(
-                    data_dir
-                        .parent()
-                        .expect("data dir should have a parent")
-                        .join("reviews/.dispatches"),
+                    database_path.clone(),
                 ))
                 .expect("review dispatch repository should resolve"),
-                review_repository: ReviewRepository::new(Some(
-                    data_dir
-                        .parent()
-                        .expect("data dir should have a parent")
-                        .join("reviews"),
-                ))
-                .expect("review repository should resolve"),
-                task_repository: FileTaskRepository::new(Some(data_dir))
+                review_repository: ReviewRepository::new(Some(database_path.clone()))
+                    .expect("review repository should resolve"),
+                task_repository: FileTaskRepository::new(Some(database_path))
                     .expect("task repository should resolve"),
             }
         }
@@ -5367,6 +5381,18 @@ mod tests {
         }
 
         fn create_task(&self, project: &str, description: &str) -> crate::types::Task {
+            self.project_repository
+                .upsert_project_by_name(
+                    project,
+                    ProjectMetadata {
+                        repo_url: format!("https://github.com/acme/{project}"),
+                        git_url: format!("git@github.com:acme/{project}.git"),
+                        base_branch: "main".to_owned(),
+                        description: None,
+                    },
+                    Vec::new(),
+                )
+                .expect("project should save");
             self.task_repository
                 .create_task(TaskCreateInput {
                     project: project.to_owned(),
@@ -5380,7 +5406,7 @@ mod tests {
 
         fn write_project_metadata(&self, project: &str) {
             self.project_repository
-                .update_project_by_name(
+                .upsert_project_by_name(
                     project,
                     ProjectMetadata {
                         repo_url: format!("https://github.com/acme/{project}"),
@@ -5388,6 +5414,7 @@ mod tests {
                         base_branch: "main".to_owned(),
                         description: None,
                     },
+                    Vec::new(),
                 )
                 .expect("project metadata should save");
         }
@@ -5731,9 +5758,6 @@ mod tests {
         })));
         let review = context.create_review();
 
-        let _env_lock = track_data_env_lock()
-            .lock()
-            .expect("env lock should not be poisoned");
         let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
         install_dummy_managed_remote_agent_material(&context.data_dir);
 
@@ -6127,9 +6151,6 @@ mod tests {
         context.write_project_metadata(&task.project);
         let existing_dispatch = context.create_running_dispatch(&task);
 
-        let _env_lock = track_data_env_lock()
-            .lock()
-            .expect("env lock should not be poisoned");
         let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
         install_dummy_managed_remote_agent_material(&context.data_dir);
 

@@ -208,6 +208,48 @@ pub struct TaskCaptureService<'a> {
     pub task_parser_factory: &'a dyn TaskParserFactory,
 }
 
+pub fn build_task_create_input_from_text(
+    raw_text: &str,
+    project_catalog: &ProjectCatalog,
+    runtime_config: &track_core::types::TrackRuntimeConfig,
+    source: Option<TaskSource>,
+    task_parser_factory: &dyn TaskParserFactory,
+) -> Result<TaskCreateInput, TrackError> {
+    if raw_text.trim().is_empty() {
+        return Err(TrackError::new(
+            ErrorCode::EmptyInput,
+            "Please provide a task description.",
+        ));
+    }
+
+    if project_catalog.is_empty() {
+        return Err(TrackError::new(
+            ErrorCode::NoProjectsDiscovered,
+            "No registered projects are available from the backend yet.",
+        ));
+    }
+
+    let parser = task_parser_factory.create_parser(runtime_config)?;
+    let candidate = parser.parse_task(raw_text, project_catalog)?;
+    let (project, priority, title, body_markdown) =
+        validate_parsed_task_candidate(candidate, project_catalog)?;
+    let description = build_task_body(
+        &title,
+        &body_markdown,
+        raw_text,
+        project_catalog,
+        &project.canonical_name,
+        priority,
+    );
+
+    Ok(TaskCreateInput {
+        project: project.canonical_name,
+        priority,
+        description,
+        source,
+    })
+}
+
 impl<'a> TaskCaptureService<'a> {
     pub fn create_task_from_text(
         &self,
@@ -237,32 +279,25 @@ impl<'a> TaskCaptureService<'a> {
             ));
         }
 
-        let parser = self.task_parser_factory.create_parser(&config)?;
-        let candidate = parser.parse_task(raw_text, &project_catalog)?;
-        let (project, priority, title, body_markdown) =
-            validate_parsed_task_candidate(candidate, &project_catalog)?;
-        let description = build_task_body(
-            &title,
-            &body_markdown,
+        let task_input = build_task_create_input_from_text(
             raw_text,
             &project_catalog,
-            &project.canonical_name,
-            priority,
-        );
+            &config,
+            source,
+            self.task_parser_factory,
+        )?;
 
         // The CLI is the only component that can reliably inspect host
         // repositories, so task capture seeds `PROJECT.md` before the task hits
         // disk. The API can then work entirely from the persisted `.track`
         // directory, including inside Docker where source checkouts are not
         // mounted.
+        let project = project_catalog
+            .resolve(&task_input.project)
+            .expect("validated task input should point at a known project")
+            .clone();
         self.project_repository.ensure_project(&project)?;
-
-        self.task_repository.create_task(TaskCreateInput {
-            project: project.canonical_name,
-            priority,
-            description,
-            source,
-        })
+        self.task_repository.create_task(task_input)
     }
 }
 

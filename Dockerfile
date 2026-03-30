@@ -48,6 +48,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-client \
   && groupadd --gid "${TRACK_GID}" track \
   && useradd --uid "${TRACK_UID}" --gid "${TRACK_GID}" --create-home --home-dir /home/track --shell /bin/sh track \
+  && mkdir -p /home/track/backend-state /home/track/legacy-home \
+  && chown -R track:track /home/track \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rust-build /app/target/release/track-api /usr/local/bin/track-api

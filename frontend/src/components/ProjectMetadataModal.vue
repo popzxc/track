@@ -55,9 +55,6 @@ function submit() {
             <h3 class="mt-2 font-display text-2xl text-fg0 sm:text-3xl">
               {{ project?.canonicalName ?? 'Project' }}
             </h3>
-            <p v-if="project?.path" class="mt-3 text-xs tracking-[0.08em] text-fg3">
-              {{ project.path }}
-            </p>
           </div>
           <button
             type="button"

@@ -155,10 +155,71 @@ fn default_llama_cpp_model_source() -> LlamaCppModelSource {
     }
 }
 
-fn canonicalize_optional_multiline_value(value: Option<String>) -> Option<String> {
+pub(crate) fn canonicalize_optional_multiline_value(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.replace("\r\n", "\n").trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn canonicalize_remote_agent_config(
+    remote_agent: RemoteAgentConfigFile,
+) -> Result<RemoteAgentConfigFile, TrackError> {
+    let host = remote_agent.host.trim().to_owned();
+    let user = remote_agent.user.trim().to_owned();
+    let workspace_root = remote_agent.workspace_root.trim().to_owned();
+    let projects_registry_path = remote_agent.projects_registry_path.trim().to_owned();
+    let shell_prelude = canonicalize_optional_multiline_value(remote_agent.shell_prelude);
+    let review_follow_up = remote_agent
+        .review_follow_up
+        .map(|review_follow_up| {
+            let main_user = review_follow_up
+                .main_user
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty());
+            let default_review_prompt =
+                canonicalize_optional_multiline_value(review_follow_up.default_review_prompt);
+
+            if review_follow_up.enabled && main_user.is_none() {
+                return Err(TrackError::new(
+                    ErrorCode::InvalidRemoteAgentConfig,
+                    "Remote review follow-up requires `mainUser` when the feature is enabled.",
+                ));
+            }
+
+            if !review_follow_up.enabled && main_user.is_none() && default_review_prompt.is_none() {
+                return Ok(None);
+            }
+
+            Ok(Some(RemoteAgentReviewFollowUpConfigFile {
+                enabled: review_follow_up.enabled,
+                main_user,
+                default_review_prompt,
+            }))
+        })
+        .transpose()?
+        .flatten();
+
+    if host.is_empty()
+        || user.is_empty()
+        || workspace_root.is_empty()
+        || projects_registry_path.is_empty()
+        || remote_agent.port == 0
+    {
+        return Err(TrackError::new(
+            ErrorCode::InvalidRemoteAgentConfig,
+            "Remote agent config requires host, user, workspace root, projects registry path, and a valid SSH port.",
+        ));
+    }
+
+    Ok(RemoteAgentConfigFile {
+        host,
+        user,
+        port: remote_agent.port,
+        workspace_root,
+        projects_registry_path,
+        shell_prelude,
+        review_follow_up,
+    })
 }
 
 fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, TrackError> {
@@ -208,67 +269,7 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
 
     let remote_agent = config
         .remote_agent
-        .map(|remote_agent| {
-            let host = remote_agent.host.trim().to_owned();
-            let user = remote_agent.user.trim().to_owned();
-            let workspace_root = remote_agent.workspace_root.trim().to_owned();
-            let projects_registry_path = remote_agent.projects_registry_path.trim().to_owned();
-            let shell_prelude = canonicalize_optional_multiline_value(remote_agent.shell_prelude);
-            let review_follow_up = remote_agent
-                .review_follow_up
-                .map(|review_follow_up| {
-                    let main_user = review_follow_up
-                        .main_user
-                        .map(|value| value.trim().to_owned())
-                        .filter(|value| !value.is_empty());
-                    let default_review_prompt =
-                        canonicalize_optional_multiline_value(review_follow_up.default_review_prompt);
-
-                    if review_follow_up.enabled && main_user.is_none() {
-                        return Err(TrackError::new(
-                            ErrorCode::InvalidRemoteAgentConfig,
-                            "Remote review follow-up requires `mainUser` when the feature is enabled.",
-                        ));
-                    }
-
-                    if !review_follow_up.enabled
-                        && main_user.is_none()
-                        && default_review_prompt.is_none()
-                    {
-                        return Ok(None);
-                    }
-
-                    Ok(Some(RemoteAgentReviewFollowUpConfigFile {
-                        enabled: review_follow_up.enabled,
-                        main_user,
-                        default_review_prompt,
-                    }))
-                })
-                .transpose()?
-                .flatten();
-
-            if host.is_empty()
-                || user.is_empty()
-                || workspace_root.is_empty()
-                || projects_registry_path.is_empty()
-                || remote_agent.port == 0
-            {
-                return Err(TrackError::new(
-                    ErrorCode::InvalidRemoteAgentConfig,
-                    "Remote agent config requires host, user, workspace root, projects registry path, and a valid SSH port.",
-                ));
-            }
-
-            Ok(RemoteAgentConfigFile {
-                host,
-                user,
-                port: remote_agent.port,
-                workspace_root,
-                projects_registry_path,
-                shell_prelude,
-                review_follow_up,
-            })
-        })
+        .map(canonicalize_remote_agent_config)
         .transpose()?;
 
     Ok(TrackConfigFile {

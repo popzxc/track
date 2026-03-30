@@ -6,6 +6,7 @@ import {
   getRunStartDisabledReason,
   groupTasksByProject,
   latestDispatchByTaskId,
+  mergeProjects,
 } from './presentation'
 import {
   buildDispatch,
@@ -106,5 +107,24 @@ describe('getRunStartDisabledReason', () => {
     expect(
       getRunStartDisabledReason(task, [buildProject()], buildRemoteAgentSettings({ configured: false })),
     ).toBe('Configure the remote agent with `track` locally before dispatching tasks.')
+  })
+})
+
+describe('mergeProjects', () => {
+  it('keeps persisted metadata when task-derived placeholders arrive later', () => {
+    const merged = mergeProjects(
+      [buildProject()],
+      [buildProject({
+        aliases: [],
+        metadata: {
+          repoUrl: '',
+          gitUrl: '',
+          baseBranch: '',
+          description: undefined,
+        },
+      })],
+    )
+
+    expect(merged).toEqual([buildProject()])
   })
 })

@@ -14,8 +14,12 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 track-capture = { path = "../track-capture" }
 track-core = { path = "../track-core" }
+ureq = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

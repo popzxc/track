@@ -2,13 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 
+use crate::database::DatabaseContext;
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
-use crate::paths::{get_data_dir, path_to_string};
 use crate::project_catalog::ProjectInfo;
 
-const PROJECT_METADATA_FILE_NAME: &str = "PROJECT.md";
 const DEFAULT_BASE_BRANCH: &str = "main";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,12 +23,10 @@ pub struct ProjectMetadata {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectRecord {
     #[serde(rename = "canonicalName")]
     pub canonical_name: String,
-    #[serde(with = "path_string")]
-    pub path: PathBuf,
     pub aliases: Vec<String>,
     pub metadata: ProjectMetadata,
 }
@@ -70,159 +68,100 @@ impl ProjectMetadataUpdateInput {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct ProjectMetadataFrontmatter {
-    #[serde(rename = "repoUrl")]
-    repo_url: String,
-    #[serde(rename = "gitUrl")]
-    git_url: String,
-    #[serde(rename = "baseBranch")]
-    base_branch: String,
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProjectUpsertInput {
+    #[serde(rename = "canonicalName")]
+    pub canonical_name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(flatten)]
+    pub metadata: ProjectMetadataUpdateInput,
 }
 
-#[derive(Debug, Deserialize)]
-struct ParsedProjectMetadataFrontmatter {
-    #[serde(rename = "repoUrl")]
-    repo_url: Option<String>,
-    #[serde(rename = "gitUrl")]
-    git_url: Option<String>,
-    #[serde(rename = "baseBranch")]
-    base_branch: Option<String>,
-}
-
-pub struct ProjectRepository {
-    data_dir: PathBuf,
-}
-
-impl ProjectRepository {
-    pub fn new(data_dir: Option<PathBuf>) -> Result<Self, TrackError> {
-        Ok(Self {
-            data_dir: match data_dir {
-                Some(path) => path,
-                None => get_data_dir()?,
-            },
-        })
-    }
-
-    // =============================================================================
-    // Host-Side Project Initialization
-    // =============================================================================
-    //
-    // The CLI is the only process that can reliably see the user's checked-out
-    // repositories, especially when the API runs in Docker with only the track
-    // data directory mounted. That makes the CLI the right place to seed
-    // `PROJECT.md` from git metadata.
-    pub fn ensure_project(&self, project: &ProjectInfo) -> Result<ProjectRecord, TrackError> {
+impl ProjectUpsertInput {
+    pub fn validate(self) -> Result<(String, Vec<String>, ProjectMetadata), TrackError> {
         let canonical_name = validate_single_normal_path_component(
-            &project.canonical_name,
+            &self.canonical_name,
             "Project canonical name",
             ErrorCode::InvalidPathComponent,
         )?;
-        let project_directory = self.ensure_project_directory(&project.canonical_name)?;
-        let metadata_path = self.metadata_file_path(&canonical_name)?;
+        let mut aliases = self
+            .aliases
+            .into_iter()
+            .map(|alias| {
+                validate_single_normal_path_component(
+                    &alias,
+                    "Project alias",
+                    ErrorCode::InvalidPathComponent,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        aliases.sort();
+        aliases.dedup();
 
-        let metadata = if metadata_path.exists() {
-            self.load_existing_metadata_or_blank(&metadata_path)
-        } else {
-            let metadata = build_default_metadata(project);
-            self.write_metadata_file(&metadata_path, &metadata)?;
-            metadata
-        };
+        Ok((canonical_name, aliases, self.metadata.validate()?))
+    }
+}
 
-        Ok(ProjectRecord {
-            canonical_name,
-            path: project_directory,
-            aliases: project.aliases.clone(),
-            metadata,
-        })
+#[derive(Debug, Clone)]
+pub struct ProjectRepository {
+    database: DatabaseContext,
+}
+
+impl ProjectRepository {
+    pub fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+        let database = DatabaseContext::new(database_path)?;
+        database.initialize()?;
+
+        Ok(Self { database })
     }
 
-    // =============================================================================
-    // Persisted Project Listing
-    // =============================================================================
-    //
-    // The API and frontend work from the persisted track state only. They do
-    // not rediscover repositories from the host filesystem because that breaks
-    // down once the API is containerized. Listing projects therefore means
-    // scanning the track data directory and treating each project folder as the
-    // source of truth.
+    pub fn ensure_project(&self, project: &ProjectInfo) -> Result<ProjectRecord, TrackError> {
+        let metadata = build_default_metadata(project);
+        self.upsert_project_by_name(&project.canonical_name, metadata, project.aliases.clone())
+    }
+
+    pub(crate) fn database_context(&self) -> DatabaseContext {
+        self.database.clone()
+    }
+
     pub fn list_projects(&self) -> Result<Vec<ProjectRecord>, TrackError> {
-        if !self.data_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries = fs::read_dir(&self.data_dir).map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!(
-                    "Could not read the project directory at {}: {error}",
-                    path_to_string(&self.data_dir)
-                ),
-            )
-        })?;
-
-        let mut records = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                TrackError::new(
-                    ErrorCode::ProjectWriteFailed,
-                    format!(
-                        "Could not read a project entry under {}: {error}",
-                        path_to_string(&self.data_dir)
-                    ),
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT canonical_name, repo_url, git_url, base_branch, description
+                    FROM projects
+                    ORDER BY canonical_name ASC
+                    "#,
                 )
-            })?;
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::ProjectWriteFailed,
+                        format!("Could not load projects from SQLite: {error}"),
+                    )
+                })?;
 
-            let project_directory = entry.path();
-            if !project_directory.is_dir() {
-                continue;
-            }
-
-            let Some(canonical_name) = project_directory
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-
-            if canonical_name.starts_with('.') {
-                continue;
-            }
-
-            let canonical_name = match validate_single_normal_path_component(
-                &canonical_name,
-                "Project canonical name",
-                ErrorCode::InvalidPathComponent,
-            ) {
-                Ok(canonical_name) => canonical_name,
-                Err(error) => {
-                    eprintln!(
-                        "Skipping invalid project directory {}: {}",
-                        path_to_string(&project_directory),
-                        error
-                    );
-                    continue;
+                let mut records = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let canonical_name = row.get::<String, _>("canonical_name");
+                    records.push(ProjectRecord {
+                        aliases: load_aliases(connection, &canonical_name).await?,
+                        metadata: ProjectMetadata {
+                            repo_url: row.get::<String, _>("repo_url"),
+                            git_url: row.get::<String, _>("git_url"),
+                            base_branch: row.get::<String, _>("base_branch"),
+                            description: row.get::<Option<String>, _>("description"),
+                        },
+                        canonical_name,
+                    });
                 }
-            };
 
-            let metadata_path = project_directory.join(PROJECT_METADATA_FILE_NAME);
-            let metadata = if metadata_path.exists() {
-                self.load_existing_metadata_or_blank(&metadata_path)
-            } else {
-                blank_project_metadata()
-            };
-
-            records.push(ProjectRecord {
-                canonical_name,
-                path: project_directory,
-                aliases: Vec::new(),
-                metadata,
-            });
-        }
-
-        records.sort_by(|left, right| left.canonical_name.cmp(&right.canonical_name));
-        Ok(records)
+                Ok(records)
+            })
+        })
     }
 
     pub fn get_project_by_name(&self, canonical_name: &str) -> Result<ProjectRecord, TrackError> {
@@ -231,26 +170,43 @@ impl ProjectRepository {
             "Project canonical name",
             ErrorCode::InvalidPathComponent,
         )?;
-        let project_directory = self.project_directory(&canonical_name)?;
-        if !project_directory.is_dir() {
-            return Err(TrackError::new(
-                ErrorCode::ProjectNotFound,
-                format!("Project {canonical_name} was not found."),
-            ));
-        }
 
-        let metadata_path = self.metadata_file_path(&canonical_name)?;
-        let metadata = if metadata_path.exists() {
-            self.load_existing_metadata_or_blank(&metadata_path)
-        } else {
-            blank_project_metadata()
-        };
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let row = sqlx::query(
+                    r#"
+                    SELECT canonical_name, repo_url, git_url, base_branch, description
+                    FROM projects
+                    WHERE canonical_name = ?1
+                    "#,
+                )
+                .bind(&canonical_name)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::ProjectWriteFailed,
+                        format!("Could not load project {canonical_name} from SQLite: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    TrackError::new(
+                        ErrorCode::ProjectNotFound,
+                        format!("Project {canonical_name} was not found."),
+                    )
+                })?;
 
-        Ok(ProjectRecord {
-            canonical_name: canonical_name.to_owned(),
-            path: project_directory,
-            aliases: Vec::new(),
-            metadata,
+                Ok(ProjectRecord {
+                    aliases: load_aliases(connection, &canonical_name).await?,
+                    metadata: ProjectMetadata {
+                        repo_url: row.get::<String, _>("repo_url"),
+                        git_url: row.get::<String, _>("git_url"),
+                        base_branch: row.get::<String, _>("base_branch"),
+                        description: row.get::<Option<String>, _>("description"),
+                    },
+                    canonical_name,
+                })
+            })
         })
     }
 
@@ -259,188 +215,172 @@ impl ProjectRepository {
         canonical_name: &str,
         metadata: ProjectMetadata,
     ) -> Result<ProjectRecord, TrackError> {
-        let canonical_name = validate_single_normal_path_component(
-            canonical_name,
-            "Project canonical name",
-            ErrorCode::InvalidPathComponent,
-        )?;
-        let project_directory = self.project_directory(&canonical_name)?;
-        if !project_directory.is_dir() {
-            return Err(TrackError::new(
-                ErrorCode::ProjectNotFound,
-                format!("Project {canonical_name} was not found."),
-            ));
-        }
-
-        self.write_metadata_file(&self.metadata_file_path(&canonical_name)?, &metadata)?;
-
-        Ok(ProjectRecord {
-            canonical_name,
-            path: project_directory,
-            aliases: Vec::new(),
-            metadata,
-        })
+        let existing = self.get_project_by_name(canonical_name)?;
+        self.upsert_project_by_name(&existing.canonical_name, metadata, existing.aliases)
     }
 
-    fn ensure_project_directory(&self, canonical_name: &str) -> Result<PathBuf, TrackError> {
-        let directory_path = self.project_directory(canonical_name)?;
-        fs::create_dir_all(&directory_path).map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!(
-                    "Could not create the project directory at {}: {error}",
-                    path_to_string(&directory_path)
-                ),
-            )
-        })?;
-
-        Ok(directory_path)
+    pub fn upsert_project(&self, input: ProjectUpsertInput) -> Result<ProjectRecord, TrackError> {
+        let (canonical_name, aliases, metadata) = input.validate()?;
+        self.upsert_project_by_name(&canonical_name, metadata, aliases)
     }
 
-    fn project_directory(&self, canonical_name: &str) -> Result<PathBuf, TrackError> {
-        let canonical_name = validate_single_normal_path_component(
-            canonical_name,
-            "Project canonical name",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
-        Ok(self.data_dir.join(canonical_name))
-    }
-
-    fn metadata_file_path(&self, canonical_name: &str) -> Result<PathBuf, TrackError> {
-        Ok(self
-            .project_directory(canonical_name)?
-            .join(PROJECT_METADATA_FILE_NAME))
-    }
-
-    // =============================================================================
-    // Metadata Read Strategy
-    // =============================================================================
-    //
-    // Project metadata is intentionally hand-editable, so we keep task capture
-    // and the project list resilient when a user leaves `PROJECT.md` in an
-    // unfinished or malformed state. The persisted project directory is the
-    // important durable signal; malformed metadata falls back to blank editable
-    // fields instead of making the project disappear entirely.
-    fn load_existing_metadata_or_blank(&self, metadata_path: &Path) -> ProjectMetadata {
-        match self.read_metadata_file(metadata_path) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                eprintln!(
-                    "Using blank project metadata for {}: {}",
-                    path_to_string(metadata_path),
-                    error
-                );
-                blank_project_metadata()
-            }
-        }
-    }
-
-    fn read_metadata_file(&self, file_path: &Path) -> Result<ProjectMetadata, TrackError> {
-        let raw_file = fs::read_to_string(file_path).map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!(
-                    "Could not read the project metadata file at {}: {error}",
-                    path_to_string(file_path)
-                ),
-            )
-        })?;
-
-        let (frontmatter, body) = split_frontmatter(&raw_file)?;
-        let parsed_frontmatter = serde_yaml::from_str::<ParsedProjectMetadataFrontmatter>(
-            frontmatter,
-        )
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::InvalidProjectMetadata,
-                format!(
-                    "Project metadata at {} has invalid YAML frontmatter: {error}",
-                    path_to_string(file_path)
-                ),
-            )
-        })?;
-
-        let repo_url = required_metadata_field(parsed_frontmatter.repo_url, "repoUrl", file_path)?;
-        let git_url = required_metadata_field(parsed_frontmatter.git_url, "gitUrl", file_path)?;
-        let base_branch =
-            required_metadata_field(parsed_frontmatter.base_branch, "baseBranch", file_path)?;
-        let description = body.trim().to_owned();
-
-        Ok(ProjectMetadata {
-            repo_url,
-            git_url,
-            base_branch,
-            description: if description.is_empty() {
-                None
-            } else {
-                Some(description)
-            },
-        })
-    }
-
-    fn write_metadata_file(
+    pub fn upsert_project_by_name(
         &self,
-        file_path: &Path,
-        metadata: &ProjectMetadata,
-    ) -> Result<(), TrackError> {
-        let yaml = serde_yaml::to_string(&ProjectMetadataFrontmatter {
-            repo_url: metadata.repo_url.clone(),
-            git_url: metadata.git_url.clone(),
-            base_branch: metadata.base_branch.clone(),
+        canonical_name: &str,
+        metadata: ProjectMetadata,
+        aliases: Vec<String>,
+    ) -> Result<ProjectRecord, TrackError> {
+        let canonical_name = validate_single_normal_path_component(
+            canonical_name,
+            "Project canonical name",
+            ErrorCode::InvalidPathComponent,
+        )?;
+
+        self.database.transaction(move |connection| {
+            Box::pin(async move {
+                // Project registration is intentionally additive by default so
+                // a routine re-registration cannot silently discard aliases
+                // that were migrated from legacy state or added earlier.
+                let mut merged_aliases = load_aliases(connection, &canonical_name).await?;
+                merged_aliases.extend(aliases);
+                merged_aliases.retain(|alias| alias != &canonical_name);
+                merged_aliases.sort();
+                merged_aliases.dedup();
+
+                // Alias registration is part of the same logical write as the
+                // project metadata update. We therefore reject conflicts before
+                // mutating anything so callers never observe a half-applied
+                // registration when another project already owns an alias.
+                ensure_aliases_are_available(connection, &canonical_name, &merged_aliases).await?;
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO projects (canonical_name, repo_url, git_url, base_branch, description)
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    ON CONFLICT(canonical_name) DO UPDATE SET
+                        repo_url = excluded.repo_url,
+                        git_url = excluded.git_url,
+                        base_branch = excluded.base_branch,
+                        description = excluded.description
+                    "#,
+                )
+                .bind(&canonical_name)
+                .bind(&metadata.repo_url)
+                .bind(&metadata.git_url)
+                .bind(&metadata.base_branch)
+                .bind(metadata.description.as_deref())
+                .execute(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::ProjectWriteFailed,
+                        format!("Could not save project {canonical_name}: {error}"),
+                    )
+                })?;
+
+                for alias in &merged_aliases {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO project_aliases (canonical_name, alias)
+                        VALUES (?1, ?2)
+                        ON CONFLICT(canonical_name, alias) DO NOTHING
+                        "#,
+                    )
+                    .bind(&canonical_name)
+                    .bind(alias)
+                    .execute(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::ProjectWriteFailed,
+                            format!(
+                                "Could not save the alias {alias} for project {canonical_name}: {error}"
+                            ),
+                        )
+                    })?;
+                }
+
+                Ok(ProjectRecord {
+                    canonical_name,
+                    aliases: merged_aliases,
+                    metadata,
+                })
+            })
         })
+    }
+}
+
+pub fn infer_project_metadata(project: &ProjectInfo) -> ProjectMetadata {
+    build_default_metadata(project)
+}
+
+async fn load_aliases(
+    connection: &mut sqlx::SqliteConnection,
+    canonical_name: &str,
+) -> Result<Vec<String>, TrackError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT alias
+        FROM project_aliases
+        WHERE canonical_name = ?1
+        ORDER BY alias ASC
+        "#,
+    )
+    .bind(canonical_name)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| {
+        TrackError::new(
+            ErrorCode::ProjectWriteFailed,
+            format!("Could not load project aliases for {canonical_name}: {error}"),
+        )
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| row.get::<String, _>("alias"))
+        .collect())
+}
+
+async fn ensure_aliases_are_available(
+    connection: &mut sqlx::SqliteConnection,
+    canonical_name: &str,
+    aliases: &[String],
+) -> Result<(), TrackError> {
+    for alias in aliases {
+        let row = sqlx::query(
+            r#"
+            SELECT canonical_name
+            FROM project_aliases
+            WHERE alias = ?1
+            "#,
+        )
+        .bind(alias)
+        .fetch_optional(&mut *connection)
+        .await
         .map_err(|error| {
             TrackError::new(
                 ErrorCode::ProjectWriteFailed,
-                format!("Could not serialize project metadata: {error}"),
+                format!("Could not verify whether alias {alias} is available: {error}"),
             )
         })?;
 
-        let mut serialized = format!("---\n{}---\n", yaml);
-        if let Some(description) = metadata.description.as_deref().map(str::trim) {
-            if !description.is_empty() {
-                serialized.push('\n');
-                serialized.push_str(description);
-                serialized.push('\n');
+        if let Some(row) = row {
+            let claimed_by = row.get::<String, _>("canonical_name");
+            if claimed_by != canonical_name {
+                return Err(TrackError::new(
+                    ErrorCode::InvalidProjectMetadata,
+                    format!("Project alias {alias} is already registered to project {claimed_by}."),
+                ));
             }
         }
-
-        fs::write(file_path, serialized).map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!(
-                    "Could not write the project metadata file at {}: {error}",
-                    path_to_string(file_path)
-                ),
-            )
-        })
     }
+
+    Ok(())
 }
 
-fn blank_project_metadata() -> ProjectMetadata {
-    ProjectMetadata {
-        repo_url: String::new(),
-        git_url: String::new(),
-        base_branch: DEFAULT_BASE_BRANCH.to_owned(),
-        description: None,
-    }
-}
-
-// =============================================================================
-// Default Metadata Inference
-// =============================================================================
-//
-// Project metadata lives alongside track data rather than inside the Git
-// checkout. When the CLI sees a repository for the first time, it seeds
-// `PROJECT.md` with the details users are most likely to want to edit later:
-// browser-friendly repo URL, clone URL, and an inferred default branch.
-//
-// We intentionally parse `.git/config` directly instead of shelling out to the
-// `git` binary. That keeps initialization deterministic, avoids another runtime
-// dependency, and makes the behavior easy to cover in tests with tiny fixture
-// repositories.
 fn build_default_metadata(project: &ProjectInfo) -> ProjectMetadata {
-    let fallback_file_url = format!("file://{}", path_to_string(&project.path));
+    let fallback_file_url = format!("file://{}", project.path.to_string_lossy());
     let git_url = read_origin_git_url(&project.path).unwrap_or_else(|| fallback_file_url.clone());
     let repo_url = if git_url == fallback_file_url {
         fallback_file_url
@@ -458,10 +398,6 @@ fn build_default_metadata(project: &ProjectInfo) -> ProjectMetadata {
     }
 }
 
-// We prefer the remote-tracking HEAD because it reflects the repository's
-// intended default branch even when the local checkout happens to be on a
-// feature branch. If that remote hint is missing, we fall back to the local
-// HEAD branch before finally defaulting to `main`.
 fn infer_default_base_branch(project_path: &Path) -> Option<String> {
     let git_common_directory = resolve_git_common_directory(project_path)?;
 
@@ -520,15 +456,14 @@ fn resolve_git_directory(project_path: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let contents = fs::read_to_string(git_marker).ok()?;
-    let raw_git_dir = contents.trim().strip_prefix("gitdir:")?.trim();
-    let git_dir = PathBuf::from(raw_git_dir);
+    let gitdir_directive = fs::read_to_string(git_marker).ok()?;
+    let relative_path = gitdir_directive
+        .trim()
+        .strip_prefix("gitdir:")?
+        .trim()
+        .to_owned();
 
-    if git_dir.is_absolute() {
-        Some(git_dir)
-    } else {
-        Some(project_path.join(git_dir))
-    }
+    Some(project_path.join(relative_path))
 }
 
 fn resolve_git_common_directory(project_path: &Path) -> Option<PathBuf> {
@@ -538,367 +473,113 @@ fn resolve_git_common_directory(project_path: &Path) -> Option<PathBuf> {
         return Some(git_directory);
     }
 
-    let common_directory = fs::read_to_string(commondir_path).ok()?;
-    let common_directory = PathBuf::from(common_directory.trim());
-    if common_directory.is_absolute() {
-        Some(common_directory)
-    } else {
-        Some(git_directory.join(common_directory))
-    }
+    let relative = fs::read_to_string(commondir_path).ok()?;
+    Some(git_directory.join(relative.trim()))
 }
 
 fn read_symbolic_ref_branch(reference_path: &Path, prefix: &str) -> Option<String> {
-    let reference = fs::read_to_string(reference_path).ok()?;
-    let target = reference.trim().strip_prefix("ref:")?.trim();
-    let branch_name = target.strip_prefix(prefix)?.trim();
-    if branch_name.is_empty() {
-        return None;
-    }
-
-    Some(branch_name.to_owned())
+    let symbolic_ref = fs::read_to_string(reference_path).ok()?;
+    symbolic_ref
+        .trim()
+        .strip_prefix("ref:")?
+        .trim()
+        .strip_prefix(prefix)
+        .map(str::to_owned)
 }
 
-fn derive_repo_url(git_url: &str) -> String {
+pub fn derive_repo_url(git_url: &str) -> String {
     let git_url = git_url.trim();
-    if git_url.is_empty() {
-        return String::new();
+
+    if let Some(path) = git_url.strip_prefix("git@") {
+        if let Some((host, repo_path)) = path.split_once(':') {
+            return format!("https://{host}/{}", repo_path.trim_end_matches(".git"));
+        }
     }
 
-    if let Some(remainder) = git_url.strip_prefix("git@") {
-        let Some((host, path)) = remainder.split_once(':') else {
-            return trim_git_suffix(git_url).to_owned();
-        };
-        return format!("https://{host}/{}", trim_git_suffix(path));
-    }
-
-    if let Some(remainder) = git_url.strip_prefix("ssh://") {
-        let remainder = remainder
-            .split_once('@')
-            .map(|(_, value)| value)
-            .unwrap_or(remainder);
-
-        let Some((host, path)) = remainder.split_once('/') else {
-            return trim_git_suffix(git_url).to_owned();
-        };
-        return format!("https://{host}/{}", trim_git_suffix(path));
-    }
-
-    trim_git_suffix(git_url).to_owned()
-}
-
-fn trim_git_suffix(value: &str) -> &str {
-    value.trim_end_matches(".git").trim_end_matches('/')
-}
-
-fn required_metadata_field(
-    value: Option<String>,
-    field_name: &str,
-    file_path: &Path,
-) -> Result<String, TrackError> {
-    let value = value.unwrap_or_default().trim().to_owned();
-    if value.is_empty() {
-        return Err(TrackError::new(
-            ErrorCode::InvalidProjectMetadata,
-            format!(
-                "Project metadata at {} is missing a required `{field_name}` field.",
-                path_to_string(file_path)
-            ),
-        ));
-    }
-
-    Ok(value)
-}
-
-fn split_frontmatter(raw_file: &str) -> Result<(&str, &str), TrackError> {
-    let Some(after_start) = consume_frontmatter_delimiter(raw_file, 0) else {
-        return Err(TrackError::new(
-            ErrorCode::InvalidProjectMetadata,
-            "Project metadata file must start with YAML frontmatter.",
-        ));
-    };
-
-    let Some(end_start) = find_frontmatter_end(raw_file, after_start) else {
-        return Err(TrackError::new(
-            ErrorCode::InvalidProjectMetadata,
-            "Project metadata file is missing the closing YAML frontmatter delimiter.",
-        ));
-    };
-
-    let frontmatter = &raw_file[after_start..end_start];
-    let body_start = consume_frontmatter_delimiter(raw_file, end_start).ok_or_else(|| {
-        TrackError::new(
-            ErrorCode::InvalidProjectMetadata,
-            "Project metadata file is missing the closing YAML frontmatter delimiter.",
-        )
-    })?;
-
-    Ok((frontmatter, &raw_file[body_start..]))
-}
-
-fn consume_frontmatter_delimiter(raw_file: &str, offset: usize) -> Option<usize> {
-    let after = raw_file.get(offset..)?;
-    if let Some(remainder) = after.strip_prefix("---\r\n") {
-        return Some(raw_file.len() - remainder.len());
-    }
-
-    if let Some(remainder) = after.strip_prefix("---\n") {
-        return Some(raw_file.len() - remainder.len());
-    }
-
-    None
-}
-
-fn find_frontmatter_end(raw_file: &str, start: usize) -> Option<usize> {
-    let after = raw_file.get(start..)?;
-    after
-        .find("\n---\n")
-        .map(|index| start + index + 1)
-        .or_else(|| after.find("\n---\r\n").map(|index| start + index + 1))
-        .or_else(|| after.find("\r\n---\n").map(|index| start + index + 2))
-        .or_else(|| after.find("\r\n---\r\n").map(|index| start + index + 2))
-}
-
-mod path_string {
-    use std::path::PathBuf;
-
-    use serde::Serializer;
-
-    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&path.to_string_lossy())
-    }
+    git_url
+        .trim_end_matches(".git")
+        .replace("ssh://git@", "https://")
+        .replace("ssh://", "https://")
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use tempfile::TempDir;
 
-    use super::{
-        derive_repo_url, read_origin_git_url, ProjectMetadataUpdateInput, ProjectRepository,
-        DEFAULT_BASE_BRANCH,
-    };
-    use crate::{errors::ErrorCode, paths::path_to_string, project_catalog::ProjectInfo};
+    use super::{ProjectMetadata, ProjectRepository};
+    use crate::errors::ErrorCode;
 
-    #[test]
-    fn ensure_project_creates_default_metadata_from_origin_remote() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
-            .expect("repository should resolve");
-        let project_path = directory.path().join("workspace/project-x");
-        fs::create_dir_all(project_path.join(".git/refs/remotes/origin"))
-            .expect("git directory should exist");
-        fs::write(
-            project_path.join(".git/config"),
-            "[remote \"origin\"]\n\turl = git@github.com:acme/project-x.git\n",
-        )
-        .expect("git config should be written");
-        fs::write(
-            project_path.join(".git/refs/remotes/origin/HEAD"),
-            "ref: refs/remotes/origin/trunk\n",
-        )
-        .expect("origin HEAD should be written");
-
-        let record = repository
-            .ensure_project(&ProjectInfo {
-                canonical_name: "project-x".to_owned(),
-                path: project_path.clone(),
-                aliases: vec!["proj-x".to_owned()],
-            })
-            .expect("project should be initialized");
-
-        assert_eq!(record.metadata.git_url, "git@github.com:acme/project-x.git");
-        assert_eq!(
-            record.metadata.repo_url,
-            "https://github.com/acme/project-x"
-        );
-        assert_eq!(record.metadata.base_branch, "trunk");
-        assert_eq!(record.metadata.description, None);
-        assert_eq!(
-            record.path,
-            directory.path().join("issues").join("project-x")
-        );
-        assert!(directory
-            .path()
-            .join("issues/project-x/PROJECT.md")
-            .exists());
+    fn metadata(description: &str) -> ProjectMetadata {
+        ProjectMetadata {
+            repo_url: "https://github.com/acme/project-a".to_owned(),
+            git_url: "git@github.com:acme/project-a.git".to_owned(),
+            base_branch: "main".to_owned(),
+            description: Some(description.to_owned()),
+        }
     }
 
     #[test]
-    fn falls_back_to_local_head_branch_when_origin_head_is_missing() {
+    fn upsert_project_preserves_existing_aliases_when_no_new_aliases_are_provided() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
-            .expect("repository should resolve");
-        let project_path = directory.path().join("workspace/project-x");
-        fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
-        fs::write(
-            project_path.join(".git/config"),
-            "[remote \"origin\"]\n\turl = git@github.com:acme/project-x.git\n",
-        )
-        .expect("git config should be written");
-        fs::write(
-            project_path.join(".git/HEAD"),
-            "ref: refs/heads/release/2026\n",
-        )
-        .expect("local HEAD should be written");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .expect("project repository should resolve");
 
-        let record = repository
-            .ensure_project(&ProjectInfo {
-                canonical_name: "project-x".to_owned(),
-                path: project_path,
-                aliases: vec![],
-            })
-            .expect("project should be initialized");
-
-        assert_eq!(record.metadata.base_branch, "release/2026");
-    }
-
-    #[test]
-    fn list_projects_includes_existing_project_directories_without_metadata() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let issues_path = directory.path().join("issues");
-        fs::create_dir_all(issues_path.join("project-a/open"))
-            .expect("project directory should exist");
-        fs::create_dir_all(issues_path.join("project-b")).expect("project directory should exist");
-
-        let repository =
-            ProjectRepository::new(Some(issues_path)).expect("repository should resolve");
-        let records = repository.list_projects().expect("projects should list");
-
-        assert_eq!(
-            records
-                .iter()
-                .map(|record| record.canonical_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["project-a", "project-b"]
-        );
-        assert_eq!(records[0].metadata.repo_url, "");
-        assert_eq!(records[0].metadata.git_url, "");
-        assert_eq!(records[0].metadata.base_branch, DEFAULT_BASE_BRANCH);
-        assert_eq!(records[0].metadata.description, None);
-    }
-
-    #[test]
-    fn update_project_rewrites_the_metadata_markdown_file() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
-            .expect("repository should resolve");
         repository
-            .ensure_project(&ProjectInfo {
-                canonical_name: "project-x".to_owned(),
-                path: directory.path().join("workspace/project-x"),
-                aliases: vec![],
-            })
-            .expect("project should initialize");
+            .upsert_project_by_name("project-a", metadata("first"), vec!["legacy-a".to_owned()])
+            .expect("project should save");
+        let project = repository
+            .upsert_project_by_name("project-a", metadata("second"), Vec::new())
+            .expect("project should update");
 
-        let updated = repository
-            .update_project_by_name(
-                "project-x",
-                ProjectMetadataUpdateInput {
-                    repo_url: "https://github.com/acme/project-x".to_owned(),
-                    git_url: "git@github.com:acme/project-x.git".to_owned(),
-                    base_branch: "develop".to_owned(),
-                    description: Some("Main coordination repo for the release work.".to_owned()),
-                }
-                .validate()
-                .expect("metadata should validate"),
+        assert_eq!(project.aliases, vec!["legacy-a".to_owned()]);
+        assert_eq!(project.metadata.description.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn upsert_project_unions_new_aliases_with_existing_aliases() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .expect("project repository should resolve");
+
+        repository
+            .upsert_project_by_name("project-a", metadata("first"), vec!["legacy-a".to_owned()])
+            .expect("project should save");
+        let project = repository
+            .upsert_project_by_name(
+                "project-a",
+                metadata("second"),
+                vec!["new-a".to_owned(), "legacy-a".to_owned()],
             )
             .expect("project should update");
 
-        assert_eq!(updated.metadata.base_branch, "develop");
-        let raw_file = fs::read_to_string(directory.path().join("issues/project-x/PROJECT.md"))
-            .expect("metadata file should be readable");
-        assert!(raw_file.contains("baseBranch: develop"));
-        assert!(raw_file.contains("Main coordination repo for the release work."));
+        assert_eq!(
+            project.aliases,
+            vec!["legacy-a".to_owned(), "new-a".to_owned()]
+        );
     }
 
     #[test]
-    fn rejects_canonical_names_that_are_not_single_path_components() {
+    fn upsert_project_rejects_conflicting_alias_without_partial_writes() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
-            .expect("repository should resolve");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .expect("project repository should resolve");
+
+        repository
+            .upsert_project_by_name("project-a", metadata("first"), vec!["shared".to_owned()])
+            .expect("project a should save");
+        repository
+            .upsert_project_by_name("project-b", metadata("before"), Vec::new())
+            .expect("project b should save");
 
         let error = repository
-            .ensure_project(&ProjectInfo {
-                canonical_name: "../escape".to_owned(),
-                path: directory.path().join("workspace/project-x"),
-                aliases: vec![],
-            })
-            .expect_err("project initialization should reject traversal-shaped names");
-
-        assert_eq!(error.code, ErrorCode::InvalidPathComponent);
-    }
-
-    #[test]
-    fn validates_required_project_metadata_fields() {
-        let error = ProjectMetadataUpdateInput {
-            repo_url: " ".to_owned(),
-            git_url: "git@github.com:acme/project-x.git".to_owned(),
-            base_branch: "main".to_owned(),
-            description: None,
-        }
-        .validate()
-        .expect_err("metadata should reject empty repo url");
-
+            .upsert_project_by_name("project-b", metadata("after"), vec!["shared".to_owned()])
+            .expect_err("conflicting alias should fail");
         assert_eq!(error.code, ErrorCode::InvalidProjectMetadata);
-    }
 
-    #[test]
-    fn derives_repo_urls_from_common_git_remote_shapes() {
-        assert_eq!(
-            derive_repo_url("git@github.com:acme/project-x.git"),
-            "https://github.com/acme/project-x"
-        );
-        assert_eq!(
-            derive_repo_url("ssh://git@gitlab.com/acme/project-x.git"),
-            "https://gitlab.com/acme/project-x"
-        );
-        assert_eq!(
-            derive_repo_url("https://github.com/acme/project-x.git"),
-            "https://github.com/acme/project-x"
-        );
-    }
-
-    #[test]
-    fn reads_origin_remote_from_git_config() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let project_path = directory.path().join("workspace/project-x");
-        fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
-        fs::write(
-            project_path.join(".git/config"),
-            "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/acme/project-x.git\n",
-        )
-        .expect("git config should be written");
-
-        assert_eq!(
-            read_origin_git_url(&project_path),
-            Some("https://github.com/acme/project-x.git".to_owned())
-        );
-    }
-
-    #[test]
-    fn falls_back_to_file_urls_when_origin_remote_is_missing() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("issues")))
-            .expect("repository should resolve");
-        let project_path = directory.path().join("workspace/project-x");
-        fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
-        fs::write(project_path.join(".git/config"), "[core]\n\tbare = false\n")
-            .expect("git config should be written");
-
-        let record = repository
-            .ensure_project(&ProjectInfo {
-                canonical_name: "project-x".to_owned(),
-                path: project_path.clone(),
-                aliases: vec![],
-            })
-            .expect("project should initialize");
-
-        let expected_file_url = format!("file://{}", path_to_string(&project_path));
-        assert_eq!(record.metadata.repo_url, expected_file_url);
-        assert_eq!(record.metadata.git_url, expected_file_url);
+        let project_b = repository
+            .get_project_by_name("project-b")
+            .expect("project b should still load");
+        assert!(project_b.aliases.is_empty());
+        assert_eq!(project_b.metadata.description.as_deref(), Some("before"));
     }
 }

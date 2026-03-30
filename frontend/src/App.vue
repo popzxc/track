@@ -13,6 +13,7 @@ import {
   discardDispatch,
   dispatchTask,
   fetchDispatches,
+  fetchMigrationStatus,
   fetchProjects,
   followUpReview,
   fetchReviewRuns,
@@ -23,6 +24,7 @@ import {
   fetchTaskChangeVersion,
   fetchTasks,
   followUpTask,
+  importLegacyData,
   resetRemoteAgentWorkspace,
   updateProject,
   updateRemoteAgentSettings,
@@ -56,6 +58,8 @@ import {
 } from './features/tasks/description'
 import type {
   CreateReviewInput,
+  MigrationImportSummary,
+  MigrationStatus,
   ProjectInfo,
   ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
@@ -141,6 +145,9 @@ const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
 const resetPendingConfirmation = ref(false)
 const resettingRemoteWorkspace = ref(false)
 const resetSummary = ref<RemoteResetSummary | null>(null)
+const migrationStatus = ref<MigrationStatus | null>(null)
+const migrationImportSummary = ref<MigrationImportSummary | null>(null)
+const migrationImportPending = ref(false)
 
 let taskChangePollTimer: number | null = null
 let taskChangePollInFlight = false
@@ -166,7 +173,7 @@ const runnerSetupReady = computed(() =>
 const availableProjects = computed(() => mergeProjects(projects.value, taskProjectOptions.value))
 const reviewRequestDisabledReason = computed(() => {
   if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
-    return 'Remote dispatch is not configured yet. Re-run `track` locally and add a remote agent host plus SSH key.'
+    return 'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/id_ed25519` locally first.'
   }
 
   if (remoteAgentSettings.value && !runnerSetupReady.value) {
@@ -180,6 +187,7 @@ const reviewRequestDisabledReason = computed(() => {
   return undefined
 })
 const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
+const migrationRequired = computed(() => Boolean(migrationStatus.value?.requiresMigration))
 
 // =============================================================================
 // Task Grouping
@@ -404,6 +412,10 @@ function openExternal(url: string) {
   window.open(url, '_blank', 'noreferrer')
 }
 
+function migrationCleanupCommand(path: string) {
+  return path.endsWith('.json') ? `rm -f ${path}` : `rm -rf ${path}`
+}
+
 function setFriendlyError(error: unknown) {
   if (error instanceof ApiClientError) {
     errorMessage.value = error.message
@@ -576,6 +588,10 @@ async function loadProjects() {
   projects.value = await fetchProjects()
 }
 
+async function loadMigrationGate() {
+  migrationStatus.value = await fetchMigrationStatus()
+}
+
 async function loadRemoteAgentSettings() {
   remoteAgentSettings.value = await fetchRemoteAgentSettings()
 }
@@ -588,9 +604,13 @@ async function loadTasks() {
 
   taskProjectOptions.value = tasks.value.map((task) => ({
     canonicalName: task.project,
-    path: '',
     aliases: [],
-    metadata: undefined,
+    metadata: {
+      repoUrl: '',
+      gitUrl: '',
+      baseBranch: 'main',
+      description: undefined,
+    },
   }))
 }
 
@@ -663,6 +683,18 @@ async function syncTaskChangeVersion() {
   taskChangeVersion.value = await fetchTaskChangeVersion()
 }
 
+function resetAppDataForMigration() {
+  tasks.value = []
+  reviews.value = []
+  projects.value = []
+  taskProjectOptions.value = []
+  runs.value = []
+  latestTaskDispatchesByTaskId.value = {}
+  selectedTaskRuns.value = []
+  selectedReviewRuns.value = []
+  remoteAgentSettings.value = null
+}
+
 async function refreshAll() {
   errorMessage.value = ''
   refreshing.value = true
@@ -691,8 +723,18 @@ async function refreshAll() {
         // run history is temporarily unavailable.
       }),
     ])
+    migrationStatus.value = null
   } catch (error) {
-    setFriendlyError(error)
+    if (error instanceof ApiClientError && error.code === 'MIGRATION_REQUIRED') {
+      try {
+        await loadMigrationGate()
+        resetAppDataForMigration()
+      } catch (migrationError) {
+        setFriendlyError(migrationError)
+      }
+    } else {
+      setFriendlyError(error)
+    }
   } finally {
     loading.value = false
     refreshing.value = false
@@ -851,6 +893,21 @@ async function confirmRemoteReset() {
   }
 }
 
+async function importLegacyTrackerData() {
+  migrationImportPending.value = true
+  errorMessage.value = ''
+
+  try {
+    migrationImportSummary.value = await importLegacyData()
+    migrationStatus.value = null
+    await refreshAll()
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    migrationImportPending.value = false
+  }
+}
+
 async function confirmDelete() {
   if (!taskPendingDeletion.value) {
     return
@@ -910,7 +967,7 @@ async function startRemoteRun(task: Task) {
 
   if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
     errorMessage.value =
-      'Remote dispatch is not configured yet. Re-run `track` locally and add a remote agent host plus SSH key.'
+      'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/id_ed25519` locally first.'
     currentPage.value = 'settings'
     return
   }
@@ -1514,7 +1571,98 @@ onBeforeUnmount(() => {
           </div>
 
           <template v-else>
-            <section v-if="currentPage === 'tasks'" class="space-y-4">
+            <section v-if="migrationImportSummary" class="space-y-4">
+              <div class="border border-green/25 bg-green/8 p-4 text-sm leading-7 text-green shadow-panel">
+                Imported {{ migrationImportSummary.importedTasks }} tasks, {{ migrationImportSummary.importedProjects }} projects, and {{ migrationImportSummary.importedReviews }} reviews into the SQLite backend.
+              </div>
+
+              <div
+                v-if="migrationImportSummary.cleanupCandidates.length > 0"
+                class="border border-fg2/15 bg-bg1/95 p-4 shadow-panel"
+              >
+                <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Optional legacy cleanup
+                </p>
+                <p class="mt-3 text-sm leading-7 text-fg2">
+                  After you confirm the imported data looks correct, run these commands on the host. Start with <code class="font-mono text-fg1">track configure</code> so the CLI materializes <code class="font-mono text-fg1">~/.config/track/cli.json</code>, then reinstall <code class="font-mono text-fg1">cargo-airbender</code> from your <code class="font-mono text-fg1">airbender-platform</code> checkout.
+                </p>
+                <div class="mt-4 overflow-x-auto border border-fg2/10 bg-bg0/60 px-4 py-4 font-mono text-xs leading-7 text-fg1">
+                  <p>track configure</p>
+                  <p>cargo install --path crates/cargo-airbender --force</p>
+                  <p
+                    v-for="candidate in migrationImportSummary.cleanupCandidates"
+                    :key="candidate.path"
+                  >
+                    {{ migrationCleanupCommand(candidate.path) }}
+                  </p>
+                </div>
+                <p class="mt-3 text-sm leading-7 text-fg3">
+                  Keep <code class="font-mono text-fg1">~/.track/models</code> if you use local capture.
+                </p>
+              </div>
+            </section>
+
+            <section v-if="migrationRequired && migrationStatus" class="space-y-4">
+              <div class="border border-yellow/25 bg-yellow/8 p-5 shadow-panel">
+                <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-yellow">
+                  Migration required
+                </p>
+                <h1 class="mt-3 font-display text-3xl text-fg0 sm:text-4xl">
+                  Import legacy track data before using the app
+                </h1>
+                <p class="mt-4 max-w-3xl text-sm leading-7 text-fg2">
+                  This backend uses SQLite-backed state. Legacy Markdown and JSON data were detected, so normal API routes stay gated until that data is imported.
+                </p>
+
+                <div class="mt-6 grid gap-4 md:grid-cols-3">
+                  <div class="border border-fg2/15 bg-bg0/60 p-4">
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">Projects</p>
+                    <p class="mt-2 text-2xl text-fg0">{{ migrationStatus.summary.projectsFound }}</p>
+                  </div>
+                  <div class="border border-fg2/15 bg-bg0/60 p-4">
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">Tasks</p>
+                    <p class="mt-2 text-2xl text-fg0">{{ migrationStatus.summary.tasksFound }}</p>
+                  </div>
+                  <div class="border border-fg2/15 bg-bg0/60 p-4">
+                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">Reviews</p>
+                    <p class="mt-2 text-2xl text-fg0">{{ migrationStatus.summary.reviewsFound }}</p>
+                  </div>
+                </div>
+
+                <div class="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    class="border border-aqua/35 bg-aqua/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="migrationImportPending || !migrationStatus.canImport"
+                    @click="importLegacyTrackerData"
+                  >
+                    {{ migrationImportPending ? 'Importing...' : 'Import legacy data' }}
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="migrationStatus.skippedRecords.length > 0"
+                class="border border-fg2/15 bg-bg1/95 p-4 shadow-panel"
+              >
+                <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Skipped legacy records
+                </p>
+                <ul class="mt-4 space-y-3 text-sm leading-6 text-fg2">
+                  <li
+                    v-for="record in migrationStatus.skippedRecords.slice(0, 5)"
+                    :key="`${record.kind}:${record.path}`"
+                    class="border border-fg2/10 bg-bg0/50 px-3 py-3"
+                  >
+                    <p class="font-semibold text-fg1">{{ record.kind }}</p>
+                    <p class="mt-1 break-all">{{ record.path }}</p>
+                    <p class="mt-2 text-fg3">{{ record.error }}</p>
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <section v-else-if="currentPage === 'tasks'" class="space-y-4">
               <div class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel">
                 <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                   <div>
@@ -2050,7 +2198,7 @@ onBeforeUnmount(() => {
                       No projects yet.
                     </p>
                     <p class="mt-3 text-sm leading-6 text-fg2">
-                      Projects appear after the CLI or web UI creates tasks under the track data directory.
+                      Projects appear after the CLI registers them with the backend.
                     </p>
                   </div>
 
@@ -2067,7 +2215,7 @@ onBeforeUnmount(() => {
                         {{ project.canonicalName }}
                       </p>
                       <p class="mt-2 text-xs tracking-[0.08em] text-fg3">
-                        {{ project.path || 'Tracked only in the data directory' }}
+                        {{ project.metadata?.repoUrl || 'Repository metadata is available through the backend only.' }}
                       </p>
                     </button>
                   </div>
@@ -2082,7 +2230,7 @@ onBeforeUnmount(() => {
                             {{ selectedProjectDetails.canonicalName }}
                           </h2>
                           <p class="mt-3 break-all text-sm leading-7 text-fg2">
-                            {{ selectedProjectDetails.path || 'Tracked through local task data only.' }}
+                            {{ selectedProjectDetails.metadata?.repoUrl || 'No repository URL has been saved yet.' }}
                           </p>
                         </div>
 

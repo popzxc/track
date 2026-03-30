@@ -90,8 +90,9 @@ function submit() {
             v-if="!settings?.configured"
             class="border border-red/25 bg-red/8 px-4 py-3 text-sm leading-6 text-red"
           >
-            Remote dispatch itself is not configured yet. Re-run <code>track</code> locally and
-            add the remote host, SSH user, and key first.
+            Remote dispatch itself is not configured yet. Run
+            <code>track remote-agent configure --host &lt;host&gt; --user &lt;user&gt; --identity-file ~/.ssh/id_ed25519</code>
+            locally first.
           </p>
 
           <label class="block text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">

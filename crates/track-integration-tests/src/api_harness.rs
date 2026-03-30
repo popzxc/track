@@ -11,8 +11,9 @@ use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
 use track_api::{build_app, AppState};
-use track_core::config::{ApiConfigFile, ConfigService, LlamaCppConfigFile, TrackConfigFile};
+use track_core::backend_config::RemoteAgentConfigService;
 use track_core::dispatch_repository::DispatchRepository;
+use track_core::migration_service::MigrationService;
 use track_core::project_repository::{ProjectMetadata, ProjectRepository};
 use track_core::review_dispatch_repository::ReviewDispatchRepository;
 use track_core::review_repository::ReviewRepository;
@@ -33,24 +34,46 @@ use crate::fixture::RemoteFixture;
 // precisely while still exercising the production router and background work.
 pub struct ApiHarness {
     app: axum::Router,
+    dispatch_repository: Arc<DispatchRepository>,
     project_repository: Arc<ProjectRepository>,
+    review_dispatch_repository: Arc<ReviewDispatchRepository>,
+    review_repository: Arc<ReviewRepository>,
     task_repository: Arc<FileTaskRepository>,
-    dispatches_dir: PathBuf,
-    review_dispatches_dir: PathBuf,
-    reviews_dir: PathBuf,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
+    _track_legacy_config_guard: ScopedEnvVar,
+    _track_legacy_root_guard: ScopedEnvVar,
+    _track_state_dir_guard: ScopedEnvVar,
 }
 
 impl ApiHarness {
     pub fn new(fixture: &RemoteFixture) -> Self {
         let state_dir = TempDir::new().expect("local state tempdir should be created");
         let static_root = create_static_root(&state_dir);
-        let issues_dir = state_dir.path().join("track-root/issues");
-        let config_path = state_dir.path().join("config/config.json");
+        let track_root = state_dir.path().join("track-root");
+        let issues_dir = track_root.join("issues");
 
         let track_data_dir_guard =
             ScopedEnvVar::set("TRACK_DATA_DIR", issues_dir.to_string_lossy().into_owned());
+        let track_state_dir_guard =
+            ScopedEnvVar::set("TRACK_STATE_DIR", track_root.to_string_lossy().into_owned());
+        let track_legacy_root_guard = ScopedEnvVar::set(
+            "TRACK_LEGACY_ROOT",
+            state_dir
+                .path()
+                .join("legacy-root")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let track_legacy_config_guard = ScopedEnvVar::set(
+            "TRACK_LEGACY_CONFIG_PATH",
+            state_dir
+                .path()
+                .join("legacy-config/config.json")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let database_path = track_root.join("track.sqlite");
 
         let managed_remote_agent_dir = issues_dir
             .parent()
@@ -66,53 +89,50 @@ impl ApiHarness {
         set_private_key_permissions(&managed_remote_agent_dir.join("id_ed25519"));
 
         let config_service =
-            Arc::new(ConfigService::new(Some(config_path)).expect("config service should resolve"));
+            Arc::new(RemoteAgentConfigService::new(None).expect("config service should resolve"));
         config_service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec![],
-                project_aliases: Default::default(),
-                api: ApiConfigFile::default(),
-                llama_cpp: LlamaCppConfigFile::default(),
-                remote_agent: Some(fixture.remote_agent_config()),
-            })
+            .save_remote_agent_config(Some(&fixture.remote_agent_config()))
             .expect("remote-agent config should save");
 
         let task_repository = Arc::new(
-            FileTaskRepository::new(Some(issues_dir.clone()))
+            FileTaskRepository::new(Some(database_path.clone()))
                 .expect("task repository should resolve"),
         );
         let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(issues_dir.join(".dispatches")))
+            DispatchRepository::new(Some(database_path.clone()))
                 .expect("dispatch repository should resolve"),
         );
         let project_repository = Arc::new(
-            ProjectRepository::new(Some(issues_dir.clone()))
+            ProjectRepository::new(Some(database_path.clone()))
                 .expect("project repository should resolve"),
+        );
+        let review_dispatch_repository = Arc::new(
+            ReviewDispatchRepository::new(Some(database_path.clone()))
+                .expect("review dispatch repository should resolve"),
+        );
+        let review_repository = Arc::new(
+            ReviewRepository::new(Some(database_path)).expect("review repository should resolve"),
+        );
+        let migration_service = Arc::new(
+            MigrationService::new(
+                (*config_service).clone(),
+                (*project_repository).clone(),
+                (*task_repository).clone(),
+                (*dispatch_repository).clone(),
+                (*review_repository).clone(),
+                (*review_dispatch_repository).clone(),
+            )
+            .expect("migration service should resolve"),
         );
 
         let app = build_app(
             AppState {
                 config_service,
-                dispatch_repository,
+                dispatch_repository: dispatch_repository.clone(),
+                migration_service,
                 project_repository: project_repository.clone(),
-                review_dispatch_repository: Arc::new(
-                    ReviewDispatchRepository::new(Some(
-                        issues_dir
-                            .parent()
-                            .expect("issues dir parent")
-                            .join("reviews/.dispatches"),
-                    ))
-                    .expect("review dispatch repository should resolve"),
-                ),
-                review_repository: Arc::new(
-                    ReviewRepository::new(Some(
-                        issues_dir
-                            .parent()
-                            .expect("issues dir parent")
-                            .join("reviews"),
-                    ))
-                    .expect("review repository should resolve"),
-                ),
+                review_dispatch_repository: review_dispatch_repository.clone(),
+                review_repository: review_repository.clone(),
                 task_repository: task_repository.clone(),
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -121,19 +141,16 @@ impl ApiHarness {
 
         Self {
             app,
+            dispatch_repository,
             project_repository,
+            review_dispatch_repository,
+            review_repository,
             task_repository,
-            dispatches_dir: issues_dir.join(".dispatches"),
-            review_dispatches_dir: issues_dir
-                .parent()
-                .expect("issues directory should have a parent")
-                .join("reviews/.dispatches"),
-            reviews_dir: issues_dir
-                .parent()
-                .expect("issues directory should have a parent")
-                .join("reviews"),
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
+            _track_legacy_config_guard: track_legacy_config_guard,
+            _track_legacy_root_guard: track_legacy_root_guard,
+            _track_state_dir_guard: track_state_dir_guard,
         }
     }
 
@@ -143,6 +160,10 @@ impl ApiHarness {
         project_metadata: ProjectMetadata,
         task_description: &str,
     ) -> Task {
+        self.project_repository
+            .upsert_project_by_name(project_name, project_metadata, Vec::new())
+            .expect("project metadata should save");
+
         let task = self
             .task_repository
             .create_task(TaskCreateInput {
@@ -153,12 +174,6 @@ impl ApiHarness {
             })
             .expect("task should be created")
             .task;
-
-        // Project metadata lives alongside the project's task directories, so
-        // we create the first task before attempting to persist PROJECT.md.
-        self.project_repository
-            .update_project_by_name(project_name, project_metadata)
-            .expect("project metadata should update");
 
         task
     }
@@ -214,15 +229,21 @@ impl ApiHarness {
     }
 
     pub fn dispatch_history_exists(&self, task_id: &str) -> bool {
-        self.dispatches_dir.join(task_id).exists()
+        self.dispatch_repository
+            .latest_dispatch_for_task(task_id)
+            .expect("dispatch history lookup should succeed")
+            .is_some()
     }
 
     pub fn review_history_exists(&self, review_id: &str) -> bool {
-        self.review_dispatches_dir.join(review_id).exists()
+        self.review_dispatch_repository
+            .latest_dispatch_for_review(review_id)
+            .expect("review history lookup should succeed")
+            .is_some()
     }
 
     pub fn review_record_exists(&self, review_id: &str) -> bool {
-        self.reviews_dir.join(format!("{review_id}.json")).exists()
+        self.review_repository.get_review(review_id).is_ok()
     }
 
     pub async fn create_review(

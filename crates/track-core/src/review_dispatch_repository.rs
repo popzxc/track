@@ -1,24 +1,24 @@
-use std::fs;
 use std::path::PathBuf;
 
+use sqlx::Row;
+
+use crate::database::DatabaseContext;
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
-use crate::paths::{get_review_dispatches_dir, path_to_string};
-use crate::time_utils::now_utc;
+use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
 use crate::types::{DispatchStatus, ReviewRecord, ReviewRunRecord};
 
+#[derive(Debug, Clone)]
 pub struct ReviewDispatchRepository {
-    dispatches_dir: PathBuf,
+    database: DatabaseContext,
 }
 
 impl ReviewDispatchRepository {
-    pub fn new(dispatches_dir: Option<PathBuf>) -> Result<Self, TrackError> {
-        Ok(Self {
-            dispatches_dir: match dispatches_dir {
-                Some(dispatches_dir) => dispatches_dir,
-                None => get_review_dispatches_dir()?,
-            },
-        })
+    pub fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+        let database = DatabaseContext::new(database_path)?;
+        database.initialize()?;
+
+        Ok(Self { database })
     }
 
     pub fn create_dispatch(
@@ -55,52 +55,86 @@ impl ReviewDispatchRepository {
     }
 
     pub fn save_dispatch(&self, record: &ReviewRunRecord) -> Result<(), TrackError> {
-        let review_dispatch_directory = self.dispatch_directory_for_review(&record.review_id)?;
-        fs::create_dir_all(&review_dispatch_directory).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not create the review dispatch directory at {}: {error}",
-                    path_to_string(&review_dispatch_directory)
-                ),
-            )
-        })?;
+        let record = record.clone();
+        validate_single_normal_path_component(
+            &record.review_id,
+            "Review id",
+            ErrorCode::InvalidPathComponent,
+        )?;
+        validate_single_normal_path_component(
+            &record.dispatch_id,
+            "Dispatch id",
+            ErrorCode::InvalidPathComponent,
+        )?;
 
-        let serialized = serde_json::to_string_pretty(record).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!("Could not serialize the review run record: {error}"),
-            )
-        })?;
-        let dispatch_record_path =
-            self.dispatch_record_path(&record.review_id, &record.dispatch_id)?;
-        let temp_record_path = review_dispatch_directory.join(format!(
-            ".{}.tmp-{}",
-            record.dispatch_id,
-            now_utc().unix_timestamp_nanos(),
-        ));
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                sqlx::query(
+                    r#"
+                    INSERT INTO review_runs (
+                        dispatch_id, review_id, pull_request_url, repository_full_name,
+                        workspace_key, status, created_at, updated_at, finished_at,
+                        remote_host, branch_name, worktree_path, follow_up_request,
+                        target_head_oid, summary, review_submitted, github_review_id,
+                        github_review_url, notes, error_message
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                    ON CONFLICT(dispatch_id) DO UPDATE SET
+                        review_id = excluded.review_id,
+                        pull_request_url = excluded.pull_request_url,
+                        repository_full_name = excluded.repository_full_name,
+                        workspace_key = excluded.workspace_key,
+                        status = excluded.status,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at,
+                        finished_at = excluded.finished_at,
+                        remote_host = excluded.remote_host,
+                        branch_name = excluded.branch_name,
+                        worktree_path = excluded.worktree_path,
+                        follow_up_request = excluded.follow_up_request,
+                        target_head_oid = excluded.target_head_oid,
+                        summary = excluded.summary,
+                        review_submitted = excluded.review_submitted,
+                        github_review_id = excluded.github_review_id,
+                        github_review_url = excluded.github_review_url,
+                        notes = excluded.notes,
+                        error_message = excluded.error_message
+                    "#,
+                )
+                .bind(&record.dispatch_id)
+                .bind(&record.review_id)
+                .bind(&record.pull_request_url)
+                .bind(&record.repository_full_name)
+                .bind(&record.workspace_key)
+                .bind(record.status.as_str())
+                .bind(format_iso_8601_millis(record.created_at))
+                .bind(format_iso_8601_millis(record.updated_at))
+                .bind(record.finished_at.map(format_iso_8601_millis))
+                .bind(&record.remote_host)
+                .bind(record.branch_name.as_deref())
+                .bind(record.worktree_path.as_deref())
+                .bind(record.follow_up_request.as_deref())
+                .bind(record.target_head_oid.as_deref())
+                .bind(record.summary.as_deref())
+                .bind(record.review_submitted as i64)
+                .bind(record.github_review_id.as_deref())
+                .bind(record.github_review_url.as_deref())
+                .bind(record.notes.as_deref())
+                .bind(record.error_message.as_deref())
+                .execute(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::DispatchWriteFailed,
+                        format!(
+                            "Could not save the review run record for review {}: {error}",
+                            record.review_id
+                        ),
+                    )
+                })?;
 
-        // Write review-run snapshots through a temporary file and then rename
-        // into place so readers never observe a partially rewritten JSON file
-        // while the web UI is polling active review history.
-        fs::write(&temp_record_path, format!("{serialized}\n")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not write the temporary review run record for review {}: {error}",
-                    record.review_id
-                ),
-            )
-        })?;
-        fs::rename(&temp_record_path, dispatch_record_path).map_err(|error| {
-            let _ = fs::remove_file(&temp_record_path);
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not finalize the review run record for review {}: {error}",
-                    record.review_id
-                ),
-            )
+                Ok(())
+            })
         })
     }
 
@@ -115,214 +149,104 @@ impl ReviewDispatchRepository {
         &self,
         review_id: &str,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let review_dispatch_directory = self.dispatch_directory_for_review(review_id)?;
-        if !review_dispatch_directory.exists() {
-            return Ok(Vec::new());
-        }
+        let review_id = validate_single_normal_path_component(
+            review_id,
+            "Review id",
+            ErrorCode::InvalidPathComponent,
+        )?;
 
-        let entries = fs::read_dir(&review_dispatch_directory).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not read the review dispatch directory at {}: {error}",
-                    path_to_string(&review_dispatch_directory)
-                ),
-            )
-        })?;
-
-        let mut records = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                TrackError::new(
-                    ErrorCode::DispatchWriteFailed,
-                    format!(
-                        "Could not read a review dispatch entry under {}: {error}",
-                        path_to_string(&review_dispatch_directory)
-                    ),
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT *
+                    FROM review_runs
+                    WHERE review_id = ?1
+                    ORDER BY created_at DESC
+                    "#,
                 )
-            })?;
+                .bind(&review_id)
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::DispatchWriteFailed,
+                        format!("Could not load review runs for {review_id}: {error}"),
+                    )
+                })?;
 
-            if !entry.path().is_file()
-                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
-            {
-                continue;
-            }
-
-            match self.read_dispatch_record_path(&entry.path()) {
-                Ok(record) => records.push(record),
-                Err(error) => {
-                    eprintln!(
-                        "Skipping malformed review run record at {}: {}",
-                        path_to_string(&entry.path()),
-                        error
-                    );
-                }
-            }
-        }
-
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        Ok(records)
+                rows.into_iter().map(review_run_from_row).collect()
+            })
+        })
     }
 
     pub fn list_dispatches(
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        if !self.dispatches_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let review_directories = fs::read_dir(&self.dispatches_dir).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not read the review dispatch root at {}: {error}",
-                    path_to_string(&self.dispatches_dir)
-                ),
-            )
-        })?;
-
-        let mut records = Vec::new();
-        for review_directory in review_directories {
-            let review_directory = review_directory.map_err(|error| {
-                TrackError::new(
-                    ErrorCode::DispatchWriteFailed,
-                    format!(
-                        "Could not read a review dispatch directory under {}: {error}",
-                        path_to_string(&self.dispatches_dir)
-                    ),
-                )
-            })?;
-
-            if !review_directory.path().is_dir() {
-                continue;
-            }
-
-            let dispatch_entries = fs::read_dir(review_directory.path()).map_err(|error| {
-                TrackError::new(
-                    ErrorCode::DispatchWriteFailed,
-                    format!(
-                        "Could not read the review dispatch directory at {}: {error}",
-                        path_to_string(&review_directory.path())
-                    ),
-                )
-            })?;
-
-            for dispatch_entry in dispatch_entries {
-                let dispatch_entry = dispatch_entry.map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!(
-                            "Could not read a review run entry under {}: {error}",
-                            path_to_string(&review_directory.path())
-                        ),
+        let limit = limit.map(|value| value as i64);
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let rows = if let Some(limit) = limit {
+                    sqlx::query(
+                        r#"
+                        SELECT *
+                        FROM review_runs
+                        ORDER BY created_at DESC
+                        LIMIT ?1
+                        "#,
                     )
-                })?;
-
-                if !dispatch_entry.path().is_file()
-                    || dispatch_entry
-                        .path()
-                        .extension()
-                        .and_then(|value| value.to_str())
-                        != Some("json")
-                {
-                    continue;
+                    .bind(limit)
+                    .fetch_all(&mut *connection)
+                    .await
+                } else {
+                    sqlx::query(
+                        r#"
+                        SELECT *
+                        FROM review_runs
+                        ORDER BY created_at DESC
+                        "#,
+                    )
+                    .fetch_all(&mut *connection)
+                    .await
                 }
-
-                match self.read_dispatch_record_path(&dispatch_entry.path()) {
-                    Ok(record) => records.push(record),
-                    Err(error) => {
-                        eprintln!(
-                            "Skipping malformed review run record at {}: {}",
-                            path_to_string(&dispatch_entry.path()),
-                            error
-                        );
-                    }
-                }
-            }
-        }
-
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        if let Some(limit) = limit {
-            records.truncate(limit);
-        }
-
-        Ok(records)
-    }
-
-    // =============================================================================
-    // Dispatch History Discovery
-    // =============================================================================
-    //
-    // Global remote cleanup needs the same "which review ids still have local
-    // run history?" scan as task dispatches. Keeping the filesystem traversal
-    // here avoids teaching higher layers what counts as a persisted review
-    // history directory.
-    pub fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
-        if !self.dispatches_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries = fs::read_dir(&self.dispatches_dir).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not read the review dispatch root at {}: {error}",
-                    path_to_string(&self.dispatches_dir)
-                ),
-            )
-        })?;
-
-        let mut review_ids = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                TrackError::new(
-                    ErrorCode::DispatchWriteFailed,
-                    format!(
-                        "Could not read a review dispatch directory under {}: {error}",
-                        path_to_string(&self.dispatches_dir)
-                    ),
-                )
-            })?;
-
-            if !entry
-                .file_type()
                 .map_err(|error| {
                     TrackError::new(
                         ErrorCode::DispatchWriteFailed,
-                        format!(
-                            "Could not inspect a review dispatch history entry under {}: {error}",
-                            path_to_string(&self.dispatches_dir)
-                        ),
+                        format!("Could not list review run records: {error}"),
                     )
-                })?
-                .is_dir()
-            {
-                continue;
-            }
+                })?;
 
-            let review_id = entry.file_name().to_string_lossy().into_owned();
-            let validated_review_id = match validate_single_normal_path_component(
-                &review_id,
-                "Review id",
-                ErrorCode::InvalidPathComponent,
-            ) {
-                Ok(review_id) => review_id,
-                Err(error) => {
-                    eprintln!(
-                        "Skipping invalid review dispatch history directory {}: {}",
-                        path_to_string(&entry.path()),
-                        error
-                    );
-                    continue;
-                }
-            };
+                rows.into_iter().map(review_run_from_row).collect()
+            })
+        })
+    }
 
-            review_ids.push(validated_review_id);
-        }
+    pub fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT DISTINCT review_id
+                    FROM review_runs
+                    ORDER BY review_id ASC
+                    "#,
+                )
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::DispatchWriteFailed,
+                        format!("Could not load review ids with run history: {error}"),
+                    )
+                })?;
 
-        review_ids.sort();
-        Ok(review_ids)
+                Ok(rows
+                    .into_iter()
+                    .map(|row| row.get::<String, _>("review_id"))
+                    .collect())
+            })
+        })
     }
 
     pub fn get_dispatch(
@@ -330,236 +254,134 @@ impl ReviewDispatchRepository {
         review_id: &str,
         dispatch_id: &str,
     ) -> Result<Option<ReviewRunRecord>, TrackError> {
-        let dispatch_record_path = self.dispatch_record_path(review_id, dispatch_id)?;
-        if !dispatch_record_path.exists() {
-            return Ok(None);
-        }
-
-        let record = self.read_dispatch_record_path(&dispatch_record_path)?;
-
-        Ok(Some(record))
-    }
-
-    pub fn delete_dispatch_history_for_review(&self, review_id: &str) -> Result<(), TrackError> {
-        let review_dispatch_directory = self.dispatch_directory_for_review(review_id)?;
-        if !review_dispatch_directory.exists() {
-            return Ok(());
-        }
-
-        fs::remove_dir_all(&review_dispatch_directory).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not remove the review dispatch history at {}: {error}",
-                    path_to_string(&review_dispatch_directory)
-                ),
-            )
-        })
-    }
-
-    fn dispatch_directory_for_review(&self, review_id: &str) -> Result<PathBuf, TrackError> {
         let review_id = validate_single_normal_path_component(
             review_id,
             "Review id",
             ErrorCode::InvalidPathComponent,
         )?;
-
-        Ok(self.dispatches_dir.join(review_id))
-    }
-
-    fn dispatch_record_path(
-        &self,
-        review_id: &str,
-        dispatch_id: &str,
-    ) -> Result<PathBuf, TrackError> {
         let dispatch_id = validate_single_normal_path_component(
             dispatch_id,
             "Dispatch id",
             ErrorCode::InvalidPathComponent,
         )?;
 
-        Ok(self
-            .dispatch_directory_for_review(review_id)?
-            .join(format!("{dispatch_id}.json")))
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                let row = sqlx::query(
+                    r#"
+                    SELECT *
+                    FROM review_runs
+                    WHERE review_id = ?1 AND dispatch_id = ?2
+                    "#,
+                )
+                .bind(&review_id)
+                .bind(&dispatch_id)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(|error| {
+                    TrackError::new(
+                        ErrorCode::DispatchWriteFailed,
+                        format!(
+                            "Could not load the review run {dispatch_id} for review {review_id}: {error}"
+                        ),
+                    )
+                })?;
+
+                row.map(review_run_from_row).transpose()
+            })
+        })
     }
 
-    fn read_dispatch_record_path(&self, path: &PathBuf) -> Result<ReviewRunRecord, TrackError> {
-        let raw_record = fs::read_to_string(path).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not read the review run record at {}: {error}",
-                    path_to_string(path)
-                ),
-            )
-        })?;
+    pub fn delete_dispatch_history_for_review(&self, review_id: &str) -> Result<(), TrackError> {
+        let review_id = validate_single_normal_path_component(
+            review_id,
+            "Review id",
+            ErrorCode::InvalidPathComponent,
+        )?;
 
-        serde_json::from_str::<ReviewRunRecord>(&raw_record).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Review run record at {} is not valid JSON: {error}",
-                    path_to_string(path)
-                ),
-            )
+        self.database.run(move |connection| {
+            Box::pin(async move {
+                sqlx::query("DELETE FROM review_runs WHERE review_id = ?1")
+                    .bind(&review_id)
+                    .execute(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!(
+                                "Could not remove the review dispatch history for {review_id}: {error}"
+                            ),
+                        )
+                    })?;
+
+                Ok(())
+            })
         })
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::fs;
+fn review_run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRunRecord, TrackError> {
+    let dispatch_id = row.get::<String, _>("dispatch_id");
+    let created_at =
+        parse_iso_8601_millis(&row.get::<String, _>("created_at")).map_err(|error| {
+            TrackError::new(
+                ErrorCode::DispatchWriteFailed,
+                format!("Review run {dispatch_id} has an invalid created_at timestamp: {error}"),
+            )
+        })?;
+    let updated_at =
+        parse_iso_8601_millis(&row.get::<String, _>("updated_at")).map_err(|error| {
+            TrackError::new(
+                ErrorCode::DispatchWriteFailed,
+                format!("Review run {dispatch_id} has an invalid updated_at timestamp: {error}"),
+            )
+        })?;
+    let finished_at = row
+        .get::<Option<String>, _>("finished_at")
+        .map(|value| parse_iso_8601_millis(&value))
+        .transpose()
+        .map_err(|error| {
+            TrackError::new(
+                ErrorCode::DispatchWriteFailed,
+                format!("Review run {dispatch_id} has an invalid finished_at timestamp: {error}"),
+            )
+        })?;
 
-    use tempfile::TempDir;
+    Ok(ReviewRunRecord {
+        dispatch_id,
+        review_id: row.get::<String, _>("review_id"),
+        pull_request_url: row.get::<String, _>("pull_request_url"),
+        repository_full_name: row.get::<String, _>("repository_full_name"),
+        workspace_key: row.get::<String, _>("workspace_key"),
+        status: parse_dispatch_status(row.get::<String, _>("status").as_str())?,
+        created_at,
+        updated_at,
+        finished_at,
+        remote_host: row.get::<String, _>("remote_host"),
+        branch_name: row.get::<Option<String>, _>("branch_name"),
+        worktree_path: row.get::<Option<String>, _>("worktree_path"),
+        follow_up_request: row.get::<Option<String>, _>("follow_up_request"),
+        target_head_oid: row.get::<Option<String>, _>("target_head_oid"),
+        summary: row.get::<Option<String>, _>("summary"),
+        review_submitted: row.get::<i64, _>("review_submitted") != 0,
+        github_review_id: row.get::<Option<String>, _>("github_review_id"),
+        github_review_url: row.get::<Option<String>, _>("github_review_url"),
+        notes: row.get::<Option<String>, _>("notes"),
+        error_message: row.get::<Option<String>, _>("error_message"),
+    })
+}
 
-    use super::ReviewDispatchRepository;
-    use crate::time_utils::now_utc;
-    use crate::types::{DispatchStatus, ReviewRecord, ReviewRunRecord};
-
-    fn sample_review() -> ReviewRecord {
-        let created_at = now_utc();
-        ReviewRecord {
-            id: "20260326-120000-review-pr-42".to_owned(),
-            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
-            pull_request_number: 42,
-            pull_request_title: "Fix queue layout".to_owned(),
-            repository_full_name: "acme/project-a".to_owned(),
-            repo_url: "https://github.com/acme/project-a".to_owned(),
-            git_url: "git@github.com:acme/project-a.git".to_owned(),
-            base_branch: "main".to_owned(),
-            workspace_key: "project-a".to_owned(),
-            project: Some("project-a".to_owned()),
-            main_user: "octocat".to_owned(),
-            default_review_prompt: Some("Look for risky behavior changes.".to_owned()),
-            extra_instructions: Some("Pay attention to queue rendering.".to_owned()),
-            created_at,
-            updated_at: created_at,
-        }
-    }
-
-    fn sample_review_run(review: &ReviewRecord, dispatch_id: &str) -> ReviewRunRecord {
-        let created_at = now_utc();
-        ReviewRunRecord {
-            dispatch_id: dispatch_id.to_owned(),
-            review_id: review.id.clone(),
-            pull_request_url: review.pull_request_url.clone(),
-            repository_full_name: review.repository_full_name.clone(),
-            workspace_key: review.workspace_key.clone(),
-            status: DispatchStatus::Succeeded,
-            created_at,
-            updated_at: created_at,
-            finished_at: Some(created_at),
-            remote_host: "127.0.0.1".to_owned(),
-            branch_name: Some(format!("track-review/{dispatch_id}")),
-            worktree_path: Some(format!(
-                "~/workspace/{}/review-worktrees/{dispatch_id}",
-                review.workspace_key
-            )),
-            follow_up_request: None,
-            target_head_oid: Some("abc123def456".to_owned()),
-            summary: Some("Submitted a GitHub review.".to_owned()),
-            review_submitted: true,
-            github_review_id: Some("1001".to_owned()),
-            github_review_url: Some(
-                "https://github.com/acme/project-a/pull/42#pullrequestreview-1001".to_owned(),
-            ),
-            notes: None,
-            error_message: None,
-        }
-    }
-
-    #[test]
-    fn skips_malformed_review_run_records_in_review_history() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let dispatches_dir = directory.path().join("reviews/.dispatches");
-        let repository =
-            ReviewDispatchRepository::new(Some(dispatches_dir.clone())).expect("repository");
-        let review = sample_review();
-        let run = sample_review_run(&review, "dispatch-1");
-        repository
-            .save_dispatch(&run)
-            .expect("healthy review run should save");
-        let broken_path = dispatches_dir.join(&review.id).join("broken-run.json");
-        fs::create_dir_all(
-            broken_path
-                .parent()
-                .expect("broken path should have a parent"),
-        )
-        .expect("review dispatch directory should exist");
-        fs::write(&broken_path, "{not valid json").expect("broken review run should be written");
-
-        let runs = repository
-            .dispatches_for_review(&review.id)
-            .expect("history should skip malformed review runs");
-
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].dispatch_id, run.dispatch_id);
-    }
-
-    #[test]
-    fn skips_malformed_review_run_records_in_global_listing() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let dispatches_dir = directory.path().join("reviews/.dispatches");
-        let repository =
-            ReviewDispatchRepository::new(Some(dispatches_dir.clone())).expect("repository");
-        let review = sample_review();
-        let run = sample_review_run(&review, "dispatch-1");
-        repository
-            .save_dispatch(&run)
-            .expect("healthy review run should save");
-        let broken_directory = dispatches_dir.join("broken-review");
-        fs::create_dir_all(&broken_directory).expect("broken review dir should exist");
-        fs::write(
-            broken_directory.join("dispatch-bad.json"),
-            "{not valid json",
-        )
-        .expect("broken review run should be written");
-
-        let runs = repository
-            .list_dispatches(None)
-            .expect("global listing should skip malformed review runs");
-
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].dispatch_id, run.dispatch_id);
-    }
-
-    #[test]
-    fn loads_legacy_review_posted_field_for_existing_history() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let dispatches_dir = directory.path().join("reviews/.dispatches");
-        let repository =
-            ReviewDispatchRepository::new(Some(dispatches_dir.clone())).expect("repository");
-        let review = sample_review();
-        let review_directory = dispatches_dir.join(&review.id);
-        fs::create_dir_all(&review_directory).expect("review dispatch dir should exist");
-        fs::write(
-            review_directory.join("dispatch-legacy.json"),
-            serde_json::json!({
-                "dispatchId": "dispatch-legacy",
-                "reviewId": review.id,
-                "pullRequestUrl": review.pull_request_url,
-                "repositoryFullName": review.repository_full_name,
-                "workspaceKey": review.workspace_key,
-                "status": "succeeded",
-                "createdAt": "2026-03-26T12:05:00.000Z",
-                "updatedAt": "2026-03-26T12:06:00.000Z",
-                "finishedAt": "2026-03-26T12:06:00.000Z",
-                "remoteHost": "127.0.0.1",
-                "branchName": "track-review/dispatch-legacy",
-                "worktreePath": "~/workspace/project-a/review-worktrees/dispatch-legacy",
-                "summary": "Legacy review run",
-                "reviewPosted": true,
-                "reviewBody": "@octocat requested me to review this PR."
-            })
-            .to_string(),
-        )
-        .expect("legacy review run should be written");
-
-        let run = repository
-            .get_dispatch(&review.id, "dispatch-legacy")
-            .expect("legacy review run should load")
-            .expect("legacy review run should exist");
-
-        assert!(run.review_submitted);
+fn parse_dispatch_status(value: &str) -> Result<DispatchStatus, TrackError> {
+    match value {
+        "preparing" => Ok(DispatchStatus::Preparing),
+        "running" => Ok(DispatchStatus::Running),
+        "succeeded" => Ok(DispatchStatus::Succeeded),
+        "canceled" => Ok(DispatchStatus::Canceled),
+        "failed" => Ok(DispatchStatus::Failed),
+        "blocked" => Ok(DispatchStatus::Blocked),
+        _ => Err(TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Dispatch status `{value}` is not valid."),
+        )),
     }
 }

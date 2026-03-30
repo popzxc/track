@@ -3,11 +3,15 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::{ErrorCode, TrackError};
 
+pub const DEFAULT_BACKEND_STATE_DIR: &str = "~/.track/backend";
+pub const DEFAULT_CLI_CONFIG_PATH: &str = "~/.config/track/cli.json";
 pub const DEFAULT_CONFIG_PATH: &str = "~/.config/track/config.json";
 pub const DEFAULT_DATA_DIR: &str = "~/.track/issues";
+pub const DEFAULT_LEGACY_ROOT_DIR: &str = "~/.track";
 pub const REVIEW_DIRECTORY_NAME: &str = "reviews";
 pub const REMOTE_AGENT_DIRECTORY_NAME: &str = "remote-agent";
 pub const DISPATCH_DIRECTORY_NAME: &str = ".dispatches";
+pub const DATABASE_FILE_NAME: &str = "track.sqlite";
 
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
@@ -78,9 +82,49 @@ pub fn get_config_path() -> Result<PathBuf, TrackError> {
     )
 }
 
+pub fn get_cli_config_path() -> Result<PathBuf, TrackError> {
+    resolve_path_from_invocation_dir(
+        &env::var("TRACK_CLI_CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CLI_CONFIG_PATH.to_owned()),
+    )
+}
+
 pub fn get_data_dir() -> Result<PathBuf, TrackError> {
     resolve_path_from_invocation_dir(
         &env::var("TRACK_DATA_DIR").unwrap_or_else(|_| DEFAULT_DATA_DIR.to_owned()),
+    )
+}
+
+pub fn get_backend_state_dir() -> Result<PathBuf, TrackError> {
+    resolve_path_from_invocation_dir(
+        &env::var("TRACK_STATE_DIR").unwrap_or_else(|_| DEFAULT_BACKEND_STATE_DIR.to_owned()),
+    )
+}
+
+pub fn get_backend_database_path() -> Result<PathBuf, TrackError> {
+    Ok(get_backend_state_dir()?.join(DATABASE_FILE_NAME))
+}
+
+pub fn get_backend_secrets_dir() -> Result<PathBuf, TrackError> {
+    Ok(get_backend_state_dir()?.join(REMOTE_AGENT_DIRECTORY_NAME))
+}
+
+pub fn get_backend_managed_remote_agent_key_path() -> Result<PathBuf, TrackError> {
+    Ok(get_backend_secrets_dir()?.join("id_ed25519"))
+}
+
+pub fn get_backend_managed_remote_agent_known_hosts_path() -> Result<PathBuf, TrackError> {
+    Ok(get_backend_secrets_dir()?.join("known_hosts"))
+}
+
+pub fn get_legacy_root_dir() -> Result<PathBuf, TrackError> {
+    resolve_path_from_invocation_dir(
+        &env::var("TRACK_LEGACY_ROOT").unwrap_or_else(|_| DEFAULT_LEGACY_ROOT_DIR.to_owned()),
+    )
+}
+
+pub fn get_legacy_config_path() -> Result<PathBuf, TrackError> {
+    resolve_path_from_invocation_dir(
+        &env::var("TRACK_LEGACY_CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_owned()),
     )
 }
 
