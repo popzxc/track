@@ -101,6 +101,63 @@ fn task_dispatch_start_gate() -> &'static TaskDispatchStartGate {
     GATE.get_or_init(TaskDispatchStartGate::default)
 }
 
+#[derive(Debug, Default)]
+struct ReviewDispatchStartGate {
+    active_review_ids: Mutex<BTreeSet<String>>,
+    wake_waiters: Condvar,
+}
+
+#[derive(Debug)]
+struct ReviewDispatchStartGuard {
+    review_id: String,
+}
+
+impl ReviewDispatchStartGuard {
+    fn acquire(review_id: &str) -> Self {
+        let gate = review_dispatch_start_gate();
+        let mut active_review_ids = gate
+            .active_review_ids
+            .lock()
+            .expect("review dispatch start gate should not be poisoned");
+
+        while active_review_ids.contains(review_id) {
+            active_review_ids = gate
+                .wake_waiters
+                .wait(active_review_ids)
+                .expect("review dispatch start gate should not be poisoned");
+        }
+
+        active_review_ids.insert(review_id.to_owned());
+
+        Self {
+            review_id: review_id.to_owned(),
+        }
+    }
+}
+
+impl Drop for ReviewDispatchStartGuard {
+    fn drop(&mut self) {
+        let gate = review_dispatch_start_gate();
+        let mut active_review_ids = gate
+            .active_review_ids
+            .lock()
+            .expect("review dispatch start gate should not be poisoned");
+        active_review_ids.remove(&self.review_id);
+        gate.wake_waiters.notify_all();
+    }
+}
+
+fn review_dispatch_start_gate() -> &'static ReviewDispatchStartGate {
+    static GATE: OnceLock<ReviewDispatchStartGate> = OnceLock::new();
+
+    // Reviews are now follow-up capable, so the same "check for active work,
+    // then persist a preparing record" race that tasks already guard against
+    // applies here too. Keeping a dedicated gate per review id preserves the
+    // review domain boundary without forcing the task flow to share review-only
+    // coordination state.
+    GATE.get_or_init(ReviewDispatchStartGate::default)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RemoteDispatchSnapshot {
     status: Option<String>,
@@ -1734,6 +1791,7 @@ impl<'a> RemoteReviewService<'a> {
         let ssh_client = SshClient::new(&remote_agent)?;
         let pull_request_metadata =
             ssh_client.fetch_pull_request_metadata(&validated_input.pull_request_url)?;
+        let initial_target_head_oid = pull_request_metadata.head_oid.clone();
         let project_match = self
             .project_repository
             .list_projects()?
@@ -1784,10 +1842,64 @@ impl<'a> RemoteReviewService<'a> {
         };
 
         self.review_repository.save_review(&review)?;
-        match self.queue_review_dispatch(&review, &remote_agent) {
+        match self.queue_review_dispatch(
+            &review,
+            &remote_agent,
+            None,
+            Some(initial_target_head_oid.as_str()),
+        ) {
             Ok(dispatch) => Ok((review, dispatch)),
             Err(error) => {
                 let _ = self.review_repository.delete_review(&review.id);
+                Err(error)
+            }
+        }
+    }
+
+    // =============================================================================
+    // Follow-Up Review Runs
+    // =============================================================================
+    //
+    // A re-review should feel like the PR equivalent of a task follow-up: the
+    // saved review record remains the durable anchor, while each new run stores
+    // the latest user ask plus the exact PR head it targeted. We deliberately
+    // fetch fresh PR metadata here so each run records which commit the agent
+    // reviewed instead of assuming the PR stayed on the same head as the
+    // initial request.
+    pub fn queue_follow_up_review_dispatch(
+        &self,
+        review_id: &str,
+        follow_up_request: &str,
+    ) -> Result<ReviewRunRecord, TrackError> {
+        let trimmed_follow_up_request = follow_up_request.trim();
+        if trimmed_follow_up_request.is_empty() {
+            return Err(TrackError::new(
+                ErrorCode::EmptyInput,
+                "Please provide a re-review request for the remote agent.",
+            ));
+        }
+
+        let (remote_agent, mut review) = self.load_review_dispatch_prerequisites(review_id)?;
+        let _dispatch_start_guard = ReviewDispatchStartGuard::acquire(review_id);
+        self.ensure_no_blocking_active_review_dispatch(review_id)?;
+
+        let ssh_client = SshClient::new(&remote_agent)?;
+        let pull_request_metadata =
+            ssh_client.fetch_pull_request_metadata(&review.pull_request_url)?;
+        let previous_updated_at = review.updated_at;
+        review.updated_at = now_utc();
+        self.review_repository.save_review(&review)?;
+
+        match self.queue_review_dispatch(
+            &review,
+            &remote_agent,
+            Some(trimmed_follow_up_request),
+            Some(pull_request_metadata.head_oid.as_str()),
+        ) {
+            Ok(dispatch) => Ok(dispatch),
+            Err(error) => {
+                review.updated_at = previous_updated_at;
+                let _ = self.review_repository.save_review(&review);
                 Err(error)
             }
         }
@@ -1904,9 +2016,18 @@ impl<'a> RemoteReviewService<'a> {
                 review.pull_request_number,
                 &branch_name,
                 &worktree_path,
+                dispatch_record.target_head_oid.as_deref(),
             )?;
 
-            let prompt = build_remote_review_prompt(&review, &branch_name, &worktree_path);
+            let dispatch_history = self
+                .review_dispatch_repository
+                .dispatches_for_review(&review.id)?;
+            let previous_submitted_review = select_previous_submitted_review_run(
+                &dispatch_history,
+                &dispatch_record.dispatch_id,
+            );
+            let prompt =
+                build_remote_review_prompt(&review, &dispatch_record, previous_submitted_review);
             let schema = build_remote_review_schema();
             if !self.save_review_preparing_phase(
                 &mut dispatch_record,
@@ -2058,6 +2179,25 @@ impl<'a> RemoteReviewService<'a> {
         Ok(latest_dispatch)
     }
 
+    fn ensure_no_blocking_active_review_dispatch(&self, review_id: &str) -> Result<(), TrackError> {
+        if let Some(existing_dispatch) = self
+            .latest_dispatches_for_reviews(&[review_id.to_owned()])?
+            .into_iter()
+            .next()
+            .filter(|record| record.status.is_active())
+        {
+            return Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Review {review_id} already has an active remote run ({})",
+                    existing_dispatch.dispatch_id
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn delete_review(&self, review_id: &str) -> Result<(), TrackError> {
         let review = self.review_repository.get_review(review_id)?;
         let dispatch_history = self
@@ -2079,6 +2219,8 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         review: &ReviewRecord,
         remote_agent: &crate::types::RemoteAgentRuntimeConfig,
+        follow_up_request: Option<&str>,
+        target_head_oid: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
         let mut dispatch_record = self
             .review_dispatch_repository
@@ -2091,6 +2233,17 @@ impl<'a> RemoteReviewService<'a> {
             REVIEW_WORKTREE_DIRECTORY_NAME,
             dispatch_record.dispatch_id
         ));
+        dispatch_record.follow_up_request = follow_up_request.map(str::trim).map(ToOwned::to_owned);
+        dispatch_record.target_head_oid = target_head_oid
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if let Some(follow_up_request) = dispatch_record.follow_up_request.as_deref() {
+            dispatch_record.summary = Some(format!(
+                "Re-review request: {}",
+                first_follow_up_line(follow_up_request)
+            ));
+        }
         dispatch_record.updated_at = now_utc();
         self.review_dispatch_repository
             .save_dispatch(&dispatch_record)?;
@@ -2498,26 +2651,23 @@ impl<'a> RemoteReviewService<'a> {
             }))
     }
 
-    fn load_review_runtime_prerequisites(
+    // =============================================================================
+    // Review Runner Prerequisites
+    // =============================================================================
+    //
+    // Saved reviews snapshot the review-specific knobs they need for future
+    // re-reviews, namely the main GitHub user and default prompt. That means
+    // later follow-up runs should only depend on the remote runner itself still
+    // being usable, not on the mutable global review-follow-up block still
+    // existing in the current config.
+    fn load_review_runner_prerequisites(
         &self,
-    ) -> Result<
-        (
-            crate::types::RemoteAgentRuntimeConfig,
-            crate::types::RemoteAgentReviewFollowUpRuntimeConfig,
-        ),
-        TrackError,
-    > {
+    ) -> Result<crate::types::RemoteAgentRuntimeConfig, TrackError> {
         let config = self.config_service.load_runtime_config()?;
         let remote_agent = config.remote_agent.ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 "Remote reviews are not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
-            )
-        })?;
-        let review_settings = remote_agent.review_follow_up.clone().ok_or_else(|| {
-            TrackError::new(
-                ErrorCode::InvalidRemoteAgentConfig,
-                "PR reviews require a configured main GitHub user in the remote runner settings.",
             )
         })?;
 
@@ -2544,6 +2694,26 @@ impl<'a> RemoteReviewService<'a> {
             ));
         }
 
+        Ok(remote_agent)
+    }
+
+    fn load_review_runtime_prerequisites(
+        &self,
+    ) -> Result<
+        (
+            crate::types::RemoteAgentRuntimeConfig,
+            crate::types::RemoteAgentReviewFollowUpRuntimeConfig,
+        ),
+        TrackError,
+    > {
+        let remote_agent = self.load_review_runner_prerequisites()?;
+        let review_settings = remote_agent.review_follow_up.clone().ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::InvalidRemoteAgentConfig,
+                "PR reviews require a configured main GitHub user in the remote runner settings.",
+            )
+        })?;
+
         Ok((remote_agent, review_settings))
     }
 
@@ -2551,7 +2721,7 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         review_id: &str,
     ) -> Result<(crate::types::RemoteAgentRuntimeConfig, ReviewRecord), TrackError> {
-        let (remote_agent, _review_settings) = self.load_review_runtime_prerequisites()?;
+        let remote_agent = self.load_review_runner_prerequisites()?;
         let review = self.review_repository.get_review(review_id)?;
 
         Ok((remote_agent, review))
@@ -2584,6 +2754,17 @@ fn select_follow_up_base_dispatch(
                 && record.worktree_path.is_some()
         })
         .cloned()
+}
+
+fn select_previous_submitted_review_run<'a>(
+    dispatch_history: &'a [ReviewRunRecord],
+    current_dispatch_id: &str,
+) -> Option<&'a ReviewRunRecord> {
+    dispatch_history.iter().find(|record| {
+        record.dispatch_id != current_dispatch_id
+            && record.review_submitted
+            && (record.github_review_url.is_some() || record.github_review_id.is_some())
+    })
 }
 
 fn latest_pull_request_for_branch(
@@ -2790,6 +2971,62 @@ fn derive_review_run_directory_for_record(
     ))
 }
 
+fn build_create_review_worktree_script() -> String {
+    format!(
+        r#"
+set -eu
+{path_helpers}
+CHECKOUT_PATH="$(expand_remote_path "$1")"
+PULL_REQUEST_NUMBER="$2"
+BRANCH_NAME="$3"
+WORKTREE_PATH="$(expand_remote_path "$4")"
+TARGET_HEAD_OID="${{5:-}}"
+
+mkdir -p "$(dirname "$WORKTREE_PATH")"
+
+worktree_is_registered() {{
+  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
+}}
+
+if [ -e "$WORKTREE_PATH" ]; then
+  if worktree_is_registered; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+  else
+    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a review worktree." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" worktree prune >&2
+git -C "$CHECKOUT_PATH" fetch upstream "pull/$PULL_REQUEST_NUMBER/head:$BRANCH_NAME" >&2
+
+# Review runs persist the exact PR head they were queued against. We still
+# refresh the PR ref so the checkout has current GitHub context, but then we
+# pin the local review branch back to the recorded commit when that object is
+# available. If the commit is gone, we fail explicitly instead of silently
+# reviewing a newer PR head than the user requested.
+TARGET_REF="$BRANCH_NAME"
+if [ -n "$TARGET_HEAD_OID" ]; then
+  if ! git -C "$CHECKOUT_PATH" cat-file -e "$TARGET_HEAD_OID^{{commit}}" 2>/dev/null; then
+    git -C "$CHECKOUT_PATH" fetch upstream "$TARGET_HEAD_OID" >&2 || true
+  fi
+
+  if git -C "$CHECKOUT_PATH" cat-file -e "$TARGET_HEAD_OID^{{commit}}" 2>/dev/null; then
+    TARGET_REF="$TARGET_HEAD_OID"
+  else
+    FETCHED_HEAD_OID="$(git -C "$CHECKOUT_PATH" rev-parse "$BRANCH_NAME^{{commit}}")"
+    echo "Requested review commit $TARGET_HEAD_OID is not available locally. The fetched PR head is $FETCHED_HEAD_OID, so the review would drift to a newer commit." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" branch -f "$BRANCH_NAME" "$TARGET_REF" >&2
+git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$TARGET_REF" >&2
+"#,
+        path_helpers = remote_path_helpers_shell(),
+    )
+}
+
 fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord]) -> Vec<String> {
     dispatch_history
         .iter()
@@ -2909,9 +3146,17 @@ fn build_remote_dispatch_prompt(
 
 fn build_remote_review_prompt(
     review: &ReviewRecord,
-    branch_name: &str,
-    worktree_path: &str,
+    dispatch_record: &ReviewRunRecord,
+    previous_submitted_review: Option<&ReviewRunRecord>,
 ) -> String {
+    let branch_name = dispatch_record
+        .branch_name
+        .as_deref()
+        .expect("queued review dispatches should always have a branch name");
+    let worktree_path = dispatch_record
+        .worktree_path
+        .as_deref()
+        .expect("queued review dispatches should always have a worktree path");
     let mut prompt = String::new();
     prompt.push_str("# Remote PR review\n\n");
     prompt.push_str(
@@ -2928,7 +3173,11 @@ fn build_remote_review_prompt(
     prompt.push_str(&format!("- Repo URL: {}\n", review.repo_url));
     prompt.push_str(&format!("- Base branch: {}\n", review.base_branch));
     prompt.push_str(&format!("- Prepared branch: {branch_name}\n"));
-    prompt.push_str(&format!("- Working directory: {worktree_path}\n\n"));
+    prompt.push_str(&format!("- Working directory: {worktree_path}\n"));
+    if let Some(target_head_oid) = dispatch_record.target_head_oid.as_deref() {
+        prompt.push_str(&format!("- Pinned review commit: {target_head_oid}\n"));
+    }
+    prompt.push_str("\n");
     prompt.push_str("## Review instructions\n\n");
     prompt.push_str("- Submit one GitHub review in COMMENT mode.\n");
     prompt.push_str(&format!(
@@ -2941,6 +3190,7 @@ fn build_remote_review_prompt(
         "- Focus on bugs, regressions, risky behavior changes, missing tests, and edge cases.\n",
     );
     prompt.push_str("- Use the checked-out code and `gh` to inspect the PR diff and context instead of guessing.\n");
+    prompt.push_str("- If a pinned review commit is listed above, the prepared worktree is intended to match that exact commit. If it does not, stop and explain the mismatch instead of reviewing a newer head silently.\n");
     prompt.push_str("- Keep the review concise but concrete.\n");
     prompt.push_str(
         "- If you do not find problems, say so explicitly in the top-level review body.\n",
@@ -2948,6 +3198,47 @@ fn build_remote_review_prompt(
     prompt.push_str("- If you cannot complete the review responsibly, explain the blocker in the summary and do not claim the review was submitted.\n");
     prompt.push_str("- Capture the submitted GitHub review's durable handle from the `gh` response and return it as `githubReviewId` and `githubReviewUrl` when submission succeeds.\n");
     prompt.push_str("- Return `reviewSubmitted` as `true` only after GitHub confirms that the review submission succeeded.\n\n");
+
+    if let Some(follow_up_request) = dispatch_record.follow_up_request.as_deref() {
+        prompt.push_str("## Current re-review request\n\n");
+        prompt.push_str(follow_up_request.trim());
+        prompt.push_str("\n\n");
+    }
+
+    if let Some(previous_submitted_review) = previous_submitted_review {
+        prompt.push_str("## Previous bot review context\n\n");
+        if let Some(github_review_url) = previous_submitted_review.github_review_url.as_deref() {
+            prompt.push_str(&format!(
+                "- Previous submitted review: {github_review_url}\n"
+            ));
+        }
+        if let Some(github_review_id) = previous_submitted_review.github_review_id.as_deref() {
+            prompt.push_str(&format!(
+                "- Previous submitted review id: {github_review_id}\n"
+            ));
+        }
+        if let Some(target_head_oid) = previous_submitted_review.target_head_oid.as_deref() {
+            prompt.push_str(&format!(
+                "- Previous review pinned commit: {target_head_oid}\n"
+            ));
+        }
+        prompt.push_str("\n");
+        prompt.push_str("## Re-review guidance\n\n");
+        prompt.push_str("- Inspect the current PR conversation on GitHub before deciding whether an older bot finding still matters.\n");
+        prompt.push_str(&format!(
+            "- For context: your previous comments are always non-blocking input at the discretion of the reviewee unless @{} explicitly commented that a finding is valid and should be fixed.\n",
+            review.main_user
+        ));
+        prompt.push_str(&format!(
+            "- Only treat an older bot finding as something you must actively verify and potentially elevate into a primary finding if @{} explicitly said it is valid and should be fixed.\n",
+            review.main_user
+        ));
+        prompt.push_str(&format!(
+            "- If @{} or the reviewee explicitly said an older bot finding is not important, disputed it, or chose not to address it, do not repeat it as a primary finding just because it appeared in a previous bot review.\n",
+            review.main_user
+        ));
+        prompt.push_str("- You may mention unresolved prior bot comments as brief context in the top-level summary when helpful, but re-evaluate the current code on its own merits.\n\n");
+    }
 
     if let Some(default_review_prompt) = review.default_review_prompt.as_deref() {
         prompt.push_str("## Default review prompt\n\n");
@@ -3931,37 +4222,9 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstrea
         pull_request_number: u64,
         branch_name: &str,
         worktree_path: &str,
+        target_head_oid: Option<&str>,
     ) -> Result<(), TrackError> {
-        let create_review_worktree_script = format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-PULL_REQUEST_NUMBER="$2"
-BRANCH_NAME="$3"
-WORKTREE_PATH="$(expand_remote_path "$4")"
-
-mkdir -p "$(dirname "$WORKTREE_PATH")"
-
-worktree_is_registered() {{
-  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
-}}
-
-if [ -e "$WORKTREE_PATH" ]; then
-  if worktree_is_registered; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-  else
-    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a review worktree." >&2
-    exit 1
-  fi
-fi
-
-git -C "$CHECKOUT_PATH" worktree prune >&2
-git -C "$CHECKOUT_PATH" fetch upstream "pull/$PULL_REQUEST_NUMBER/head:$BRANCH_NAME" >&2
-git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$BRANCH_NAME" >&2
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
+        let create_review_worktree_script = build_create_review_worktree_script();
         self.run_script(
             &create_review_worktree_script,
             &[
@@ -3969,6 +4232,7 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$BRANCH
                 pull_request_number.to_string(),
                 branch_name.to_owned(),
                 worktree_path.to_owned(),
+                target_head_oid.unwrap_or_default().to_owned(),
             ],
         )?;
 
@@ -5021,13 +5285,15 @@ mod tests {
     use time::Duration;
 
     use super::{
-        build_remote_codex_launcher, build_remote_dispatch_prompt, build_remote_dispatch_schema,
-        build_remote_review_prompt, build_remote_review_schema, build_review_follow_up_request,
-        build_review_workspace_key, describe_remote_reset_blockers, latest_pull_request_for_branch,
+        build_create_review_worktree_script, build_remote_codex_launcher,
+        build_remote_dispatch_prompt, build_remote_dispatch_schema, build_remote_review_prompt,
+        build_remote_review_schema, build_review_follow_up_request, build_review_workspace_key,
+        describe_remote_reset_blockers, latest_pull_request_for_branch,
         parse_dispatch_snapshot_report, parse_github_pull_request_reference,
         parse_github_repository_name, refresh_dispatch_record_from_snapshot,
         render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
-        GithubPullRequestMetadata, RemoteDispatchService, RemoteDispatchSnapshot,
+        select_previous_submitted_review_run, GithubPullRequestMetadata, RemoteDispatchService,
+        RemoteDispatchSnapshot, RemoteReviewService,
     };
 
     struct TestContext {
@@ -5086,6 +5352,15 @@ mod tests {
                 dispatch_repository: &self.dispatch_repository,
                 project_repository: &self.project_repository,
                 task_repository: &self.task_repository,
+                review_repository: &self.review_repository,
+                review_dispatch_repository: &self.review_dispatch_repository,
+            }
+        }
+
+        fn review_service(&self) -> RemoteReviewService<'_> {
+            RemoteReviewService {
+                config_service: &self.config_service,
+                project_repository: &self.project_repository,
                 review_repository: &self.review_repository,
                 review_dispatch_repository: &self.review_dispatch_repository,
             }
@@ -5170,6 +5445,8 @@ mod tests {
                     super::REVIEW_WORKTREE_DIRECTORY_NAME,
                     dispatch_id
                 )),
+                follow_up_request: None,
+                target_head_oid: Some("abc123def456".to_owned()),
                 summary: None,
                 review_submitted: false,
                 github_review_id: None,
@@ -5283,24 +5560,99 @@ mod tests {
     }
 
     #[test]
-    fn builds_remote_review_prompt_with_default_and_extra_instructions() {
+    fn builds_remote_review_prompt_with_follow_up_guidance_and_saved_context() {
         let review = sample_review_record();
-        let prompt = build_remote_review_prompt(
-            &review,
-            "track-review/dispatch-1",
-            "~/workspace/project-x/review-worktrees/dispatch-1",
-        );
+        let previous_review_run = ReviewRunRecord {
+            dispatch_id: "review-dispatch-1".to_owned(),
+            review_id: review.id.clone(),
+            pull_request_url: review.pull_request_url.clone(),
+            repository_full_name: review.repository_full_name.clone(),
+            workspace_key: review.workspace_key.clone(),
+            status: DispatchStatus::Succeeded,
+            created_at: now_utc(),
+            updated_at: now_utc(),
+            finished_at: Some(now_utc()),
+            remote_host: "198.51.100.10".to_owned(),
+            branch_name: Some("track-review/review-dispatch-1".to_owned()),
+            worktree_path: Some(
+                "~/workspace/project-x/review-worktrees/review-dispatch-1".to_owned(),
+            ),
+            follow_up_request: None,
+            target_head_oid: Some("abc123def456".to_owned()),
+            summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
+            review_submitted: true,
+            github_review_id: Some("1001".to_owned()),
+            github_review_url: Some(
+                "https://github.com/acme/project-x/pull/42#pullrequestreview-1001".to_owned(),
+            ),
+            notes: None,
+            error_message: None,
+        };
+        let current_review_run = ReviewRunRecord {
+            dispatch_id: "review-dispatch-2".to_owned(),
+            review_id: review.id.clone(),
+            pull_request_url: review.pull_request_url.clone(),
+            repository_full_name: review.repository_full_name.clone(),
+            workspace_key: review.workspace_key.clone(),
+            status: DispatchStatus::Preparing,
+            created_at: now_utc(),
+            updated_at: now_utc(),
+            finished_at: None,
+            remote_host: "198.51.100.10".to_owned(),
+            branch_name: Some("track-review/review-dispatch-2".to_owned()),
+            worktree_path: Some(
+                "~/workspace/project-x/review-worktrees/review-dispatch-2".to_owned(),
+            ),
+            follow_up_request: Some(
+                "Check whether the main review comments were actually resolved.".to_owned(),
+            ),
+            target_head_oid: Some("fedcba654321".to_owned()),
+            summary: Some(
+                "Re-review request: Check whether the main review comments were actually resolved."
+                    .to_owned(),
+            ),
+            review_submitted: false,
+            github_review_id: None,
+            github_review_url: None,
+            notes: None,
+            error_message: None,
+        };
+        let prompt =
+            build_remote_review_prompt(&review, &current_review_run, Some(&previous_review_run));
 
         assert!(prompt.contains("You are responsible for submitting the GitHub review yourself"));
         assert!(prompt.contains("Submit one GitHub review in COMMENT mode."));
         assert!(prompt.contains("Prefer inline review comments"));
         assert!(prompt.contains("The first line of the top-level review body must be `@octocat requested me to review this PR.`"));
+        assert!(prompt.contains("- Pinned review commit: fedcba654321"));
+        assert!(prompt.contains("the prepared worktree is intended to match that exact commit"));
         assert!(prompt.contains("Capture the submitted GitHub review's durable handle"));
         assert!(prompt.contains("Return `reviewSubmitted` as `true` only after GitHub confirms"));
+        assert!(prompt.contains("## Current re-review request"));
+        assert!(prompt.contains("Check whether the main review comments were actually resolved."));
+        assert!(prompt.contains("## Previous bot review context"));
+        assert!(prompt.contains("https://github.com/acme/project-x/pull/42#pullrequestreview-1001"));
+        assert!(prompt.contains("## Re-review guidance"));
+        assert!(prompt.contains("non-blocking input at the discretion of the reviewee unless @octocat explicitly commented"));
+        assert!(prompt.contains("do not repeat it as a primary finding"));
         assert!(prompt.contains("## Default review prompt"));
         assert!(prompt.contains("Focus on regressions and missing tests."));
         assert!(prompt.contains("## Extra instructions"));
         assert!(prompt.contains("Pay special attention to queue rendering."));
+    }
+
+    #[test]
+    fn review_worktree_script_pins_the_requested_commit_or_fails_explicitly() {
+        let script = build_create_review_worktree_script();
+
+        assert!(script.contains("TARGET_HEAD_OID"));
+        assert!(script.contains("fetch upstream \"$TARGET_HEAD_OID\""));
+        assert!(script.contains("TARGET_REF=\"$TARGET_HEAD_OID\""));
+        assert!(
+            script.contains("Requested review commit $TARGET_HEAD_OID is not available locally.")
+        );
+        assert!(script.contains("review would drift to a newer commit"));
+        assert!(script.contains("branch -f \"$BRANCH_NAME\" \"$TARGET_REF\""));
     }
 
     #[test]
@@ -5364,6 +5716,39 @@ mod tests {
         assert!(request.contains("COMMENTED or CHANGES_REQUESTED"));
         assert!(request.contains("Ignore APPROVED reviews"));
         assert!(request.contains("https://github.com/acme/project-x/pull/42"));
+    }
+
+    #[test]
+    fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_settings() {
+        let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
+            host: "127.0.0.1".to_owned(),
+            user: "builder".to_owned(),
+            port: 2222,
+            workspace_root: "~/workspace".to_owned(),
+            projects_registry_path: "~/track-projects.json".to_owned(),
+            shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
+            review_follow_up: None,
+        })));
+        let review = context.create_review();
+
+        let _env_lock = track_data_env_lock()
+            .lock()
+            .expect("env lock should not be poisoned");
+        let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
+        install_dummy_managed_remote_agent_material(&context.data_dir);
+
+        let (remote_agent, loaded_review) = context
+            .review_service()
+            .load_review_dispatch_prerequisites(&review.id)
+            .expect("saved review dispatch prerequisites should load");
+
+        assert_eq!(remote_agent.host, "127.0.0.1");
+        assert_eq!(loaded_review.id, review.id);
+        assert_eq!(loaded_review.main_user, review.main_user);
+        assert_eq!(
+            loaded_review.default_review_prompt,
+            review.default_review_prompt
+        );
     }
 
     #[test]
@@ -5560,6 +5945,89 @@ mod tests {
     }
 
     #[test]
+    fn selects_the_latest_previous_submitted_review_run() {
+        let review = sample_review_record();
+        let dispatch_history = vec![
+            ReviewRunRecord {
+                dispatch_id: "dispatch-3".to_owned(),
+                review_id: review.id.clone(),
+                pull_request_url: review.pull_request_url.clone(),
+                repository_full_name: review.repository_full_name.clone(),
+                workspace_key: review.workspace_key.clone(),
+                status: DispatchStatus::Preparing,
+                created_at: now_utc(),
+                updated_at: now_utc(),
+                finished_at: None,
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: Some("track-review/dispatch-3".to_owned()),
+                worktree_path: Some("~/workspace/project-x/review-worktrees/dispatch-3".to_owned()),
+                follow_up_request: Some("Re-review the latest fixes.".to_owned()),
+                target_head_oid: Some("ccc333".to_owned()),
+                summary: Some("Re-review request: Re-review the latest fixes.".to_owned()),
+                review_submitted: false,
+                github_review_id: None,
+                github_review_url: None,
+                notes: None,
+                error_message: None,
+            },
+            ReviewRunRecord {
+                dispatch_id: "dispatch-2".to_owned(),
+                review_id: review.id.clone(),
+                pull_request_url: review.pull_request_url.clone(),
+                repository_full_name: review.repository_full_name.clone(),
+                workspace_key: review.workspace_key.clone(),
+                status: DispatchStatus::Succeeded,
+                created_at: now_utc(),
+                updated_at: now_utc(),
+                finished_at: Some(now_utc()),
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: Some("track-review/dispatch-2".to_owned()),
+                worktree_path: Some("~/workspace/project-x/review-worktrees/dispatch-2".to_owned()),
+                follow_up_request: None,
+                target_head_oid: Some("bbb222".to_owned()),
+                summary: Some("Submitted a review.".to_owned()),
+                review_submitted: true,
+                github_review_id: Some("1002".to_owned()),
+                github_review_url: Some(
+                    "https://github.com/acme/project-x/pull/42#pullrequestreview-1002".to_owned(),
+                ),
+                notes: None,
+                error_message: None,
+            },
+            ReviewRunRecord {
+                dispatch_id: "dispatch-1".to_owned(),
+                review_id: review.id.clone(),
+                pull_request_url: review.pull_request_url.clone(),
+                repository_full_name: review.repository_full_name.clone(),
+                workspace_key: review.workspace_key.clone(),
+                status: DispatchStatus::Succeeded,
+                created_at: now_utc(),
+                updated_at: now_utc(),
+                finished_at: Some(now_utc()),
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: Some("track-review/dispatch-1".to_owned()),
+                worktree_path: Some("~/workspace/project-x/review-worktrees/dispatch-1".to_owned()),
+                follow_up_request: None,
+                target_head_oid: Some("aaa111".to_owned()),
+                summary: Some("Submitted an older review.".to_owned()),
+                review_submitted: true,
+                github_review_id: Some("1001".to_owned()),
+                github_review_url: Some(
+                    "https://github.com/acme/project-x/pull/42#pullrequestreview-1001".to_owned(),
+                ),
+                notes: None,
+                error_message: None,
+            },
+        ];
+
+        let selected = select_previous_submitted_review_run(&dispatch_history, "dispatch-3")
+            .expect("a previous submitted review should be selected");
+
+        assert_eq!(selected.dispatch_id, "dispatch-2");
+        assert_eq!(selected.github_review_id.as_deref(), Some("1002"));
+    }
+
+    #[test]
     fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
         let context = TestContext::new(base_test_config(None));
         let task = context.create_task("project-a", "Investigate a flaky remote cleanup");
@@ -5733,6 +6201,36 @@ mod tests {
         assert!(
             acquired_in_second_thread.load(Ordering::SeqCst),
             "the waiting same-task start should proceed after the first guard releases",
+        );
+    }
+
+    #[test]
+    fn review_dispatch_start_guard_serializes_same_review() {
+        let acquired_in_second_thread = Arc::new(AtomicBool::new(false));
+        let guard = super::ReviewDispatchStartGuard::acquire("review-1");
+
+        std::thread::scope(|scope| {
+            let acquired_in_second_thread_for_join = Arc::clone(&acquired_in_second_thread);
+            let join_handle = scope.spawn(move || {
+                let _guard = super::ReviewDispatchStartGuard::acquire("review-1");
+                acquired_in_second_thread_for_join.store(true, Ordering::SeqCst);
+            });
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !acquired_in_second_thread.load(Ordering::SeqCst),
+                "the second same-review start should stay blocked while the first guard is held",
+            );
+
+            drop(guard);
+            join_handle
+                .join()
+                .expect("second thread should acquire the guard after release");
+        });
+
+        assert!(
+            acquired_in_second_thread.load(Ordering::SeqCst),
+            "the waiting same-review start should proceed after the first guard releases",
         );
     }
 }

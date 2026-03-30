@@ -7,6 +7,7 @@ import type {
   ProjectMetadataUpdateInput,
   ProjectsResponse,
   ReviewRunRecord,
+  ReviewFollowUpInput,
   ReviewsResponse,
   ReviewSummary,
   ReviewRunsResponse,
@@ -79,6 +80,13 @@ export async function fetchReviewRuns(id: string): Promise<ReviewRunRecord[]> {
 export async function cancelReview(id: string): Promise<ReviewRunRecord> {
   return readJson<ReviewRunRecord>(`/api/reviews/${encodeURIComponent(id)}/cancel`, {
     method: 'POST',
+  })
+}
+
+export async function followUpReview(id: string, input: ReviewFollowUpInput): Promise<ReviewRunRecord> {
+  return readJson<ReviewRunRecord>(`/api/reviews/${encodeURIComponent(id)}/follow-up`, {
+    method: 'POST',
+    body: JSON.stringify(input),
   })
 }
 

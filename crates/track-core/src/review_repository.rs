@@ -100,7 +100,7 @@ impl ReviewRepository {
             }
         }
 
-        reviews.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        reviews.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(reviews)
     }
 
@@ -215,6 +215,33 @@ mod tests {
             reviews[0].default_review_prompt,
             review.default_review_prompt
         );
+    }
+
+    #[test]
+    fn lists_reviews_by_latest_update_time() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository =
+            ReviewRepository::new(Some(directory.path().join("reviews"))).expect("repository");
+
+        let older_review = sample_review();
+        let newer_review = ReviewRecord {
+            id: "20260326-120100-review-pr-43".to_owned(),
+            updated_at: older_review.updated_at + time::Duration::minutes(5),
+            ..sample_review()
+        };
+
+        repository
+            .save_review(&older_review)
+            .expect("older review should save");
+        repository
+            .save_review(&newer_review)
+            .expect("newer review should save");
+
+        let reviews = repository.list_reviews().expect("reviews should load");
+
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].id, newer_review.id);
+        assert_eq!(reviews[1].id, older_review.id);
     }
 
     #[test]

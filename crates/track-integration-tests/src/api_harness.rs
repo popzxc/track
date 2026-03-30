@@ -270,6 +270,28 @@ impl ApiHarness {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    pub async fn follow_up_review(&self, review_id: &str, request: &str) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/reviews/{review_id}/follow-up"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "request": request }))
+                            .expect("review follow-up request should serialize"),
+                    ))
+                    .expect("review follow-up request should build"),
+            )
+            .await
+            .expect("review follow-up request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response_json(response).await
+    }
+
     pub async fn poll_review_until_terminal(
         &self,
         review_id: &str,
@@ -295,6 +317,14 @@ impl ApiHarness {
     }
 
     async fn latest_review_run(&self, review_id: &str) -> serde_json::Value {
+        self.review_runs(review_id)
+            .await
+            .into_iter()
+            .next()
+            .expect("review runs response should include at least one run")
+    }
+
+    pub async fn review_runs(&self, review_id: &str) -> Vec<serde_json::Value> {
         let response = self
             .app
             .clone()
@@ -311,9 +341,8 @@ impl ApiHarness {
         let json = response_json(response).await;
         json["runs"]
             .as_array()
-            .and_then(|runs| runs.first())
             .cloned()
-            .expect("review runs response should include at least one run")
+            .expect("review runs response should include a runs array")
     }
 
     pub async fn cancel_review(&self, review_id: &str) -> ReviewRunRecord {

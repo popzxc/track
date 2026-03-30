@@ -40,6 +40,8 @@ impl ReviewDispatchRepository {
             remote_host: remote_host.to_owned(),
             branch_name: None,
             worktree_path: None,
+            follow_up_request: None,
+            target_head_oid: None,
             summary: None,
             review_submitted: false,
             github_review_id: None,
@@ -453,6 +455,8 @@ mod tests {
                 "~/workspace/{}/review-worktrees/{dispatch_id}",
                 review.workspace_key
             )),
+            follow_up_request: None,
+            target_head_oid: Some("abc123def456".to_owned()),
             summary: Some("Submitted a GitHub review.".to_owned()),
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),

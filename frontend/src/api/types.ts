@@ -117,6 +117,10 @@ export interface TaskFollowUpInput {
   request: string
 }
 
+export interface ReviewFollowUpInput {
+  request: string
+}
+
 export interface TaskDispatch {
   dispatchId: string
   taskId: string
@@ -166,6 +170,8 @@ export interface ReviewRunRecord {
   remoteHost: string
   branchName?: string
   worktreePath?: string
+  followUpRequest?: string
+  targetHeadOid?: string
   summary?: string
   reviewSubmitted: boolean
   githubReviewId?: string

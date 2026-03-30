@@ -349,6 +349,10 @@ pub struct ReviewRunRecord {
     pub branch_name: Option<String>,
     #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
+    pub follow_up_request: Option<String>,
+    #[serde(rename = "targetHeadOid", skip_serializing_if = "Option::is_none")]
+    pub target_head_oid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(rename = "reviewSubmitted", default, alias = "reviewPosted")]

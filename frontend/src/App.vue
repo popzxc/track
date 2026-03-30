@@ -14,6 +14,7 @@ import {
   dispatchTask,
   fetchDispatches,
   fetchProjects,
+  followUpReview,
   fetchReviewRuns,
   fetchReviews,
   fetchRemoteAgentSettings,
@@ -30,6 +31,7 @@ import {
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import FollowUpModal from './components/FollowUpModal.vue'
 import ProjectMetadataModal from './components/ProjectMetadataModal.vue'
+import ReviewFollowUpModal from './components/ReviewFollowUpModal.vue'
 import ReviewRequestModal from './components/ReviewRequestModal.vue'
 import RemoteAgentSetupModal from './components/RemoteAgentSetupModal.vue'
 import TaskEditorModal from './components/TaskEditorModal.vue'
@@ -61,6 +63,7 @@ import type {
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   ReviewRecord,
+  ReviewFollowUpInput,
   ReviewRunRecord,
   ReviewSummary,
   RunRecord,
@@ -117,6 +120,7 @@ const cancelingDispatchTaskId = ref<string | null>(null)
 const cancelingReviewId = ref<string | null>(null)
 const discardingDispatchTaskId = ref<string | null>(null)
 const followingUpTaskId = ref<string | null>(null)
+const followingUpReviewId = ref<string | null>(null)
 const taskLifecycleMutationTaskId = ref<string | null>(null)
 const taskLifecycleMutation = ref<TaskLifecycleMutation | null>(null)
 const errorMessage = ref('')
@@ -127,6 +131,7 @@ const editingTask = ref<Task | null>(null)
 const editingProject = ref<ProjectInfo | null>(null)
 const editingRemoteAgentSetup = ref(false)
 const followingUpTask = ref<Task | null>(null)
+const followingUpReview = ref<ReviewRecord | null>(null)
 const taskPendingDeletion = ref<Task | null>(null)
 const reviewPendingDeletion = ref<ReviewRecord | null>(null)
 const taskPendingRunnerSetup = ref<Task | null>(null)
@@ -276,6 +281,10 @@ const selectedReviewCanCancel = computed(() =>
   ),
 )
 
+const selectedReviewCanReReview = computed(() =>
+  Boolean(selectedReview.value && !selectedReviewCanCancel.value),
+)
+
 const activeRuns = computed(() =>
   runs.value
     .filter((run) => run.dispatch.status === 'preparing' || run.dispatch.status === 'running')
@@ -289,8 +298,8 @@ const activeReviewRuns = computed(() =>
         summary.latestRun?.status === 'preparing' || summary.latestRun?.status === 'running',
     )
     .sort((left, right) => {
-      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.createdAt
-      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.createdAt
+      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.updatedAt ?? left.review.createdAt
+      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.updatedAt ?? right.review.createdAt
       return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
     }),
 )
@@ -309,8 +318,8 @@ const recentReviewRuns = computed(() =>
     .filter((summary) => Boolean(summary.latestRun))
     .slice()
     .sort((left, right) => {
-      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.createdAt
-      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.createdAt
+      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.updatedAt ?? left.review.createdAt
+      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.updatedAt ?? right.review.createdAt
       return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
     })
     .slice(0, 40),
@@ -446,10 +455,14 @@ function removeTaskRuns(taskId: string) {
   }
 }
 
+function reviewSummaryTimestamp(summary: ReviewSummary) {
+  return summary.latestRun?.createdAt ?? summary.review.updatedAt ?? summary.review.createdAt
+}
+
 function sortReviewSummaries(reviewSummaries: ReviewSummary[]) {
   return reviewSummaries
     .slice()
-    .sort((left, right) => Date.parse(right.review.createdAt) - Date.parse(left.review.createdAt))
+    .sort((left, right) => Date.parse(reviewSummaryTimestamp(right)) - Date.parse(reviewSummaryTimestamp(left)))
 }
 
 function replaceSelectedReviewRuns(reviewRuns: ReviewRunRecord[]) {
@@ -524,6 +537,7 @@ function closeReviewDrawer() {
   isReviewDrawerOpen.value = false
   selectedReviewId.value = null
   selectedReviewRuns.value = []
+  followingUpReview.value = null
 }
 
 function openTaskFromRun(run: RunRecord) {
@@ -581,7 +595,7 @@ async function loadTasks() {
 }
 
 async function loadReviews() {
-  reviews.value = await fetchReviews()
+  reviews.value = sortReviewSummaries(await fetchReviews())
 }
 
 async function loadLatestDispatchesForVisibleTasks() {
@@ -956,6 +970,33 @@ async function cancelReviewRun(review: ReviewRecord) {
   }
 }
 
+async function submitReviewFollowUp(payload: ReviewFollowUpInput) {
+  if (!followingUpReview.value) {
+    return
+  }
+
+  followingUpReviewId.value = followingUpReview.value.id
+  errorMessage.value = ''
+
+  try {
+    const run = await followUpReview(followingUpReview.value.id, payload)
+    upsertReviewSummary(
+      {
+        ...followingUpReview.value,
+        updatedAt: run.createdAt,
+      },
+      run,
+    )
+    upsertSelectedReviewRun(run)
+    followingUpReview.value = null
+    await refreshAll()
+  } catch (error) {
+    setFriendlyError(error)
+  } finally {
+    followingUpReviewId.value = null
+  }
+}
+
 async function discardRunHistory(task: Task) {
   discardingDispatchTaskId.value = task.id
   errorMessage.value = ''
@@ -1032,6 +1073,14 @@ function openNewReviewEditor() {
   creatingReview.value = true
 }
 
+function openReviewFollowUpEditor(review = selectedReview.value) {
+  if (!review) {
+    return
+  }
+
+  followingUpReview.value = review
+}
+
 function openProjectEditor(project = selectedProjectDetails.value) {
   if (!project) {
     return
@@ -1052,6 +1101,10 @@ function closeTaskEditor() {
 
 function closeReviewEditor() {
   creatingReview.value = false
+}
+
+function closeReviewFollowUpEditor() {
+  followingUpReview.value = null
 }
 
 function closeProjectEditor() {
@@ -1269,6 +1322,7 @@ watch(currentPage, (nextPage) => {
   if (nextPage !== 'reviews') {
     isReviewDrawerOpen.value = false
     selectedReviewRuns.value = []
+    followingUpReview.value = null
   }
 })
 
@@ -2783,6 +2837,16 @@ onBeforeUnmount(() => {
             </button>
 
             <button
+              v-if="selectedReviewCanReReview"
+              type="button"
+              class="border border-aqua/30 bg-aqua/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:opacity-60"
+              :disabled="followingUpReviewId === selectedReview.id"
+              @click="openReviewFollowUpEditor(selectedReview)"
+            >
+              {{ followingUpReviewId === selectedReview.id ? 'Requesting...' : 'Request re-review' }}
+            </button>
+
+            <button
               type="button"
               class="border border-aqua/30 bg-aqua/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
               @click="openExternal(selectedReview.pullRequestUrl)"
@@ -2844,6 +2908,14 @@ onBeforeUnmount(() => {
                   {{ selectedReview.workspaceKey }}
                 </dd>
               </div>
+              <div v-if="selectedReviewLatestRun?.targetHeadOid">
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Pinned commit
+                </dt>
+                <dd class="mt-1 break-all text-fg1">
+                  {{ selectedReviewLatestRun.targetHeadOid }}
+                </dd>
+              </div>
               <div v-if="selectedReviewLatestRun?.githubReviewUrl">
                 <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
                   Submitted review
@@ -2882,7 +2954,7 @@ onBeforeUnmount(() => {
                   Review run history
                 </p>
                 <p class="mt-2 text-sm text-fg2">
-                  Review requests are immutable, so creating a new review is the way to re-run one.
+                  Each re-review adds another run here so you can compare requests, commits, and outcomes over time.
                 </p>
               </div>
               <span class="text-xs text-fg3">{{ selectedReviewRuns.length }}</span>
@@ -2914,8 +2986,18 @@ onBeforeUnmount(() => {
                         {{ dispatchStatusLabel(run) }}
                       </span>
                       <span class="text-fg3">Started {{ formatDateTime(run.createdAt) }}</span>
+                      <span v-if="run.followUpRequest" class="text-fg3">• Re-review</span>
                     </div>
                   </div>
+
+                  <button
+                    v-if="run.githubReviewUrl"
+                    type="button"
+                    class="border border-green/30 bg-green/10 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-green transition hover:bg-green/15"
+                    @click="openExternal(run.githubReviewUrl)"
+                  >
+                    View review
+                  </button>
                 </div>
 
                 <p class="mt-4 text-sm leading-7 text-fg1">
@@ -2947,7 +3029,27 @@ onBeforeUnmount(() => {
                       {{ run.worktreePath }}
                     </dd>
                   </div>
+                  <div v-if="run.targetHeadOid">
+                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                      Pinned commit
+                    </dt>
+                    <dd class="mt-1 break-all text-fg1">
+                      {{ run.targetHeadOid }}
+                    </dd>
+                  </div>
                 </dl>
+
+                <details
+                  v-if="run.followUpRequest"
+                  class="mt-4 border border-aqua/20 bg-aqua/6 p-4"
+                >
+                  <summary class="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-aqua">
+                    Re-review request
+                  </summary>
+                  <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
+                    {{ run.followUpRequest }}
+                  </div>
+                </details>
 
                 <details
                   v-if="run.notes"
@@ -2996,6 +3098,14 @@ onBeforeUnmount(() => {
       :open="creatingReview"
       @cancel="closeReviewEditor"
       @save="createReviewFromWeb"
+    />
+
+    <ReviewFollowUpModal
+      :busy="followingUpReviewId !== null"
+      :open="followingUpReview !== null"
+      :review="followingUpReview"
+      @cancel="closeReviewFollowUpEditor"
+      @save="submitReviewFollowUp"
     />
 
     <ProjectMetadataModal

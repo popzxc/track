@@ -431,6 +431,119 @@ describe('App shell', () => {
     expect(wrapper.text()).toContain('No PR reviews yet.')
   })
 
+  it('requests a re-review on the same saved review and keeps the new run in history', async () => {
+    const reviewSummary = buildReviewSummary()
+    const initialRun = buildReviewRun({
+      reviewId: reviewSummary.review.id,
+      pullRequestUrl: reviewSummary.review.pullRequestUrl,
+      targetHeadOid: 'abc123def456',
+    })
+    const followUpRun = buildReviewRun({
+      dispatchId: 'review-dispatch-456',
+      reviewId: reviewSummary.review.id,
+      pullRequestUrl: reviewSummary.review.pullRequestUrl,
+      createdAt: '2026-03-26T13:05:00.000Z',
+      updatedAt: '2026-03-26T13:06:00.000Z',
+      finishedAt: '2026-03-26T13:06:00.000Z',
+      followUpRequest: 'Check whether the comments I confirmed are fixed.',
+      targetHeadOid: 'def456abc789',
+      summary: 'Submitted a follow-up review after checking the latest PR updates.',
+      githubReviewId: '1002',
+      githubReviewUrl: 'https://github.com/acme/project-a/pull/42#pullrequestreview-1002',
+    })
+    let reviewRuns = [initialRun]
+    let reviewsBody = { reviews: [{ review: reviewSummary.review, latestRun: initialRun }] }
+    let submittedReviewFollowUp: Record<string, unknown> | null = null
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [] },
+      },
+      {
+        path: '/api/reviews',
+        body: () => reviewsBody,
+      },
+      {
+        path: `/api/reviews/${encodeURIComponent(reviewSummary.review.id)}/runs`,
+        body: () => ({ runs: reviewRuns }),
+      },
+      {
+        method: 'POST',
+        path: `/api/reviews/${encodeURIComponent(reviewSummary.review.id)}/follow-up`,
+        body: ({ init }: MockJsonRequest) => {
+          submittedReviewFollowUp = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          reviewRuns = [followUpRun, initialRun]
+          reviewsBody = {
+            reviews: [
+              {
+                review: {
+                  ...reviewSummary.review,
+                  updatedAt: followUpRun.createdAt,
+                },
+                latestRun: followUpRun,
+              },
+            ],
+          }
+          return followUpRun
+        },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          reviewFollowUp: {
+            enabled: false,
+            mainUser: 'octocat',
+            defaultReviewPrompt: 'Focus on risky behavior changes and missing tests.',
+          },
+        }),
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    const reviewsButton = wrapper.findAll('button').find((button) => button.text().includes('Reviews'))
+    await reviewsButton?.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="review-row"]').trigger('click')
+    await flushPromises()
+
+    const rereviewButton = wrapper.findAll('button').find((button) => button.text().includes('Request re-review'))
+    await rereviewButton?.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="review-follow-up-request"]').setValue(
+      'Check whether the comments I confirmed are fixed.',
+    )
+    await wrapper.get('[data-testid="review-follow-up-submit"]').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(submittedReviewFollowUp).toEqual({
+      request: 'Check whether the comments I confirmed are fixed.',
+    })
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Request re-review')
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Pinned commit')
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('def456abc789')
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Re-review request')
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain(
+      'Check whether the comments I confirmed are fixed.',
+    )
+  })
+
   it('shows active PR reviews on the Runs page and in the Runs badge', async () => {
     const runningReview = buildReviewSummary({
       latestRun: {

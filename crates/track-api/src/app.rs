@@ -738,6 +738,36 @@ async fn create_review(
     Ok(Json(CreateReviewResponse { review, run }))
 }
 
+async fn follow_up_review(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<ReviewRunRecord>, ApiError> {
+    let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
+        .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+
+    let queue_state = state.clone();
+    let review_id = id.clone();
+    let run = tokio::task::spawn_blocking(move || {
+        let review_service = RemoteReviewService {
+            config_service: &queue_state.config_service,
+            project_repository: &queue_state.project_repository,
+            review_repository: &queue_state.review_repository,
+            review_dispatch_repository: &queue_state.review_dispatch_repository,
+        };
+
+        review_service.queue_follow_up_review_dispatch(&review_id, &input.request)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Follow-up review failed to join: {error}")))?
+    .map_err(ApiError::from_track_error)?;
+    bump_task_change_version(&state);
+
+    spawn_review_launch(state.clone(), run.clone());
+
+    Ok(Json(run))
+}
+
 async fn delete_review(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -1098,6 +1128,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
         .route("/reviews", get(list_reviews).post(create_review))
         .route("/reviews/{id}", axum::routing::delete(delete_review))
         .route("/reviews/{id}/runs", get(list_review_runs))
+        .route("/reviews/{id}/follow-up", post(follow_up_review))
         .route("/reviews/{id}/cancel", post(cancel_review_dispatch))
         .route("/runs", get(list_runs))
         .route("/tasks", get(list_tasks).post(create_task))
@@ -1610,6 +1641,8 @@ mod tests {
                 remote_host: "192.0.2.25".to_owned(),
                 branch_name: Some("track-review/review-dispatch-1".to_owned()),
                 worktree_path: Some("/tmp/review-worktree".to_owned()),
+                follow_up_request: None,
+                target_head_oid: Some("abc123def456".to_owned()),
                 summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
                 review_submitted: true,
                 github_review_id: Some("1001".to_owned()),

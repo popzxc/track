@@ -291,6 +291,134 @@ async fn requesting_a_pr_review_posts_the_review_and_cleans_up_artifacts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn requesting_a_rereview_reuses_the_saved_review_and_records_new_run_context() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_codex_state(&review_codex_state(
+        0,
+        "Mock Codex reviewed the pull request successfully.",
+        "@octocat requested me to review this PR.\n\nI found one issue in the fixture diff.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let _metadata_seed_task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Seed project metadata for manual review requests",
+    );
+    let review_response = harness
+        .create_review(
+            "https://github.com/acme/project-a/pull/42",
+            Some("Pay extra attention to missing regression coverage."),
+        )
+        .await;
+    let review_id = review_response["review"]["id"]
+        .as_str()
+        .expect("review response should include a review id")
+        .to_owned();
+    let initial_terminal_run = harness
+        .poll_review_until_terminal(&review_id, Duration::from_secs(20))
+        .await;
+    assert_eq!(initial_terminal_run["status"], "succeeded");
+    assert_eq!(initial_terminal_run["githubReviewId"], "42001");
+
+    fixture.write_codex_state(&review_codex_state(
+        0,
+        "Mock Codex re-reviewed the pull request successfully.",
+        "@octocat requested me to review this PR.\n\nThe previously endorsed issue looks fixed, and I did not find new blocking problems.",
+    ));
+
+    let follow_up_request =
+        "Check whether the comments I confirmed are fixed, and mention anything intentionally left alone only in the summary.";
+    let follow_up_response = harness
+        .follow_up_review(&review_id, follow_up_request)
+        .await;
+    let follow_up_dispatch_id = follow_up_response["dispatchId"]
+        .as_str()
+        .expect("re-review response should include a dispatch id")
+        .to_owned();
+    assert_eq!(follow_up_response["reviewId"], review_id);
+    assert_eq!(follow_up_response["followUpRequest"], follow_up_request);
+    assert!(follow_up_response["targetHeadOid"]
+        .as_str()
+        .is_some_and(|value| !value.trim().is_empty()));
+
+    let follow_up_terminal_run = harness
+        .poll_review_until_terminal(&review_id, Duration::from_secs(20))
+        .await;
+    assert_eq!(follow_up_terminal_run["status"], "succeeded");
+    assert_eq!(follow_up_terminal_run["followUpRequest"], follow_up_request);
+    assert_eq!(follow_up_terminal_run["githubReviewId"], "42002");
+    assert_eq!(
+        follow_up_terminal_run["githubReviewUrl"],
+        "https://github.com/acme/project-a/pull/42#pullrequestreview-42002"
+    );
+
+    let review_runs = harness.review_runs(&review_id).await;
+    assert_eq!(review_runs.len(), 2);
+    assert_eq!(review_runs[0]["dispatchId"], follow_up_dispatch_id);
+    assert_eq!(review_runs[1]["githubReviewId"], "42001");
+
+    let follow_up_worktree_path = follow_up_terminal_run["worktreePath"]
+        .as_str()
+        .expect("re-review run should include a worktree path")
+        .to_owned();
+    let follow_up_run_directory =
+        format!("/home/track/workspace/project-a/review-runs/{follow_up_dispatch_id}");
+    let remote_prompt = fixture.read_remote_file(&format!("{follow_up_run_directory}/prompt.md"));
+    assert!(remote_prompt.contains("## Current re-review request"));
+    assert!(remote_prompt.contains(follow_up_request));
+    assert!(remote_prompt.contains("## Previous bot review context"));
+    assert!(
+        remote_prompt.contains("https://github.com/acme/project-a/pull/42#pullrequestreview-42001")
+    );
+    assert!(remote_prompt.contains("## Re-review guidance"));
+    assert!(remote_prompt.contains(
+        "your previous comments are always non-blocking input at the discretion of the reviewee"
+    ));
+    assert!(remote_prompt.contains(
+        "do not repeat it as a primary finding just because it appeared in a previous bot review"
+    ));
+
+    let gh_log_entries = fixture.read_log_entries("gh");
+    let posted_review_ids = gh_log_entries
+        .iter()
+        .filter_map(|entry| {
+            entry["result"]["endpoint"]
+                .as_str()
+                .filter(|endpoint| endpoint.ends_with("/pulls/42/reviews"))
+                .map(|_| {
+                    entry["result"]["reviewId"]
+                        .as_str()
+                        .expect("review post log should include the review id")
+                        .to_owned()
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        posted_review_ids,
+        vec!["42001".to_owned(), "42002".to_owned()]
+    );
+
+    harness.delete_review(&review_id).await;
+
+    assert!(!harness.review_record_exists(&review_id));
+    assert!(!harness.review_history_exists(&review_id));
+    assert!(!fixture.remote_path_exists(&follow_up_worktree_path));
+    assert!(!fixture.remote_path_exists(&follow_up_run_directory));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn deleting_a_task_removes_local_and_remote_dispatch_artifacts() {
     if !live_integration_tests_enabled() {
         print_live_test_skip_message();

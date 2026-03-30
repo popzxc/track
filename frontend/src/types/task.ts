@@ -6,6 +6,7 @@ export type {
   ProjectMetadata,
   ProjectMetadataUpdateInput,
   ReviewRecord,
+  ReviewFollowUpInput,
   ReviewRunRecord,
   ReviewSummary,
   RemoteCleanupSummary,

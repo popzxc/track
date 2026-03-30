@@ -105,6 +105,8 @@ export function buildReviewRun(overrides: Partial<ReviewRunRecord> = {}): Review
     remoteHost: '127.0.0.1',
     branchName: 'track-review/review-dispatch-123',
     worktreePath: '/tmp/review-worktree',
+    followUpRequest: undefined,
+    targetHeadOid: 'abc123def456',
     summary: 'Submitted a GitHub review with two inline comments.',
     reviewSubmitted: true,
     githubReviewId: '1001',
