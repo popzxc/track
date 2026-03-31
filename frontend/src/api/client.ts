@@ -26,6 +26,7 @@ import type {
   Task,
   TaskCreateInput,
   TaskDispatch,
+  TaskDispatchInput,
   TaskFollowUpInput,
   TaskChangeVersionResponse,
   TaskUpdateInput,
@@ -186,9 +187,10 @@ export async function deleteTask(id: string): Promise<DeleteTaskResponse> {
   })
 }
 
-export async function dispatchTask(id: string): Promise<TaskDispatch> {
+export async function dispatchTask(id: string, input?: TaskDispatchInput): Promise<TaskDispatch> {
   return readJson<TaskDispatch>(`/api/tasks/${id}/dispatch`, {
     method: 'POST',
+    body: input ? JSON.stringify(input) : undefined,
   })
 }
 

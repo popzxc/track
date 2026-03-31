@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{get_backend_database_path, path_to_string};
@@ -56,6 +56,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         branch_name TEXT,
         worktree_path TEXT,
         pull_request_url TEXT,
+        preferred_tool TEXT NOT NULL DEFAULT 'codex',
         follow_up_request TEXT,
         summary TEXT,
         notes TEXT,
@@ -80,6 +81,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         git_url TEXT NOT NULL,
         base_branch TEXT NOT NULL,
         workspace_key TEXT NOT NULL,
+        preferred_tool TEXT NOT NULL DEFAULT 'codex',
         project TEXT,
         main_user TEXT NOT NULL,
         default_review_prompt TEXT,
@@ -95,6 +97,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         pull_request_url TEXT NOT NULL,
         repository_full_name TEXT NOT NULL,
         workspace_key TEXT NOT NULL,
+        preferred_tool TEXT NOT NULL DEFAULT 'codex',
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -123,6 +126,20 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         setting_json TEXT NOT NULL
     )
     "#,
+];
+
+const ADDITIVE_SCHEMA_UPDATES: &[(&str, &str, &str)] = &[
+    (
+        "task_dispatches",
+        "preferred_tool",
+        "TEXT NOT NULL DEFAULT 'codex'",
+    ),
+    ("reviews", "preferred_tool", "TEXT NOT NULL DEFAULT 'codex'"),
+    (
+        "review_runs",
+        "preferred_tool",
+        "TEXT NOT NULL DEFAULT 'codex'",
+    ),
 ];
 
 #[derive(Debug, Clone)]
@@ -163,6 +180,8 @@ impl DatabaseContext {
                             )
                         })?;
                 }
+
+                apply_additive_schema_updates(connection).await?;
 
                 Ok(())
             })
@@ -250,6 +269,75 @@ impl DatabaseContext {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal))
     }
+}
+
+// =============================================================================
+// SQLite Additive Migrations
+// =============================================================================
+//
+// The backend still keeps schema setup intentionally lightweight, but new
+// releases now need to add columns to already-existing local databases. We only
+// support additive updates here because they are safe to apply opportunistically
+// during startup without introducing a full migration framework yet.
+async fn apply_additive_schema_updates(
+    connection: &mut SqliteConnection,
+) -> Result<(), TrackError> {
+    for (table_name, column_name, column_definition) in ADDITIVE_SCHEMA_UPDATES {
+        if sqlite_column_exists(connection, table_name, column_name).await? {
+            continue;
+        }
+
+        let alter_statement =
+            format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}");
+        if let Err(error) = sqlx::query(&alter_statement)
+            .execute(&mut *connection)
+            .await
+        {
+            // Two track processes can start against the same SQLite file at the
+            // same time. If both observe the old schema, one `ADD COLUMN`
+            // finishes first and the other sees SQLite's duplicate-column
+            // error. That outcome still means the schema is now correct, so we
+            // treat it as a successful concurrent upgrade instead of aborting
+            // startup.
+            if sqlite_duplicate_column_error(&error, column_name) {
+                continue;
+            }
+
+            return Err(TrackError::new(
+                ErrorCode::TaskWriteFailed,
+                format!("Could not add the SQLite column {table_name}.{column_name}: {error}"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn sqlite_column_exists(
+    connection: &mut SqliteConnection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, TrackError> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({table_name})"))
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| {
+            TrackError::new(
+                ErrorCode::TaskWriteFailed,
+                format!("Could not inspect the SQLite schema for table {table_name}: {error}"),
+            )
+        })?;
+
+    Ok(rows
+        .into_iter()
+        .any(|row| row.get::<String, _>("name") == column_name))
+}
+
+fn sqlite_duplicate_column_error(error: &sqlx::Error, column_name: &str) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    let column_name = column_name.to_ascii_lowercase();
+
+    message.contains("duplicate column name") && message.contains(&column_name)
 }
 
 async fn begin_transaction(connection: &mut SqliteConnection) -> Result<(), TrackError> {

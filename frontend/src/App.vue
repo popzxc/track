@@ -64,6 +64,7 @@ import type {
   ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
   RemoteResetSummary,
+  RemoteAgentPreferredTool,
   RemoteAgentSettings,
   RemoteAgentSettingsUpdateInput,
   ReviewRecord,
@@ -79,6 +80,10 @@ import type {
 
 type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
 type TaskLifecycleMutation = 'closing' | 'reopening' | 'deleting'
+type PendingRunnerSetupRequest = {
+  task: Task
+  preferredTool: RemoteAgentPreferredTool
+}
 
 const TASK_CHANGE_POLL_INTERVAL_MS = 2_000
 
@@ -107,6 +112,7 @@ const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
 const selectedTaskRuns = ref<RunRecord[]>([])
 const selectedReviewRuns = ref<ReviewRunRecord[]>([])
 const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
+const selectedTaskStartTool = ref<RemoteAgentPreferredTool>('codex')
 const showClosed = ref(false)
 const selectedProjectFilter = ref('')
 const selectedTaskId = ref<string | null>(null)
@@ -138,7 +144,7 @@ const followingUpTask = ref<Task | null>(null)
 const followingUpReview = ref<ReviewRecord | null>(null)
 const taskPendingDeletion = ref<Task | null>(null)
 const reviewPendingDeletion = ref<ReviewRecord | null>(null)
-const taskPendingRunnerSetup = ref<Task | null>(null)
+const taskPendingRunnerSetup = ref<PendingRunnerSetupRequest | null>(null)
 const cleanupPendingConfirmation = ref(false)
 const cleaningUpRemoteArtifacts = ref(false)
 const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
@@ -168,6 +174,9 @@ const reviewCount = computed(() => reviews.value.length)
 const totalProjectCount = computed(() => availableProjects.value.length)
 const runnerSetupReady = computed(() =>
   Boolean(remoteAgentSettings.value?.configured && remoteAgentSettings.value.shellPrelude?.trim()),
+)
+const defaultRemoteAgentPreferredTool = computed<RemoteAgentPreferredTool>(
+  () => remoteAgentSettings.value?.preferredTool ?? 'codex',
 )
 
 const availableProjects = computed(() => mergeProjects(projects.value, taskProjectOptions.value))
@@ -217,6 +226,14 @@ const selectedTaskProject = computed(() =>
 
 const selectedTaskLatestDispatch = computed(() =>
   selectedTask.value ? latestDispatchByTaskId.value[selectedTask.value.id] ?? null : null,
+)
+
+const selectedTaskPinnedTool = computed<RemoteAgentPreferredTool | null>(
+  () => selectedTaskLatestDispatch.value?.preferredTool ?? null,
+)
+
+const selectedTaskDispatchTool = computed<RemoteAgentPreferredTool>(
+  () => selectedTaskPinnedTool.value ?? selectedTaskStartTool.value,
 )
 
 const selectedTaskDescription = computed<ParsedTaskDescription | null>(() =>
@@ -351,6 +368,12 @@ const defaultCreateProject = computed(
 const followingUpDispatch = computed(() =>
   followingUpTask.value ? latestDispatchByTaskId.value[followingUpTask.value.id] ?? undefined : undefined,
 )
+
+const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
+
+function remoteAgentToolLabel(tool: RemoteAgentPreferredTool | null | undefined): string {
+  return tool === 'claude' ? 'Claude' : 'Codex'
+}
 
 // =============================================================================
 // Presentation Helpers
@@ -853,7 +876,7 @@ async function saveRemoteAgentSetup(payload: RemoteAgentSettingsUpdateInput) {
     taskPendingRunnerSetup.value = null
     if (queuedTask) {
       window.setTimeout(() => {
-        void startRemoteRun(queuedTask)
+        void startRemoteRun(queuedTask.task, queuedTask.preferredTool)
       }, 0)
     }
   } catch (error) {
@@ -955,7 +978,10 @@ async function confirmReviewDelete() {
   }
 }
 
-async function startRemoteRun(task: Task) {
+async function startRemoteRun(
+  task: Task,
+  preferredTool: RemoteAgentPreferredTool = selectedTaskDispatchTool.value,
+) {
   if (remoteAgentSettings.value === null) {
     try {
       await loadRemoteAgentSettings()
@@ -973,7 +999,7 @@ async function startRemoteRun(task: Task) {
   }
 
   if (remoteAgentSettings.value && !runnerSetupReady.value) {
-    taskPendingRunnerSetup.value = task
+    taskPendingRunnerSetup.value = { task, preferredTool }
     editingRemoteAgentSetup.value = true
     currentPage.value = 'settings'
     return
@@ -983,7 +1009,7 @@ async function startRemoteRun(task: Task) {
   errorMessage.value = ''
 
   try {
-    const dispatch = await dispatchTask(task.id)
+    const dispatch = await dispatchTask(task.id, { preferredTool })
     upsertRunRecord(task, dispatch)
     upsertLatestTaskDispatch(dispatch)
     upsertSelectedTaskRun(task, dispatch)
@@ -1380,6 +1406,20 @@ watch(currentPage, (nextPage) => {
     isReviewDrawerOpen.value = false
     selectedReviewRuns.value = []
     followingUpReview.value = null
+  }
+})
+
+watch(
+  selectedTaskId,
+  () => {
+    selectedTaskStartTool.value = defaultRemoteAgentPreferredTool.value
+  },
+  { immediate: true },
+)
+
+watch(defaultRemoteAgentPreferredTool, (nextTool, previousTool) => {
+  if (selectedTaskStartTool.value === previousTool) {
+    selectedTaskStartTool.value = nextTool
   }
 })
 
@@ -2330,126 +2370,120 @@ onBeforeUnmount(() => {
               </div>
 
               <section class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel">
-                <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
-                      <span
-                        class="border px-2 py-1"
-                        :class="
-                          runnerSetupReady
-                            ? 'border-aqua/30 bg-aqua/10 text-aqua'
-                            : remoteAgentSettings?.configured
-                              ? 'border-yellow/30 bg-yellow/10 text-yellow'
-                              : 'border-fg2/20 bg-bg0 text-fg2'
-                        "
-                      >
-                        {{
-                          runnerSetupReady
-                            ? 'Runner ready'
-                            : remoteAgentSettings?.configured
-                              ? 'Runner needs shell prelude'
-                              : 'Remote dispatch not configured'
-                        }}
-                      </span>
-                    </div>
+                <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
+                  <span
+                    class="border px-2 py-1"
+                    :class="
+                      runnerSetupReady
+                        ? 'border-aqua/30 bg-aqua/10 text-aqua'
+                        : remoteAgentSettings?.configured
+                          ? 'border-yellow/30 bg-yellow/10 text-yellow'
+                          : 'border-fg2/20 bg-bg0 text-fg2'
+                    "
+                  >
+                    {{
+                      runnerSetupReady
+                        ? 'Runner ready'
+                        : remoteAgentSettings?.configured
+                          ? 'Runner needs shell prelude'
+                          : 'Remote dispatch not configured'
+                    }}
+                  </span>
+                </div>
 
-                    <dl class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                      <div class="border border-fg2/15 bg-bg0/60 p-4">
-                        <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                          Host
-                        </dt>
-                        <dd class="mt-2 break-all text-sm text-fg1">
-                          {{ remoteAgentSettings?.host || 'Not configured' }}
-                        </dd>
-                      </div>
-                      <div class="border border-fg2/15 bg-bg0/60 p-4">
-                        <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                          User
-                        </dt>
-                        <dd class="mt-2 break-all text-sm text-fg1">
-                          {{ remoteAgentSettings?.user || 'Not configured' }}
-                        </dd>
-                      </div>
-                      <div class="border border-fg2/15 bg-bg0/60 p-4">
-                        <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                          Port
-                        </dt>
-                        <dd class="mt-2 text-sm text-fg1">
-                          {{ remoteAgentSettings?.port ?? 22 }}
-                        </dd>
-                      </div>
-                      <div class="border border-fg2/15 bg-bg0/60 p-4">
-                        <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                          Shell prelude
-                        </dt>
-                        <dd class="mt-2 text-sm text-fg1">
-                          {{ runnerSetupReady ? 'Configured' : 'Missing' }}
-                        </dd>
-                      </div>
-                      <div class="border border-fg2/15 bg-bg0/60 p-4">
-                        <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                          Main GitHub user
-                        </dt>
-                        <dd class="mt-2 text-sm text-fg1">
-                          {{ remoteAgentSettings?.reviewFollowUp?.mainUser || 'Not set' }}
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
+                <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+                  <dl class="contents">
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        Host
+                      </dt>
+                      <dd class="mt-2 break-all text-sm text-fg1">
+                        {{ remoteAgentSettings?.host || 'Not configured' }}
+                      </dd>
+                    </div>
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        User
+                      </dt>
+                      <dd class="mt-2 break-all text-sm text-fg1">
+                        {{ remoteAgentSettings?.user || 'Not configured' }}
+                      </dd>
+                    </div>
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        Port
+                      </dt>
+                      <dd class="mt-2 text-sm text-fg1">
+                        {{ remoteAgentSettings?.port ?? 22 }}
+                      </dd>
+                    </div>
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        Shell prelude
+                      </dt>
+                      <dd class="mt-2 text-sm text-fg1">
+                        {{ runnerSetupReady ? 'Configured' : 'Missing' }}
+                      </dd>
+                    </div>
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        Preferred tool
+                      </dt>
+                      <dd class="mt-2 text-sm text-fg1">
+                        {{ remoteAgentSettings?.preferredTool === 'claude' ? 'Claude' : 'Codex' }}
+                      </dd>
+                    </div>
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        Automatic follow-up
+                      </dt>
+                      <dd class="mt-2 text-sm text-fg1">
+                        {{ remoteAgentSettings?.reviewFollowUp?.enabled ? 'Enabled' : 'Disabled' }}
+                      </dd>
+                    </div>
+                    <div class="border border-fg2/15 bg-bg0/60 p-4">
+                      <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                        Main user
+                      </dt>
+                      <dd class="mt-2 text-sm text-fg1">
+                        {{ remoteAgentSettings?.reviewFollowUp?.mainUser || 'Not set' }}
+                      </dd>
+                    </div>
+                  </dl>
 
                   <button
                     type="button"
-                    class="border border-aqua/35 bg-aqua/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
+                    class="flex h-full items-center justify-center border border-aqua/35 bg-aqua/10 px-4 py-3 text-center text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
                     @click="openRunnerSetup"
                   >
                     Edit runner setup
                   </button>
                 </div>
 
-                <div class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+                <div class="mt-6 space-y-4">
                   <section class="border border-fg2/15 bg-bg0/60 p-4">
-                    <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                      Why this exists
-                    </p>
-                    <div class="mt-4 space-y-4 text-sm leading-7 text-fg1">
-                      <p>
-                        The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.
+                    <div class="flex items-start justify-between gap-4">
+                      <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                        Current shell prelude
                       </p>
-                      <p>
-                        Keep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.
-                      </p>
+                      <span
+                        :title="shellPreludeHelpText"
+                        aria-label="Why the shell prelude exists"
+                        tabindex="0"
+                        class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-fg2/20 bg-bg1/60 text-xs font-semibold text-fg2 transition hover:border-fg1/35 hover:text-fg0 focus:border-aqua/50 focus:text-fg0 focus:outline-none"
+                      >
+                        i
+                      </span>
                     </div>
+                    <pre class="mt-4 overflow-x-auto whitespace-pre-wrap text-sm leading-7 text-fg1">{{ remoteAgentSettings?.shellPrelude || 'No shell prelude has been saved yet.' }}</pre>
                   </section>
 
                   <section class="border border-fg2/15 bg-bg0/60 p-4">
                     <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                      Current shell prelude
+                      Default review prompt
                     </p>
-                    <pre class="mt-4 overflow-x-auto whitespace-pre-wrap text-sm leading-7 text-fg1">{{ remoteAgentSettings?.shellPrelude || 'No shell prelude has been saved yet.' }}</pre>
-                    <div class="mt-6 border-t border-fg2/10 pt-4">
-                      <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                        Review settings
-                      </p>
-                      <div class="mt-4 space-y-2 text-sm leading-7 text-fg1">
-                        <p>
-                          Automatic follow-up:
-                          <span class="text-fg0">
-                            {{ remoteAgentSettings?.reviewFollowUp?.enabled ? 'Enabled' : 'Disabled' }}
-                          </span>
-                        </p>
-                        <p>
-                          Main user:
-                          <span class="text-fg0">
-                            {{ remoteAgentSettings?.reviewFollowUp?.mainUser || 'Not set' }}
-                          </span>
-                        </p>
-                        <p>
-                          Default review prompt:
-                          <span class="text-fg0">
-                            {{ remoteAgentSettings?.reviewFollowUp?.defaultReviewPrompt || 'Not set' }}
-                          </span>
-                        </p>
-                      </div>
+                    <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
+                      {{ remoteAgentSettings?.reviewFollowUp?.defaultReviewPrompt || 'Not set' }}
                     </div>
                   </section>
                 </div>
@@ -2674,7 +2708,7 @@ onBeforeUnmount(() => {
                   selectedTaskLatestDispatch?.status !== 'preparing' &&
                   selectedTaskLatestDispatch?.status !== 'running' &&
                   !selectedTaskCanContinue &&
-                  Boolean(selectedTaskDispatchDisabledReason))
+                Boolean(selectedTaskDispatchDisabledReason))
               "
               @click="handlePrimaryAction"
             >
@@ -2723,7 +2757,11 @@ onBeforeUnmount(() => {
                   :disabled="dispatchingTaskId === selectedTask.id"
                   @click="startRemoteRun(selectedTask)"
                 >
-                  Start fresh
+                  {{
+                    dispatchingTaskId === selectedTask.id
+                      ? 'Starting...'
+                      : `Start fresh via ${remoteAgentToolLabel(selectedTaskDispatchTool)}`
+                  }}
                 </button>
 
                 <button
@@ -2747,6 +2785,42 @@ onBeforeUnmount(() => {
             </details>
 
           </div>
+
+          <section
+            v-if="selectedTask.status === 'open'"
+            class="border border-fg2/15 bg-bg0/60 p-4"
+          >
+            <div
+              v-if="!selectedTaskPinnedTool"
+              class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between"
+            >
+              <label class="block min-w-[220px] text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+                Dispatch via
+                <select
+                  v-model="selectedTaskStartTool"
+                  data-testid="drawer-dispatch-tool"
+                  class="mt-2 w-full border border-fg2/20 bg-bg1 px-4 py-3 text-sm leading-6 text-fg0 outline-none transition hover:border-fg2/40 focus:border-aqua/50 focus:ring-1 focus:ring-aqua/50"
+                >
+                  <option value="codex">
+                    Codex
+                  </option>
+                  <option value="claude">
+                    Claude
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <p
+              v-else
+              data-testid="drawer-pinned-tool"
+              class="max-w-2xl text-sm leading-7 text-fg2"
+            >
+              This task stays on
+              <span class="text-fg0">{{ remoteAgentToolLabel(selectedTaskPinnedTool) }}</span>
+              for future dispatches.
+            </p>
+          </section>
 
           <p
             v-if="selectedTaskLifecycleMutation"
@@ -2825,6 +2899,9 @@ onBeforeUnmount(() => {
                       </span>
                       <span class="border px-2 py-1" :class="dispatchBadgeClass(run.dispatch)">
                         {{ dispatchStatusLabel(run.dispatch) }}
+                      </span>
+                      <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
+                        via {{ remoteAgentToolLabel(run.dispatch.preferredTool) }}
                       </span>
                       <span class="text-fg3">Started {{ formatDateTime(run.dispatch.createdAt) }}</span>
                       <span v-if="run.dispatch.followUpRequest" class="text-fg3">• Follow-up</span>
@@ -2949,6 +3026,9 @@ onBeforeUnmount(() => {
                   {{ dispatchStatusLabel(selectedReviewLatestRun) }}
                 </span>
                 <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
+                  via {{ remoteAgentToolLabel(selectedReview.preferredTool) }}
+                </span>
+                <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
                   @{{ selectedReview.mainUser }}
                 </span>
                 <span
@@ -3054,6 +3134,14 @@ onBeforeUnmount(() => {
                 </dt>
                 <dd class="mt-1 break-all text-fg1">
                   {{ selectedReview.workspaceKey }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
+                  Review tool
+                </dt>
+                <dd class="mt-1 text-fg1">
+                  {{ remoteAgentToolLabel(selectedReview.preferredTool) }}
                 </dd>
               </div>
               <div v-if="selectedReviewLatestRun?.targetHeadOid">
@@ -3242,6 +3330,7 @@ onBeforeUnmount(() => {
 
     <ReviewRequestModal
       :busy="saving"
+      :default-preferred-tool="defaultRemoteAgentPreferredTool"
       :main-user="remoteAgentSettings?.reviewFollowUp?.mainUser"
       :open="creatingReview"
       @cancel="closeReviewEditor"

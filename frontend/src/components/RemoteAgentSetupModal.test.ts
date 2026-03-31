@@ -20,6 +20,7 @@ describe('RemoteAgentSetupModal', () => {
         open: true,
         busy: false,
         settings: buildRemoteAgentSettings({
+          preferredTool: 'claude',
           reviewFollowUp: {
             enabled: true,
             mainUser: 'octocat',
@@ -35,6 +36,7 @@ describe('RemoteAgentSetupModal', () => {
     expect(wrapper.emitted('save')).toEqual([
       [
         {
+          preferredTool: 'claude',
           shellPrelude: 'export PATH="/opt/track-testing/bin:$PATH"',
           reviewFollowUp: {
             enabled: true,
@@ -44,5 +46,25 @@ describe('RemoteAgentSetupModal', () => {
         },
       ],
     ])
+  })
+
+  it('emits cancel when escape is pressed', async () => {
+    const wrapper = mount(RemoteAgentSetupModal, {
+      global: {
+        stubs: {
+          teleport: true,
+        },
+      },
+      props: {
+        open: true,
+        busy: false,
+        settings: buildRemoteAgentSettings(),
+      },
+    })
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('cancel')).toEqual([[]])
   })
 })

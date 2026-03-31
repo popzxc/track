@@ -18,6 +18,7 @@ use crate::paths::{
 use crate::terminal_ui::{
     format_note, format_prompt_label, format_summary, SummaryTone, ValueTone,
 };
+use crate::types::RemoteAgentPreferredTool;
 
 pub const NONE_SENTINEL: &str = "none";
 
@@ -585,6 +586,12 @@ pub fn run_configure_command_with_prompter(
             port: remote_port,
             workspace_root: remote_workspace_root,
             projects_registry_path: remote_projects_registry_path,
+            // The web UI owns the preferred runner choice today, so the wizard
+            // preserves any existing selection instead of introducing a second
+            // place where users have to keep the same setting in sync.
+            preferred_tool: existing_remote_agent
+                .map(|remote_agent| remote_agent.preferred_tool)
+                .unwrap_or(RemoteAgentPreferredTool::Codex),
             // TODO: If people start preferring the terminal wizard for remote
             // dispatch setup, add a multiline editor flow here. For now the
             // shell prelude stays web-managed so the wizard preserves an

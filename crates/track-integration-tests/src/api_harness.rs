@@ -179,6 +179,14 @@ impl ApiHarness {
     }
 
     pub async fn dispatch_task(&self, task_id: &str) -> serde_json::Value {
+        self.dispatch_task_with_tool(task_id, None).await
+    }
+
+    pub async fn dispatch_task_with_tool(
+        &self,
+        task_id: &str,
+        preferred_tool: Option<&str>,
+    ) -> serde_json::Value {
         let response = self
             .app
             .clone()
@@ -186,7 +194,13 @@ impl ApiHarness {
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/tasks/{task_id}/dispatch"))
-                    .body(Body::empty())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "preferredTool": preferred_tool,
+                        }))
+                        .expect("dispatch request should serialize"),
+                    ))
                     .expect("dispatch request should build"),
             )
             .await
@@ -213,6 +227,31 @@ impl ApiHarness {
             )
             .await
             .expect("follow-up request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response_json(response).await
+    }
+
+    pub async fn update_remote_agent_settings(
+        &self,
+        payload: serde_json::Value,
+    ) -> serde_json::Value {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/remote-agent")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&payload)
+                            .expect("remote-agent settings payload should serialize"),
+                    ))
+                    .expect("remote-agent settings request should build"),
+            )
+            .await
+            .expect("remote-agent settings request should succeed");
         assert_eq!(response.status(), StatusCode::OK);
 
         response_json(response).await
@@ -251,6 +290,16 @@ impl ApiHarness {
         pull_request_url: &str,
         extra_instructions: Option<&str>,
     ) -> serde_json::Value {
+        self.create_review_with_tool(pull_request_url, extra_instructions, None)
+            .await
+    }
+
+    pub async fn create_review_with_tool(
+        &self,
+        pull_request_url: &str,
+        extra_instructions: Option<&str>,
+        preferred_tool: Option<&str>,
+    ) -> serde_json::Value {
         let response = self
             .app
             .clone()
@@ -262,6 +311,7 @@ impl ApiHarness {
                     .body(Body::from(
                         serde_json::to_vec(&json!({
                             "pullRequestUrl": pull_request_url,
+                            "preferredTool": preferred_tool,
                             "extraInstructions": extra_instructions,
                         }))
                         .expect("review request should serialize"),

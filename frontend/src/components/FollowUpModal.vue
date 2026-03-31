@@ -34,6 +34,14 @@ const followUpTargetLabel = computed(() => {
   return 'The agent will continue on the existing branch and worktree.'
 })
 
+const pinnedToolLabel = computed(() => {
+  if (!props.dispatch) {
+    return null
+  }
+
+  return props.dispatch.preferredTool === 'claude' ? 'Claude' : 'Codex'
+})
+
 function submit() {
   emit('save', {
     request: request.value.trim(),
@@ -78,6 +86,14 @@ function submit() {
             Add the next instruction for the remote agent. For example: <code>Address review comments</code>,
             <code>Rework the implementation to avoid cloning</code>, or <code>Add regression tests for the edge case</code>.
           </p>
+
+          <div
+            v-if="pinnedToolLabel"
+            data-testid="follow-up-tool"
+            class="border border-aqua/20 bg-aqua/6 p-4 text-sm leading-7 text-fg1"
+          >
+            This follow-up stays on <span class="text-fg0">{{ pinnedToolLabel }}</span> so the existing branch and worktree context remains consistent.
+          </div>
 
           <label class="block text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
             Follow-up request

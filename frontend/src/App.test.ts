@@ -166,6 +166,7 @@ describe('App shell', () => {
     expect(wrapper.get('[data-testid="task-drawer"]').text()).toContain('Fix queue layout')
     expect(wrapper.get('[data-testid="run-latest-badge"]').text()).toBe('Latest')
     expect(wrapper.get('[data-testid="drawer-primary-action"]').text()).toContain('Continue run')
+    expect(wrapper.get('[data-testid="drawer-pinned-tool"]').text()).toContain('Codex')
   })
 
   it('surfaces dispatch failures as a user-visible error banner', async () => {
@@ -229,6 +230,7 @@ describe('App shell', () => {
 
   it('updates the visible run state immediately after a successful dispatch response', async () => {
     const task = buildTask()
+    let submittedDispatchRequest: Record<string, unknown> | null = null
 
     installFetchRoutes([
       {
@@ -266,13 +268,17 @@ describe('App shell', () => {
       {
         method: 'POST',
         path: `/api/tasks/${task.id}/dispatch`,
-        body: buildDispatch({
-          dispatchId: 'dispatch-started',
-          taskId: task.id,
-          project: task.project,
-          status: 'running',
-          summary: 'The remote agent is working in the prepared environment.',
-        }),
+        body: ({ init }: MockJsonRequest) => {
+          submittedDispatchRequest = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          return buildDispatch({
+            dispatchId: 'dispatch-started',
+            taskId: task.id,
+            project: task.project,
+            preferredTool: 'claude',
+            status: 'running',
+            summary: 'The remote agent is working in the prepared environment.',
+          })
+        },
       },
     ])
 
@@ -280,10 +286,210 @@ describe('App shell', () => {
 
     await wrapper.get(`[data-task-id="${task.id}"]`).trigger('click')
     await flushPromises()
+    await wrapper.get('[data-testid="drawer-dispatch-tool"]').setValue('claude')
     await wrapper.get('[data-testid="drawer-primary-action"]').trigger('click')
     await flushPromises()
 
+    expect(submittedDispatchRequest).toEqual({
+      preferredTool: 'claude',
+    })
     expect(wrapper.get('[data-testid="run-history-item"]').text()).toContain('Agent running')
+  })
+
+  it('resumes a pending dispatch with the tool selected before runner setup opened', async () => {
+    const task = buildTask()
+    let savedRunnerSetupRequest: Record<string, unknown> | null = null
+    let submittedDispatchRequest: Record<string, unknown> | null = null
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [task] },
+      },
+      {
+        path: '/api/reviews',
+        body: { reviews: [] },
+      },
+      {
+        path: '/api/dispatches',
+        body: { dispatches: [] },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          preferredTool: 'codex',
+          shellPrelude: '',
+        }),
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(task.id)}/runs`,
+        body: { runs: [] },
+      },
+      {
+        method: 'PATCH',
+        path: '/api/remote-agent',
+        body: ({ init }: MockJsonRequest) => {
+          savedRunnerSetupRequest = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          return buildRemoteAgentSettings({
+            preferredTool: 'codex',
+            shellPrelude: 'export PATH="/opt/bin:$PATH"',
+          })
+        },
+      },
+      {
+        method: 'POST',
+        path: `/api/tasks/${task.id}/dispatch`,
+        body: ({ init }: MockJsonRequest) => {
+          submittedDispatchRequest = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          return buildDispatch({
+            dispatchId: 'dispatch-resumed',
+            taskId: task.id,
+            project: task.project,
+            preferredTool: 'claude',
+            status: 'running',
+            summary: 'The remote agent is working in the prepared environment.',
+          })
+        },
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    await wrapper.get(`[data-task-id="${task.id}"]`).trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="drawer-dispatch-tool"]').setValue('claude')
+    await wrapper.get('[data-testid="drawer-primary-action"]').trigger('click')
+    await flushPromises()
+
+    const textareas = wrapper.findAll('textarea')
+    expect(textareas.length).toBeGreaterThan(0)
+    await textareas[0].setValue('export PATH="/opt/bin:$PATH"')
+    await wrapper.get('[data-testid="save-runner-setup"]').trigger('click')
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flushPromises()
+
+    expect(savedRunnerSetupRequest).toMatchObject({
+      preferredTool: 'codex',
+      shellPrelude: 'export PATH="/opt/bin:$PATH"',
+    })
+    expect(submittedDispatchRequest).toEqual({
+      preferredTool: 'claude',
+    })
+  })
+
+  it('pins the runner after a task has dispatch history and reuses it for fresh starts', async () => {
+    const task = buildTask()
+    let submittedDispatchRequest: Record<string, unknown> | null = null
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [task] },
+      },
+      {
+        path: '/api/reviews',
+        body: { reviews: [] },
+      },
+      {
+        path: '/api/dispatches',
+        body: {
+          dispatches: [
+            buildDispatch({
+              dispatchId: 'dispatch-existing',
+              taskId: task.id,
+              project: task.project,
+              preferredTool: 'claude',
+              status: 'succeeded',
+            }),
+          ],
+        },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          preferredTool: 'codex',
+        }),
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(task.id)}/runs`,
+        body: {
+          runs: [
+            buildRunRecord(
+              { ...task },
+              {
+                dispatchId: 'dispatch-existing',
+                taskId: task.id,
+                project: task.project,
+                preferredTool: 'claude',
+                status: 'succeeded',
+              },
+            ),
+          ],
+        },
+      },
+      {
+        method: 'POST',
+        path: `/api/tasks/${task.id}/dispatch`,
+        body: ({ init }: MockJsonRequest) => {
+          submittedDispatchRequest = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          return buildDispatch({
+            dispatchId: 'dispatch-refreshed',
+            taskId: task.id,
+            project: task.project,
+            preferredTool: 'claude',
+            status: 'running',
+            summary: 'The remote agent is working in the prepared environment.',
+          })
+        },
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    await wrapper.get(`[data-task-id="${task.id}"]`).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="drawer-dispatch-tool"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="drawer-pinned-tool"]').text()).toContain('Claude')
+
+    const moreButton = wrapper.findAll('summary').find((entry) => entry.text().includes('More'))
+    await moreButton?.trigger('click')
+    await flushPromises()
+
+    const startFreshButton = wrapper
+      .findAll('button')
+      .find((entry) => entry.text().includes('Start fresh via Claude'))
+    await startFreshButton?.trigger('click')
+    await flushPromises()
+
+    expect(submittedDispatchRequest).toEqual({
+      preferredTool: 'claude',
+    })
   })
 
   it('gates manual PR reviews until a main GitHub user is configured', async () => {
@@ -330,7 +536,10 @@ describe('App shell', () => {
   })
 
   it('creates a review request, opens the review drawer, and deletes it cleanly', async () => {
-    const createdReview = buildReviewSummary()
+    const createdReview = buildReviewSummary({
+      review: { preferredTool: 'claude' },
+      latestRun: { preferredTool: 'claude' },
+    })
     let reviewsBody: { reviews: unknown[] } = { reviews: [] }
     let submittedReviewRequest: Record<string, unknown> | null = null
 
@@ -408,6 +617,7 @@ describe('App shell', () => {
     await flushPromises()
 
     await wrapper.get('[data-testid="review-request-url"]').setValue(createdReview.review.pullRequestUrl)
+    await wrapper.get('[data-testid="review-request-tool"]').setValue('claude')
     await wrapper.get('[data-testid="review-request-extra-instructions"]').setValue('Pay attention to queue regressions.')
     await wrapper.get('[data-testid="review-request-submit"]').trigger('click')
     await flushPromises()
@@ -415,6 +625,7 @@ describe('App shell', () => {
 
     expect(submittedReviewRequest).toEqual({
       pullRequestUrl: createdReview.review.pullRequestUrl,
+      preferredTool: 'claude',
       extraInstructions: 'Pay attention to queue regressions.',
     })
     expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain(createdReview.review.pullRequestTitle)
@@ -525,6 +736,7 @@ describe('App shell', () => {
     await rereviewButton?.trigger('click')
     await flushPromises()
 
+    expect(wrapper.get('[data-testid="review-follow-up-tool"]').text()).toContain('Codex')
     await wrapper.get('[data-testid="review-follow-up-request"]').setValue(
       'Check whether the comments I confirmed are fixed.',
     )

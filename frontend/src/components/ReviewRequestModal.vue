@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 
-import type { CreateReviewInput } from '../types/task'
+import type { CreateReviewInput, RemoteAgentPreferredTool } from '../types/task'
 
 const props = defineProps<{
   busy?: boolean
+  defaultPreferredTool?: RemoteAgentPreferredTool
   mainUser?: string
   open: boolean
 }>()
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const pullRequestUrl = ref('')
+const preferredTool = ref<RemoteAgentPreferredTool>('codex')
 const extraInstructions = ref('')
 
 watch(
@@ -25,6 +27,7 @@ watch(
     }
 
     pullRequestUrl.value = ''
+    preferredTool.value = props.defaultPreferredTool ?? 'codex'
     extraInstructions.value = ''
   },
 )
@@ -32,6 +35,7 @@ watch(
 function submit() {
   emit('save', {
     pullRequestUrl: pullRequestUrl.value.trim(),
+    preferredTool: preferredTool.value,
     extraInstructions: extraInstructions.value.trim() || undefined,
   })
 }
@@ -83,6 +87,22 @@ function submit() {
               class="mt-2 w-full border border-fg2/20 bg-bg0 px-4 py-3 text-sm leading-6 text-fg0 outline-none transition hover:border-fg2/40 focus:border-aqua/50 focus:ring-1 focus:ring-aqua/50"
               placeholder="https://github.com/acme/project-a/pull/42"
             >
+          </label>
+
+          <label class="block text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
+            Dispatch via
+            <select
+              v-model="preferredTool"
+              data-testid="review-request-tool"
+              class="mt-2 w-full border border-fg2/20 bg-bg0 px-4 py-3 text-sm leading-6 text-fg0 outline-none transition hover:border-fg2/40 focus:border-aqua/50 focus:ring-1 focus:ring-aqua/50"
+            >
+              <option value="codex">
+                Codex
+              </option>
+              <option value="claude">
+                Claude
+              </option>
+            </select>
           </label>
 
           <label class="block text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">

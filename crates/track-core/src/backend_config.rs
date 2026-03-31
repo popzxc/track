@@ -10,7 +10,9 @@ use crate::paths::{
     get_backend_managed_remote_agent_known_hosts_path,
 };
 use crate::settings_repository::SettingsRepository;
-use crate::types::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
+use crate::types::{
+    RemoteAgentPreferredTool, RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig,
+};
 
 pub(crate) const REMOTE_AGENT_SETTING_KEY: &str = "remote_agent_config";
 
@@ -62,6 +64,7 @@ impl BackendConfigRepository {
 
     pub fn save_remote_agent_settings(
         &self,
+        preferred_tool: RemoteAgentPreferredTool,
         shell_prelude: Option<String>,
         review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
@@ -72,6 +75,7 @@ impl BackendConfigRepository {
             )
         })?;
 
+        config.preferred_tool = preferred_tool;
         config.shell_prelude = shell_prelude
             .map(|value| value.replace("\r\n", "\n").trim().to_owned())
             .filter(|value| !value.is_empty());
@@ -92,7 +96,6 @@ impl BackendConfigRepository {
         self.settings
             .save_json(MIGRATION_STATUS_SETTING_KEY, status)
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -133,11 +136,12 @@ impl RemoteAgentConfigService {
 
     pub fn save_remote_agent_settings(
         &self,
+        preferred_tool: RemoteAgentPreferredTool,
         shell_prelude: Option<String>,
         review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
         self.repository
-            .save_remote_agent_settings(shell_prelude, review_follow_up)
+            .save_remote_agent_settings(preferred_tool, shell_prelude, review_follow_up)
     }
 
     pub fn load_remote_agent_runtime_config(
@@ -156,7 +160,6 @@ impl RemoteAgentConfigService {
     pub fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
         self.repository.save_migration_status(status)
     }
-
 }
 
 fn build_remote_agent_runtime_config(
@@ -168,6 +171,7 @@ fn build_remote_agent_runtime_config(
         port: config.port,
         workspace_root: config.workspace_root,
         projects_registry_path: config.projects_registry_path,
+        preferred_tool: config.preferred_tool,
         shell_prelude: config.shell_prelude,
         review_follow_up: config.review_follow_up.and_then(|review_follow_up| {
             review_follow_up

@@ -31,8 +31,9 @@ use track_core::task_repository::FileTaskRepository;
 use track_core::task_sort::sort_tasks;
 use track_core::time_utils::now_utc;
 use track_core::types::{
-    CreateReviewInput, RemoteCleanupSummary, RemoteResetSummary, ReviewRecord, ReviewRunRecord,
-    Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
+    CreateReviewInput, RemoteAgentPreferredTool, RemoteCleanupSummary, RemoteResetSummary,
+    ReviewRecord, ReviewRunRecord, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
+    TaskUpdateInput,
 };
 
 #[derive(Clone)]
@@ -194,6 +195,8 @@ struct CreateReviewResponse {
 #[derive(Debug, Serialize)]
 struct RemoteAgentSettingsResponse {
     configured: bool,
+    #[serde(rename = "preferredTool")]
+    preferred_tool: RemoteAgentPreferredTool,
     #[serde(skip_serializing_if = "Option::is_none")]
     host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,6 +260,8 @@ struct RunsQuery {
 
 #[derive(Debug, Deserialize)]
 struct UpdateRemoteAgentSettingsInput {
+    #[serde(rename = "preferredTool", default)]
+    preferred_tool: Option<RemoteAgentPreferredTool>,
     #[serde(rename = "shellPrelude")]
     shell_prelude: String,
     #[serde(rename = "reviewFollowUp")]
@@ -279,6 +284,8 @@ struct PutRemoteAgentInput {
         default = "default_remote_projects_registry_path"
     )]
     projects_registry_path: String,
+    #[serde(rename = "preferredTool", default)]
+    preferred_tool: RemoteAgentPreferredTool,
     #[serde(rename = "shellPrelude")]
     shell_prelude: Option<String>,
     #[serde(rename = "reviewFollowUp")]
@@ -302,12 +309,19 @@ struct FollowUpRequestInput {
     request: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct DispatchTaskInput {
+    #[serde(rename = "preferredTool", default)]
+    preferred_tool: Option<RemoteAgentPreferredTool>,
+}
+
 fn remote_agent_settings_response(
     remote_agent: Option<RemoteAgentConfigFile>,
 ) -> RemoteAgentSettingsResponse {
     match remote_agent {
         Some(remote_agent) => RemoteAgentSettingsResponse {
             configured: true,
+            preferred_tool: remote_agent.preferred_tool,
             host: Some(remote_agent.host),
             user: Some(remote_agent.user),
             port: Some(remote_agent.port),
@@ -331,6 +345,7 @@ fn remote_agent_settings_response(
         },
         None => RemoteAgentSettingsResponse {
             configured: false,
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             host: None,
             user: None,
             port: None,
@@ -417,6 +432,9 @@ async fn patch_remote_agent_settings(
     let remote_agent = state
         .config_service
         .save_remote_agent_settings(
+            input
+                .preferred_tool
+                .unwrap_or(existing_remote_agent.preferred_tool),
             Some(input.shell_prelude),
             input
                 .review_follow_up
@@ -448,6 +466,7 @@ async fn put_remote_agent_settings(
                 port: input.port,
                 workspace_root: input.workspace_root,
                 projects_registry_path: input.projects_registry_path,
+                preferred_tool: input.preferred_tool,
                 shell_prelude: input.shell_prelude,
                 review_follow_up: input.review_follow_up.map(|review_follow_up| {
                     RemoteAgentReviewFollowUpConfigFile {
@@ -1123,7 +1142,15 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
 async fn dispatch_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
+    body: Bytes,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
+    let input = if body.is_empty() {
+        DispatchTaskInput::default()
+    } else {
+        serde_json::from_slice::<DispatchTaskInput>(&body)
+            .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?
+    };
+
     let queue_state = state.clone();
     let task_id = id.clone();
     let dispatch = tokio::task::spawn_blocking(move || {
@@ -1136,7 +1163,7 @@ async fn dispatch_task(
             review_dispatch_repository: &queue_state.review_dispatch_repository,
         };
 
-        dispatch_service.queue_dispatch(&task_id)
+        dispatch_service.queue_dispatch(&task_id, input.preferred_tool)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Dispatch task failed to join: {error}")))?
@@ -1378,7 +1405,8 @@ mod tests {
     use track_core::task_repository::FileTaskRepository;
     use track_core::time_utils::now_utc;
     use track_core::types::{
-        DispatchStatus, Priority, ReviewRecord, ReviewRunRecord, TaskCreateInput, TaskSource,
+        DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
+        TaskCreateInput, TaskSource,
     };
 
     use super::{build_app, AppState};
@@ -1582,6 +1610,7 @@ mod tests {
                 port: DEFAULT_REMOTE_AGENT_PORT,
                 workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
                 projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
                 shell_prelude: Some(". \"$HOME/.cargo/env\"".to_owned()),
                 review_follow_up: None,
             }))
@@ -1779,10 +1808,10 @@ mod tests {
             .task;
 
         dispatch_repository
-            .create_dispatch(&first_task, "192.0.2.25")
+            .create_dispatch(&first_task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("first dispatch should be created");
         dispatch_repository
-            .create_dispatch(&second_task, "192.0.2.25")
+            .create_dispatch(&second_task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("second dispatch should be created");
 
         let app = build_app(
@@ -1860,7 +1889,7 @@ mod tests {
             .expect("task should be created")
             .task;
         let dispatch = dispatch_repository
-            .create_dispatch(&task, "192.0.2.25")
+            .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("dispatch should be created");
 
         let app = build_app(
@@ -1921,10 +1950,10 @@ mod tests {
             .task;
 
         dispatch_repository
-            .create_dispatch(&task, "192.0.2.25")
+            .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("first dispatch should be created");
         dispatch_repository
-            .create_dispatch(&task, "192.0.2.25")
+            .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("second dispatch should be created");
 
         let app = build_app(
@@ -1982,6 +2011,7 @@ mod tests {
             git_url: "git@github.com:acme/project-a.git".to_owned(),
             base_branch: "main".to_owned(),
             workspace_key: "project-a".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             project: Some("project-a".to_owned()),
             main_user: "octocat".to_owned(),
             default_review_prompt: Some("Focus on regressions.".to_owned()),
@@ -1999,6 +2029,7 @@ mod tests {
                 pull_request_url: review.pull_request_url.clone(),
                 repository_full_name: review.repository_full_name.clone(),
                 workspace_key: review.workspace_key.clone(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
                 status: DispatchStatus::Succeeded,
                 created_at,
                 updated_at: created_at,
@@ -2101,7 +2132,7 @@ mod tests {
             .task;
 
         let mut dispatch = dispatch_repository
-            .create_dispatch(&task, "192.0.2.25")
+            .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("dispatch should be created");
         dispatch.status = DispatchStatus::Failed;
         dispatch.finished_at = Some(dispatch.updated_at);
@@ -2449,6 +2480,7 @@ mod tests {
         let get_json: serde_json::Value =
             serde_json::from_slice(&get_body).expect("get response should be valid json");
         assert_eq!(get_json["configured"], true);
+        assert_eq!(get_json["preferredTool"], "codex");
         assert_eq!(get_json["shellPrelude"], ". \"$HOME/.cargo/env\"");
         assert_eq!(get_json["reviewFollowUp"]["enabled"], false);
 
@@ -2459,7 +2491,7 @@ mod tests {
                     .uri("/api/remote-agent")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"shellPrelude":"export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"","reviewFollowUp":{"enabled":true,"mainUser":"octocat","defaultReviewPrompt":"Focus on regressions and missing tests."}}"#,
+                        r#"{"preferredTool":"claude","shellPrelude":"export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"","reviewFollowUp":{"enabled":true,"mainUser":"octocat","defaultReviewPrompt":"Focus on regressions and missing tests."}}"#,
                     ))
                     .expect("patch request should build"),
             )
@@ -2471,6 +2503,7 @@ mod tests {
             .expect("patch response body should be readable");
         let patch_json: serde_json::Value =
             serde_json::from_slice(&patch_body).expect("patch response should be valid json");
+        assert_eq!(patch_json["preferredTool"], "claude");
         assert_eq!(
             patch_json["shellPrelude"],
             "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\""
@@ -2509,13 +2542,19 @@ mod tests {
                     .uri("/api/remote-agent")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"host":"192.0.2.25","user":"builder","port":22,"workspaceRoot":"~/workspace","projectsRegistryPath":"~/track-projects.json","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","reviewFollowUp":{"enabled":false,"mainUser":"octocat","defaultReviewPrompt":"Focus on regressions."},"sshPrivateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n","knownHosts":"github.com ssh-ed25519 AAAA"}"#,
+                        r#"{"host":"192.0.2.25","user":"builder","port":22,"workspaceRoot":"~/workspace","projectsRegistryPath":"~/track-projects.json","preferredTool":"claude","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","reviewFollowUp":{"enabled":false,"mainUser":"octocat","defaultReviewPrompt":"Focus on regressions."},"sshPrivateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n","knownHosts":"github.com ssh-ed25519 AAAA"}"#,
                     ))
                     .expect("put request should build"),
             )
             .await
             .expect("put request should succeed");
         assert_eq!(response.status(), StatusCode::OK);
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("put response body should be readable");
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&response_body).expect("put response should be valid json");
+        assert_eq!(response_json["preferredTool"], "claude");
 
         let key_path =
             get_backend_managed_remote_agent_key_path().expect("managed key path should resolve");

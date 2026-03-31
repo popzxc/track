@@ -375,7 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write a mock state JSON file into the fixture runtime directory.",
     )
     write_state_parser.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
-    write_state_parser.add_argument("--target", choices=["gh", "codex"], required=True)
+    write_state_parser.add_argument("--target", choices=["gh", "codex", "claude"], required=True)
     write_state_parser.add_argument("--source", type=Path, required=True)
     write_state_parser.set_defaults(func=command_write_state)
 

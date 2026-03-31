@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import type { ReviewFollowUpInput, ReviewRecord } from '../types/task'
 
@@ -15,6 +15,14 @@ const emit = defineEmits<{
 }>()
 
 const request = ref('')
+
+const pinnedToolLabel = computed(() => {
+  if (!props.review) {
+    return null
+  }
+
+  return props.review.preferredTool === 'claude' ? 'Claude' : 'Codex'
+})
 
 watch(
   () => props.open,
@@ -71,6 +79,14 @@ function submit() {
             <code>Focus on the new tests and edge cases</code>, or
             <code>Ignore the docs-only changes and look for behavior regressions</code>.
           </p>
+
+          <div
+            v-if="pinnedToolLabel"
+            data-testid="review-follow-up-tool"
+            class="border border-aqua/20 bg-aqua/6 p-4 text-sm leading-7 text-fg1"
+          >
+            This re-review stays on <span class="text-fg0">{{ pinnedToolLabel }}</span> so the saved PR review context remains on one runner.
+          </div>
 
           <label class="block text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
             Re-review request

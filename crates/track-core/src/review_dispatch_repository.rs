@@ -6,7 +6,7 @@ use crate::database::DatabaseContext;
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
-use crate::types::{DispatchStatus, ReviewRecord, ReviewRunRecord};
+use crate::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord};
 
 #[derive(Debug, Clone)]
 pub struct ReviewDispatchRepository {
@@ -25,6 +25,7 @@ impl ReviewDispatchRepository {
         &self,
         review: &ReviewRecord,
         remote_host: &str,
+        preferred_tool: RemoteAgentPreferredTool,
     ) -> Result<ReviewRunRecord, TrackError> {
         let timestamp = now_utc();
         let record = ReviewRunRecord {
@@ -33,6 +34,7 @@ impl ReviewDispatchRepository {
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
+            preferred_tool,
             status: DispatchStatus::Preparing,
             created_at: timestamp,
             updated_at: timestamp,
@@ -73,17 +75,18 @@ impl ReviewDispatchRepository {
                     r#"
                     INSERT INTO review_runs (
                         dispatch_id, review_id, pull_request_url, repository_full_name,
-                        workspace_key, status, created_at, updated_at, finished_at,
-                        remote_host, branch_name, worktree_path, follow_up_request,
-                        target_head_oid, summary, review_submitted, github_review_id,
-                        github_review_url, notes, error_message
+                        workspace_key, preferred_tool, status, created_at, updated_at,
+                        finished_at, remote_host, branch_name, worktree_path,
+                        follow_up_request, target_head_oid, summary, review_submitted,
+                        github_review_id, github_review_url, notes, error_message
                     )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
                     ON CONFLICT(dispatch_id) DO UPDATE SET
                         review_id = excluded.review_id,
                         pull_request_url = excluded.pull_request_url,
                         repository_full_name = excluded.repository_full_name,
                         workspace_key = excluded.workspace_key,
+                        preferred_tool = excluded.preferred_tool,
                         status = excluded.status,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at,
@@ -106,6 +109,7 @@ impl ReviewDispatchRepository {
                 .bind(&record.pull_request_url)
                 .bind(&record.repository_full_name)
                 .bind(&record.workspace_key)
+                .bind(record.preferred_tool.as_str())
                 .bind(record.status.as_str())
                 .bind(format_iso_8601_millis(record.created_at))
                 .bind(format_iso_8601_millis(record.updated_at))
@@ -353,6 +357,11 @@ fn review_run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRunRecord, 
         pull_request_url: row.get::<String, _>("pull_request_url"),
         repository_full_name: row.get::<String, _>("repository_full_name"),
         workspace_key: row.get::<String, _>("workspace_key"),
+        preferred_tool: parse_preferred_tool(
+            row.try_get::<String, _>("preferred_tool")
+                .unwrap_or_else(|_| "codex".to_owned())
+                .as_str(),
+        )?,
         status: parse_dispatch_status(row.get::<String, _>("status").as_str())?,
         created_at,
         updated_at,
@@ -384,4 +393,13 @@ fn parse_dispatch_status(value: &str) -> Result<DispatchStatus, TrackError> {
             format!("Dispatch status `{value}` is not valid."),
         )),
     }
+}
+
+fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackError> {
+    RemoteAgentPreferredTool::from_str(value).ok_or_else(|| {
+        TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Remote agent preferred tool `{value}` is not valid."),
+        )
+    })
 }

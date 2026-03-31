@@ -27,6 +27,7 @@ export function buildDispatch(overrides: Partial<TaskDispatch> = {}): TaskDispat
   return {
     dispatchId: 'dispatch-123',
     taskId: 'project-a/open/20260323-120000-fix-queue-layout.md',
+    preferredTool: 'codex',
     project: 'project-a',
     status: 'succeeded',
     createdAt: '2026-03-23T12:05:00.000Z',
@@ -80,6 +81,7 @@ export function buildReview(overrides: Partial<ReviewRecord> = {}): ReviewRecord
     gitUrl: 'git@github.com:acme/project-a.git',
     baseBranch: 'main',
     workspaceKey: 'project-a',
+    preferredTool: 'codex',
     project: 'project-a',
     mainUser: 'octocat',
     defaultReviewPrompt: 'Focus on regressions and missing tests.',
@@ -97,6 +99,7 @@ export function buildReviewRun(overrides: Partial<ReviewRunRecord> = {}): Review
     pullRequestUrl: 'https://github.com/acme/project-a/pull/42',
     repositoryFullName: 'acme/project-a',
     workspaceKey: 'project-a',
+    preferredTool: 'codex',
     status: 'succeeded',
     createdAt: '2026-03-26T12:05:00.000Z',
     updatedAt: '2026-03-26T12:06:00.000Z',
@@ -130,6 +133,7 @@ export function buildReviewSummary(overrides: {
         pullRequestUrl: review.pullRequestUrl,
         repositoryFullName: review.repositoryFullName,
         workspaceKey: review.workspaceKey,
+        preferredTool: review.preferredTool,
         ...overrides.latestRun,
       }),
   }
@@ -140,6 +144,7 @@ export function buildRemoteAgentSettings(
 ): RemoteAgentSettings {
   return {
     configured: true,
+    preferredTool: 'codex',
     host: '127.0.0.1',
     user: 'track',
     port: 2222,

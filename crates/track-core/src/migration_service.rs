@@ -17,8 +17,8 @@ use crate::migration::{
 };
 use crate::paths::{
     collapse_home_path, get_backend_managed_remote_agent_key_path,
-    get_backend_managed_remote_agent_known_hosts_path, get_legacy_config_path,
-    get_legacy_root_dir, path_to_string,
+    get_backend_managed_remote_agent_known_hosts_path, get_legacy_config_path, get_legacy_root_dir,
+    path_to_string,
 };
 use crate::project_discovery::discover_projects_from_roots;
 use crate::project_repository::{infer_project_metadata, ProjectMetadata, ProjectRepository};
@@ -470,9 +470,12 @@ fn merge_discovered_legacy_projects(
     let project_roots = config
         .project_roots
         .iter()
-        .map(|value| resolve_legacy_path_from_config_file(value, legacy_config_path, legacy_home_dir))
+        .map(|value| {
+            resolve_legacy_path_from_config_file(value, legacy_config_path, legacy_home_dir)
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let discovered_projects = discover_projects_from_roots(&project_roots, &config.project_aliases)?;
+    let discovered_projects =
+        discover_projects_from_roots(&project_roots, &config.project_aliases)?;
 
     let mut imported_project_names = snapshot
         .projects
@@ -505,7 +508,12 @@ fn attach_legacy_project_aliases(
     let imported_project_names = snapshot
         .projects
         .iter()
-        .map(|project| (project.canonical_name.to_lowercase(), project.canonical_name.clone()))
+        .map(|project| {
+            (
+                project.canonical_name.to_lowercase(),
+                project.canonical_name.clone(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
 
     for (alias, configured_canonical_name) in configured_aliases {

@@ -92,6 +92,150 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn dispatch_task_uses_claude_when_runner_prefers_claude() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_claude_state(&success_claude_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        true,
+        "Mock Claude completed the task and opened a PR.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let updated_settings = harness
+        .update_remote_agent_settings(json!({
+            "preferredTool": "claude",
+            "shellPrelude": "export PATH=\"/opt/track-testing/bin:$PATH\"\nexport TRACK_TESTING_RUNTIME_DIR=\"/srv/track-testing\"",
+            "reviewFollowUp": {
+                "enabled": false,
+                "mainUser": "octocat",
+                "defaultReviewPrompt": "Focus on bugs, regressions, and missing tests.",
+            }
+        }))
+        .await;
+    assert_eq!(updated_settings["preferredTool"], "claude");
+
+    let task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Prepare the remote-agent integration harness with Claude",
+    );
+
+    let dispatch_response = harness.dispatch_task(&task.id).await;
+    let dispatch_id = dispatch_response["dispatchId"]
+        .as_str()
+        .expect("dispatch response should include a dispatch id")
+        .to_owned();
+    assert_eq!(dispatch_response["status"], "preparing");
+
+    let terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(terminal_dispatch["status"], "succeeded");
+    assert_eq!(
+        terminal_dispatch["summary"],
+        "Mock Claude completed the task and opened a PR."
+    );
+    assert_eq!(
+        terminal_dispatch["pullRequestUrl"],
+        "https://github.com/acme/project-a/pull/42"
+    );
+
+    let claude_log_entries = fixture.read_log_entries("claude");
+    assert_eq!(claude_log_entries.len(), 1);
+    assert!(claude_log_entries[0]["argv"]
+        .as_array()
+        .is_some_and(|argv| argv.iter().any(|value| value.as_str() == Some("-p"))));
+    assert!(claude_log_entries[0]["argv"]
+        .as_array()
+        .is_some_and(|argv| {
+            argv.iter()
+                .any(|value| value.as_str() == Some("--dangerously-skip-permissions"))
+        }));
+    assert!(claude_log_entries[0]["argv"]
+        .as_array()
+        .is_some_and(|argv| {
+            argv.windows(2).any(|window| {
+                window[0].as_str() == Some("--output-format") && window[1].as_str() == Some("json")
+            })
+        }));
+    assert!(fixture.read_log_entries("codex").is_empty());
+
+    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
+    let remote_result = fixture.read_remote_file(&format!("{remote_run_directory}/result.json"));
+    assert!(remote_result.contains("\"structured_output\""));
+    assert!(
+        remote_result.contains("\"summary\": \"Mock Claude completed the task and opened a PR.\"")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dispatch_task_can_override_runner_tool_per_request() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_claude_state(&success_claude_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        true,
+        "Mock Claude completed the task through a per-request override.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Prepare the remote-agent integration harness with a per-request Claude override",
+    );
+
+    let dispatch_response = harness
+        .dispatch_task_with_tool(&task.id, Some("claude"))
+        .await;
+    assert_eq!(dispatch_response["preferredTool"], "claude");
+
+    let terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(terminal_dispatch["status"], "succeeded");
+    assert_eq!(terminal_dispatch["preferredTool"], "claude");
+    assert_eq!(
+        terminal_dispatch["summary"],
+        "Mock Claude completed the task through a per-request override."
+    );
+
+    let claude_log_entries = fixture.read_log_entries("claude");
+    assert_eq!(claude_log_entries.len(), 1);
+    assert!(claude_log_entries[0]["argv"]
+        .as_array()
+        .is_some_and(|argv| {
+            argv.windows(2).any(|window| {
+                window[0].as_str() == Some("--output-format") && window[1].as_str() == Some("json")
+            })
+        }));
+    assert!(fixture.read_log_entries("codex").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
     if !live_integration_tests_enabled() {
         print_live_test_skip_message();
@@ -416,6 +560,92 @@ async fn requesting_a_rereview_reuses_the_saved_review_and_records_new_run_conte
     assert!(!harness.review_history_exists(&review_id));
     assert!(!fixture.remote_path_exists(&follow_up_worktree_path));
     assert!(!fixture.remote_path_exists(&follow_up_run_directory));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requesting_a_pr_review_can_override_runner_tool_and_rereview_keeps_it() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_claude_state(&review_claude_state(
+        0,
+        "Mock Claude reviewed the pull request successfully.",
+        "@octocat requested me to review this PR.\n\nI found one issue in the fixture diff.",
+    ));
+
+    let harness = ApiHarness::new(&fixture);
+    let _metadata_seed_task = harness.create_task_with_project(
+        "project-a",
+        project_metadata("project-a"),
+        "Seed project metadata for per-review runner overrides",
+    );
+    let review_response = harness
+        .create_review_with_tool(
+            "https://github.com/acme/project-a/pull/42",
+            Some("Pay extra attention to missing regression coverage."),
+            Some("claude"),
+        )
+        .await;
+    let review_id = review_response["review"]["id"]
+        .as_str()
+        .expect("review response should include a review id")
+        .to_owned();
+    assert_eq!(review_response["review"]["preferredTool"], "claude");
+    assert_eq!(review_response["run"]["preferredTool"], "claude");
+
+    let initial_terminal_run = harness
+        .poll_review_until_terminal(&review_id, Duration::from_secs(20))
+        .await;
+    assert_eq!(initial_terminal_run["status"], "succeeded");
+    assert_eq!(initial_terminal_run["preferredTool"], "claude");
+    assert_eq!(initial_terminal_run["githubReviewId"], "42001");
+
+    fixture.write_claude_state(&review_claude_state(
+        0,
+        "Mock Claude re-reviewed the pull request successfully.",
+        "@octocat requested me to review this PR.\n\nThe previously endorsed issue looks fixed, and I did not find new blocking problems.",
+    ));
+
+    let follow_up_response = harness
+        .follow_up_review(
+            &review_id,
+            "Check whether the comments I confirmed are fixed, and mention anything intentionally left alone only in the summary.",
+        )
+        .await;
+    assert_eq!(follow_up_response["preferredTool"], "claude");
+
+    let follow_up_terminal_run = harness
+        .poll_review_until_terminal(&review_id, Duration::from_secs(20))
+        .await;
+    assert_eq!(follow_up_terminal_run["status"], "succeeded");
+    assert_eq!(follow_up_terminal_run["preferredTool"], "claude");
+    assert_eq!(follow_up_terminal_run["githubReviewId"], "42002");
+
+    let review_runs = harness.review_runs(&review_id).await;
+    assert_eq!(review_runs.len(), 2);
+    assert!(review_runs
+        .iter()
+        .all(|run| run["preferredTool"] == "claude"));
+
+    let claude_log_entries = fixture.read_log_entries("claude");
+    assert_eq!(claude_log_entries.len(), 2);
+    assert!(claude_log_entries.iter().all(|entry| {
+        entry["argv"].as_array().is_some_and(|argv| {
+            argv.windows(2).any(|window| {
+                window[0].as_str() == Some("--output-format") && window[1].as_str() == Some("json")
+            })
+        })
+    }));
+    assert!(fixture.read_log_entries("codex").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1034,7 +1264,53 @@ fn success_codex_state(
     })
 }
 
+fn success_claude_state(
+    sleep_seconds: u64,
+    pull_request_url: Option<&str>,
+    create_commit: bool,
+    summary: &str,
+) -> Value {
+    json!({
+        "mode": "success",
+        "sleepSeconds": sleep_seconds,
+        "status": "succeeded",
+        "summary": summary,
+        "pullRequestUrl": pull_request_url,
+        "branchName": null,
+        "worktreePath": null,
+        "notes": "Recorded by the integration-test fixture.",
+        "createCommit": if create_commit {
+            json!({
+                "message": "fix: apply mocked claude change",
+                "files": [
+                    {
+                        "path": "MOCK_CLAUDE_CHANGE.md",
+                        "contents": "# Mock change\n\nThis file was created by the Claude fixture.\n"
+                    }
+                ]
+            })
+        } else {
+            Value::Null
+        }
+    })
+}
+
 fn review_codex_state(sleep_seconds: u64, summary: &str, review_body: &str) -> Value {
+    json!({
+        "mode": "success",
+        "sleepSeconds": sleep_seconds,
+        "status": "succeeded",
+        "summary": summary,
+        "pullRequestUrl": "https://github.com/acme/project-a/pull/42",
+        "reviewSubmitted": true,
+        "reviewBody": review_body,
+        "worktreePath": null,
+        "notes": "Recorded by the integration-test fixture.",
+        "createCommit": Value::Null,
+    })
+}
+
+fn review_claude_state(sleep_seconds: u64, summary: &str, review_body: &str) -> Value {
     json!({
         "mode": "success",
         "sleepSeconds": sleep_seconds,

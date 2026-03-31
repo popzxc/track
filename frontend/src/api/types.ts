@@ -32,6 +32,7 @@ export interface CreateReviewResponse {
 
 export interface RemoteAgentSettings {
   configured: boolean
+  preferredTool: RemoteAgentPreferredTool
   host?: string
   user?: string
   port?: number
@@ -135,6 +136,7 @@ export interface TasksResponse {
 export type Priority = 'high' | 'medium' | 'low'
 export type Status = 'open' | 'closed'
 export type DispatchStatus = 'preparing' | 'running' | 'succeeded' | 'canceled' | 'failed' | 'blocked'
+export type RemoteAgentPreferredTool = 'codex' | 'claude'
 
 export interface ProjectInfo {
   canonicalName: string
@@ -170,6 +172,10 @@ export interface TaskFollowUpInput {
   request: string
 }
 
+export interface TaskDispatchInput {
+  preferredTool?: RemoteAgentPreferredTool
+}
+
 export interface ReviewFollowUpInput {
   request: string
 }
@@ -177,6 +183,7 @@ export interface ReviewFollowUpInput {
 export interface TaskDispatch {
   dispatchId: string
   taskId: string
+  preferredTool: RemoteAgentPreferredTool
   project: string
   status: DispatchStatus
   createdAt: string
@@ -202,6 +209,7 @@ export interface ReviewRecord {
   gitUrl: string
   baseBranch: string
   workspaceKey: string
+  preferredTool: RemoteAgentPreferredTool
   project?: string
   mainUser: string
   defaultReviewPrompt?: string
@@ -216,6 +224,7 @@ export interface ReviewRunRecord {
   pullRequestUrl: string
   repositoryFullName: string
   workspaceKey: string
+  preferredTool: RemoteAgentPreferredTool
   status: DispatchStatus
   createdAt: string
   updatedAt: string
@@ -245,6 +254,7 @@ export interface RunRecord {
 
 export interface CreateReviewInput {
   pullRequestUrl: string
+  preferredTool?: RemoteAgentPreferredTool
   extraInstructions?: string
 }
 
@@ -262,6 +272,7 @@ export interface ProjectMetadataUpdateInput {
 }
 
 export interface RemoteAgentSettingsUpdateInput {
+  preferredTool: RemoteAgentPreferredTool
   shellPrelude: string
   reviewFollowUp?: RemoteAgentReviewFollowUpSettings
 }

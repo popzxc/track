@@ -1,0 +1,133 @@
+/* =============================================================================
+   track Docs Theme
+   =============================================================================
+
+   The documentation should feel related to the existing application instead of
+   looking like a detached microsite. We keep Starlight's clean information
+   architecture, then push the palette and surfaces toward the project's
+   gruvbox-dark UI so the book feels like part of the same tool.
+*/
+
+:root {
+  color-scheme: dark;
+
+  --track-bg-0: #1d2021;
+  --track-bg-1: #282828;
+  --track-bg-2: #32302f;
+  --track-bg-3: #3c3836;
+  --track-fg-0: #fbf1c7;
+  --track-fg-1: #ebdbb2;
+  --track-fg-2: #d5c4a1;
+  --track-fg-3: #bdae93;
+  --track-muted: #a89984;
+  --track-green: #8ec07c;
+  --track-aqua: #83a598;
+  --track-yellow: #fabd2f;
+  --track-orange: #fe8019;
+  --track-red: #fb4934;
+
+  --sl-font: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', sans-serif;
+  --sl-font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  --sl-content-width: 50rem;
+
+  --sl-color-accent-low: #3c3836;
+  --sl-color-accent: #8ec07c;
+  --sl-color-accent-high: #ebdbb2;
+  --sl-color-white: #fbf1c7;
+  --sl-color-gray-1: #ebdbb2;
+  --sl-color-gray-2: #d5c4a1;
+  --sl-color-gray-3: #bdae93;
+  --sl-color-gray-4: #a89984;
+  --sl-color-gray-5: #665c54;
+  --sl-color-gray-6: #3c3836;
+  --sl-color-black: #1d2021;
+}
+
+html {
+  background: var(--track-bg-0);
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(29, 32, 33, 0.98), rgba(29, 32, 33, 1)),
+    repeating-linear-gradient(
+      0deg,
+      rgba(251, 241, 199, 0.035) 0,
+      rgba(251, 241, 199, 0.035) 1px,
+      transparent 1px,
+      transparent 32px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(251, 241, 199, 0.03) 0,
+      rgba(251, 241, 199, 0.03) 1px,
+      transparent 1px,
+      transparent 32px
+    ),
+    var(--track-bg-0);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top, rgba(250, 189, 47, 0.11), transparent 34%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.3));
+}
+
+main,
+header,
+nav,
+aside {
+  position: relative;
+  z-index: 1;
+}
+
+header {
+  backdrop-filter: blur(14px);
+}
+
+pre,
+table,
+.card,
+.site-title,
+.pagination-links a {
+  border-radius: 0.9rem;
+}
+
+pre,
+table {
+  border: 1px solid rgba(235, 219, 178, 0.09);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+}
+
+:not(pre) > code {
+  background: rgba(60, 56, 54, 0.82);
+  border: 1px solid rgba(235, 219, 178, 0.1);
+  border-radius: 0.45rem;
+}
+
+.sl-markdown-content :is(h1, h2, h3) {
+  letter-spacing: 0.01em;
+}
+
+.sl-markdown-content a {
+  text-decoration-color: rgba(131, 165, 152, 0.55);
+  text-underline-offset: 0.16em;
+}
+
+.sl-markdown-content a:hover {
+  text-decoration-color: rgba(250, 189, 47, 0.65);
+}
+
+.sl-markdown-content blockquote {
+  border-inline-start-color: rgba(142, 192, 124, 0.75);
+  background: rgba(40, 40, 40, 0.75);
+}
+
+::selection {
+  background: rgba(250, 189, 47, 0.32);
+  color: var(--track-fg-0);
+}

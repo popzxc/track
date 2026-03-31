@@ -6,7 +6,7 @@ use crate::database::DatabaseContext;
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
 use crate::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
-use crate::types::ReviewRecord;
+use crate::types::{RemoteAgentPreferredTool, ReviewRecord};
 
 #[derive(Debug, Clone)]
 pub struct ReviewRepository {
@@ -34,10 +34,10 @@ impl ReviewRepository {
                     INSERT INTO reviews (
                         id, pull_request_url, pull_request_number, pull_request_title,
                         repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                        project, main_user, default_review_prompt, extra_instructions,
-                        created_at, updated_at
+                        preferred_tool, project, main_user, default_review_prompt,
+                        extra_instructions, created_at, updated_at
                     )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                     ON CONFLICT(id) DO UPDATE SET
                         pull_request_url = excluded.pull_request_url,
                         pull_request_number = excluded.pull_request_number,
@@ -47,6 +47,7 @@ impl ReviewRepository {
                         git_url = excluded.git_url,
                         base_branch = excluded.base_branch,
                         workspace_key = excluded.workspace_key,
+                        preferred_tool = excluded.preferred_tool,
                         project = excluded.project,
                         main_user = excluded.main_user,
                         default_review_prompt = excluded.default_review_prompt,
@@ -64,6 +65,7 @@ impl ReviewRepository {
                 .bind(&review.git_url)
                 .bind(&review.base_branch)
                 .bind(&review.workspace_key)
+                .bind(review.preferred_tool.as_str())
                 .bind(review.project.as_deref())
                 .bind(&review.main_user)
                 .bind(review.default_review_prompt.as_deref())
@@ -92,8 +94,8 @@ impl ReviewRepository {
                     SELECT
                         id, pull_request_url, pull_request_number, pull_request_title,
                         repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                        project, main_user, default_review_prompt, extra_instructions,
-                        created_at, updated_at
+                        preferred_tool, project, main_user, default_review_prompt,
+                        extra_instructions, created_at, updated_at
                     FROM reviews
                     ORDER BY updated_at DESC
                     "#,
@@ -126,8 +128,8 @@ impl ReviewRepository {
                     SELECT
                         id, pull_request_url, pull_request_number, pull_request_title,
                         repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                        project, main_user, default_review_prompt, extra_instructions,
-                        created_at, updated_at
+                        preferred_tool, project, main_user, default_review_prompt,
+                        extra_instructions, created_at, updated_at
                     FROM reviews
                     WHERE id = ?1
                     "#,
@@ -206,11 +208,25 @@ fn review_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRecord, TrackEr
         git_url: row.get::<String, _>("git_url"),
         base_branch: row.get::<String, _>("base_branch"),
         workspace_key: row.get::<String, _>("workspace_key"),
+        preferred_tool: parse_preferred_tool(
+            row.try_get::<String, _>("preferred_tool")
+                .unwrap_or_else(|_| "codex".to_owned())
+                .as_str(),
+        )?,
         project: row.get::<Option<String>, _>("project"),
         main_user: row.get::<String, _>("main_user"),
         default_review_prompt: row.get::<Option<String>, _>("default_review_prompt"),
         extra_instructions: row.get::<Option<String>, _>("extra_instructions"),
         created_at,
         updated_at,
+    })
+}
+
+fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackError> {
+    RemoteAgentPreferredTool::from_str(value).ok_or_else(|| {
+        TrackError::new(
+            ErrorCode::TaskWriteFailed,
+            format!("Remote agent preferred tool `{value}` is not valid."),
+        )
     })
 }

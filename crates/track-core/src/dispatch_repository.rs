@@ -6,7 +6,7 @@ use crate::database::DatabaseContext;
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
-use crate::types::{DispatchStatus, Task, TaskDispatchRecord};
+use crate::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDispatchRecord};
 
 #[derive(Debug, Clone)]
 pub struct DispatchRepository {
@@ -25,11 +25,13 @@ impl DispatchRepository {
         &self,
         task: &Task,
         remote_host: &str,
+        preferred_tool: RemoteAgentPreferredTool,
     ) -> Result<TaskDispatchRecord, TrackError> {
         let timestamp = now_utc();
         let record = TaskDispatchRecord {
             dispatch_id: format!("dispatch-{}", timestamp.unix_timestamp_nanos()),
             task_id: task.id.clone(),
+            preferred_tool,
             project: task.project.clone(),
             status: DispatchStatus::Preparing,
             created_at: timestamp,
@@ -69,13 +71,15 @@ impl DispatchRepository {
                 sqlx::query(
                     r#"
                     INSERT INTO task_dispatches (
-                        dispatch_id, task_id, project, status, created_at, updated_at, finished_at,
-                        remote_host, branch_name, worktree_path, pull_request_url, follow_up_request,
-                        summary, notes, error_message, review_request_head_oid, review_request_user
+                        dispatch_id, task_id, preferred_tool, project, status, created_at, updated_at,
+                        finished_at, remote_host, branch_name, worktree_path, pull_request_url,
+                        follow_up_request, summary, notes, error_message, review_request_head_oid,
+                        review_request_user
                     )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                     ON CONFLICT(dispatch_id) DO UPDATE SET
                         task_id = excluded.task_id,
+                        preferred_tool = excluded.preferred_tool,
                         project = excluded.project,
                         status = excluded.status,
                         created_at = excluded.created_at,
@@ -95,6 +99,7 @@ impl DispatchRepository {
                 )
                 .bind(&record.dispatch_id)
                 .bind(&record.task_id)
+                .bind(record.preferred_tool.as_str())
                 .bind(&record.project)
                 .bind(record.status.as_str())
                 .bind(format_iso_8601_millis(record.created_at))
@@ -353,6 +358,11 @@ fn task_dispatch_from_row(row: sqlx::sqlite::SqliteRow) -> Result<TaskDispatchRe
     Ok(TaskDispatchRecord {
         dispatch_id,
         task_id: row.get::<String, _>("task_id"),
+        preferred_tool: parse_preferred_tool(
+            row.try_get::<String, _>("preferred_tool")
+                .unwrap_or_else(|_| "codex".to_owned())
+                .as_str(),
+        )?,
         project: row.get::<String, _>("project"),
         status: parse_dispatch_status(row.get::<String, _>("status").as_str())?,
         created_at,
@@ -384,4 +394,13 @@ fn parse_dispatch_status(value: &str) -> Result<DispatchStatus, TrackError> {
             format!("Dispatch status `{value}` is not valid."),
         )),
     }
+}
+
+fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackError> {
+    RemoteAgentPreferredTool::from_str(value).ok_or_else(|| {
+        TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Remote agent preferred tool `{value}` is not valid."),
+        )
+    })
 }

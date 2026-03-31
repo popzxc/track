@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use tempfile::TempDir;
 use track_core::config::{RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile};
+use track_core::types::RemoteAgentPreferredTool;
 
 const FIXTURE_IMAGE: &str = "track-testing/ssh-fixture:local";
 const FIXTURE_HOST: &str = "127.0.0.1";
@@ -138,6 +139,14 @@ impl RemoteFixture {
         .expect("codex state should be written");
     }
 
+    pub fn write_claude_state(&self, state: &Value) {
+        fs::write(
+            self.runtime_dir.path().join("state/claude.json"),
+            serde_json::to_string_pretty(state).expect("claude state should serialize") + "\n",
+        )
+        .expect("claude state should be written");
+    }
+
     pub fn private_key_path(&self) -> PathBuf {
         self.runtime_dir.path().join("id_ed25519")
     }
@@ -149,6 +158,7 @@ impl RemoteFixture {
             port: self.port,
             workspace_root: FIXTURE_WORKSPACE_ROOT.to_owned(),
             projects_registry_path: FIXTURE_PROJECTS_REGISTRY_PATH.to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             shell_prelude: Some(FIXTURE_SHELL_PRELUDE.to_owned()),
             review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
                 enabled: false,

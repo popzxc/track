@@ -1,0 +1,16 @@
+{
+  "name": "track-docs",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.0",
+  "scripts": {
+    "dev": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro dev",
+    "build": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro build",
+    "preview": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro preview",
+    "check": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro check"
+  },
+  "devDependencies": {
+    "@astrojs/starlight": "0.35.2",
+    "astro": "5.13.5"
+  }
+}

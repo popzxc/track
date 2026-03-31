@@ -10,7 +10,7 @@ use crate::paths::{
     get_managed_remote_agent_known_hosts_path, resolve_path_from_config_file,
 };
 use crate::types::{
-    ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig,
+    ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, RemoteAgentPreferredTool,
     RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig, TrackRuntimeConfig,
 };
 
@@ -104,6 +104,12 @@ pub struct RemoteAgentConfigFile {
         default = "default_remote_projects_registry_path"
     )]
     pub projects_registry_path: String,
+    #[serde(
+        rename = "preferredTool",
+        default,
+        skip_serializing_if = "RemoteAgentPreferredTool::is_codex"
+    )]
+    pub preferred_tool: RemoteAgentPreferredTool,
     #[serde(
         rename = "shellPrelude",
         default,
@@ -217,6 +223,7 @@ pub(crate) fn canonicalize_remote_agent_config(
         port: remote_agent.port,
         workspace_root,
         projects_registry_path,
+        preferred_tool: remote_agent.preferred_tool,
         shell_prelude,
         review_follow_up,
     })
@@ -398,6 +405,7 @@ impl ConfigService {
                     port: remote_agent.port,
                     workspace_root: remote_agent.workspace_root,
                     projects_registry_path: remote_agent.projects_registry_path,
+                    preferred_tool: remote_agent.preferred_tool,
                     shell_prelude: remote_agent.shell_prelude,
                     review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
                         review_follow_up.main_user.map(|main_user| {
@@ -431,6 +439,7 @@ impl ConfigService {
 
     pub fn save_remote_agent_settings(
         &self,
+        preferred_tool: RemoteAgentPreferredTool,
         shell_prelude: Option<String>,
         review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
@@ -442,6 +451,7 @@ impl ConfigService {
             ));
         };
 
+        remote_agent.preferred_tool = preferred_tool;
         remote_agent.shell_prelude = canonicalize_optional_multiline_value(shell_prelude);
         remote_agent.review_follow_up = review_follow_up;
         self.save_config_file(&config)?;
@@ -472,6 +482,7 @@ mod tests {
     };
     use crate::errors::ErrorCode;
     use crate::types::LlamaCppModelSource;
+    use crate::types::RemoteAgentPreferredTool;
 
     fn temp_config_service() -> (TempDir, ConfigService) {
         let directory = TempDir::new().expect("tempdir should be created");
@@ -502,6 +513,7 @@ mod tests {
                     port: DEFAULT_REMOTE_AGENT_PORT,
                     workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
                     projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                    preferred_tool: RemoteAgentPreferredTool::Codex,
                     shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
                     review_follow_up: None,
                 }),
@@ -513,6 +525,7 @@ mod tests {
         assert!(raw.contains("\"llamaCpp\""));
         assert!(raw.contains("\"remoteAgent\""));
         assert!(raw.contains("\"shellPrelude\""));
+        assert!(!raw.contains("\"preferredTool\""));
         assert!(!raw.contains("\"modelHfRepo\""));
         assert!(!raw.contains("\"ai\""));
     }
@@ -561,6 +574,7 @@ mod tests {
                     port: 2222,
                     workspace_root: "~/workspace".to_owned(),
                     projects_registry_path: "~/track-projects.json".to_owned(),
+                    preferred_tool: RemoteAgentPreferredTool::Codex,
                     shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
                     review_follow_up: None,
                 }),
@@ -589,6 +603,7 @@ mod tests {
         assert_eq!(remote_agent.host, "192.0.2.25");
         assert_eq!(remote_agent.user, "builder");
         assert_eq!(remote_agent.port, 2222);
+        assert_eq!(remote_agent.preferred_tool, RemoteAgentPreferredTool::Codex);
         assert_eq!(
             remote_agent.shell_prelude,
             Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned())
@@ -672,6 +687,7 @@ mod tests {
                     port: DEFAULT_REMOTE_AGENT_PORT,
                     workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
                     projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                    preferred_tool: RemoteAgentPreferredTool::Codex,
                     shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
                     review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
                         enabled: true,

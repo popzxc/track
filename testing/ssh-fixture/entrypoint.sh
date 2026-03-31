@@ -24,6 +24,12 @@ if [ ! -f "$RUNTIME_DIR/state/codex.json" ]; then
     > "$RUNTIME_DIR/state/codex.json"
 fi
 
+if [ ! -f "$RUNTIME_DIR/state/claude.json" ]; then
+  printf '%s\n' \
+    '{"mode":"success","sleepSeconds":0,"status":"succeeded","summary":"Mock Claude completed successfully.","pullRequestUrl":null,"branchName":null,"worktreePath":null,"notes":null}' \
+    > "$RUNTIME_DIR/state/claude.json"
+fi
+
 if [ -f "$RUNTIME_DIR/authorized_keys" ]; then
   cp "$RUNTIME_DIR/authorized_keys" "$TRACK_HOME/.ssh/authorized_keys"
 fi

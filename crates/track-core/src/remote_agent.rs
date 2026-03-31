@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Condvar, Mutex, OnceLock};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::Duration;
@@ -22,9 +23,9 @@ use crate::task_id::build_unique_task_id;
 use crate::task_repository::FileTaskRepository;
 use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use crate::types::{
-    CreateReviewInput, DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentReviewOutcome,
-    RemoteCleanupSummary, RemoteResetSummary, ReviewRecord, ReviewRunRecord, Status,
-    TaskDispatchRecord, TaskUpdateInput,
+    CreateReviewInput, DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentPreferredTool,
+    RemoteAgentReviewOutcome, RemoteCleanupSummary, RemoteResetSummary, ReviewRecord,
+    ReviewRunRecord, Status, TaskDispatchRecord, TaskUpdateInput,
 };
 
 const REMOTE_STATUS_FILE_NAME: &str = "status.txt";
@@ -34,6 +35,9 @@ const REMOTE_FINISHED_AT_FILE_NAME: &str = "finished-at.txt";
 const REMOTE_PROMPT_FILE_NAME: &str = "prompt.md";
 const REMOTE_SCHEMA_FILE_NAME: &str = "result-schema.json";
 const REMOTE_LAUNCHER_PID_FILE_NAME: &str = "launcher.pid";
+// We keep the historical sidecar filename for the child agent PID so users can
+// still cancel or clean up runs that were launched before Claude support
+// landed. The file now stores whichever remote agent process is active.
 const REMOTE_CODEX_PID_FILE_NAME: &str = "codex.pid";
 // Repository bootstrap can legitimately take a while on first clone or after a
 // large fetch, so we keep the stale-preparing threshold generous. The API now
@@ -345,14 +349,19 @@ impl<'a> RemoteDispatchService<'a> {
     // that state right away, while the slower SSH/bootstrap work continues in
     // the background and later transitions the record into `running` or a
     // terminal outcome.
-    pub fn queue_dispatch(&self, task_id: &str) -> Result<TaskDispatchRecord, TrackError> {
+    pub fn queue_dispatch(
+        &self,
+        task_id: &str,
+        preferred_tool: Option<RemoteAgentPreferredTool>,
+    ) -> Result<TaskDispatchRecord, TrackError> {
         let (remote_agent, task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
         let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
         self.ensure_no_blocking_active_dispatch(task_id)?;
+        let preferred_tool = preferred_tool.unwrap_or(remote_agent.preferred_tool);
 
-        let mut dispatch_record = self
-            .dispatch_repository
-            .create_dispatch(&task, &remote_agent.host)?;
+        let mut dispatch_record =
+            self.dispatch_repository
+                .create_dispatch(&task, &remote_agent.host, preferred_tool)?;
         dispatch_record.branch_name = Some(format!("track/{}", dispatch_record.dispatch_id));
         dispatch_record.worktree_path = Some(format!(
             "{}/{}/worktrees/{}",
@@ -421,9 +430,11 @@ impl<'a> RemoteDispatchService<'a> {
 
         let updated_task =
             self.append_follow_up_request_to_task(task_id, trimmed_follow_up_request)?;
-        let mut dispatch_record = self
-            .dispatch_repository
-            .create_dispatch(&updated_task, &remote_agent.host)?;
+        let mut dispatch_record = self.dispatch_repository.create_dispatch(
+            &updated_task,
+            &remote_agent.host,
+            previous_dispatch.preferred_tool,
+        )?;
         dispatch_record.branch_name = Some(branch_name);
         dispatch_record.worktree_path = Some(worktree_path);
         dispatch_record.pull_request_url = latest_pull_request_for_branch(
@@ -585,8 +596,8 @@ impl<'a> RemoteDispatchService<'a> {
 
             // Cancellation can arrive while the API is still preparing the
             // remote checkout. We re-read the persisted record right before the
-            // expensive Codex launch so a user-triggered cancel can stop the
-            // flow before it starts spending more tokens.
+            // expensive remote-agent launch so a user-triggered cancel can stop
+            // the flow before it starts spending more tokens.
             if !self
                 .dispatch_is_still_active(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
             {
@@ -596,7 +607,11 @@ impl<'a> RemoteDispatchService<'a> {
             if !self.save_preparing_phase(&mut dispatch_record, "Launching the remote agent.")? {
                 return Ok(());
             }
-            ssh_client.launch_codex_dispatch(&remote_run_directory, &worktree_path)?;
+            ssh_client.launch_remote_dispatch(
+                &remote_run_directory,
+                &worktree_path,
+                dispatch_record.preferred_tool,
+            )?;
 
             Ok(())
         })();
@@ -711,7 +726,7 @@ impl<'a> RemoteDispatchService<'a> {
     // Task Lifecycle Cleanup
     // =============================================================================
     //
-    // Remote Codex work leaves behind two different kinds of state:
+    // Remote agent work leaves behind two different kinds of state:
     //
     // 1. lightweight metadata we want to keep for run history and follow-ups
     // 2. heavyweight worktrees that can accumulate large Rust build outputs
@@ -1373,7 +1388,7 @@ impl<'a> RemoteDispatchService<'a> {
     // Local Recovery When Remote Control Disappears
     // =============================================================================
     //
-    // Remote Codex runs are helpful, but they are not the source of truth. The
+    // Remote agent runs are helpful, but they are not the source of truth. The
     // source of truth is still the local tracker on disk, and users need to be
     // able to keep closing, deleting, and retrying tasks even after the remote
     // machine has been replaced or the SSH setup has gone stale. These helpers
@@ -1471,7 +1486,7 @@ impl<'a> RemoteDispatchService<'a> {
         let remote_run_directory =
             derive_remote_run_directory(worktree_path, &dispatch_record.dispatch_id)?;
         let ssh_client = SshClient::new(&remote_agent)?;
-        ssh_client.cancel_codex_dispatch(&remote_run_directory)
+        ssh_client.cancel_remote_dispatch(&remote_run_directory)
     }
 
     fn save_preparing_phase(
@@ -1840,6 +1855,9 @@ impl<'a> RemoteReviewService<'a> {
                 .map(|metadata| metadata.base_branch.clone())
                 .unwrap_or(pull_request_metadata.base_branch),
             workspace_key,
+            preferred_tool: validated_input
+                .preferred_tool
+                .unwrap_or(remote_agent.preferred_tool),
             project: project_match.map(|project| project.canonical_name),
             main_user: review_settings.main_user,
             default_review_prompt: review_settings.default_review_prompt,
@@ -2064,7 +2082,11 @@ impl<'a> RemoteReviewService<'a> {
             )? {
                 return Ok(());
             }
-            ssh_client.launch_codex_dispatch(&remote_run_directory, &worktree_path)?;
+            ssh_client.launch_remote_dispatch(
+                &remote_run_directory,
+                &worktree_path,
+                dispatch_record.preferred_tool,
+            )?;
 
             Ok(())
         })();
@@ -2229,9 +2251,11 @@ impl<'a> RemoteReviewService<'a> {
         follow_up_request: Option<&str>,
         target_head_oid: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
-        let mut dispatch_record = self
-            .review_dispatch_repository
-            .create_dispatch(review, &remote_agent.host)?;
+        let mut dispatch_record = self.review_dispatch_repository.create_dispatch(
+            review,
+            &remote_agent.host,
+            review.preferred_tool,
+        )?;
         dispatch_record.branch_name = Some(format!("track-review/{}", dispatch_record.dispatch_id));
         dispatch_record.worktree_path = Some(format!(
             "{}/{}/{}/{}",
@@ -2405,13 +2429,10 @@ impl<'a> RemoteReviewService<'a> {
                     "Remote review run completed without producing a structured result.",
                 )
             })?;
-            let outcome = serde_json::from_str::<RemoteAgentReviewOutcome>(remote_result).map_err(
-                |error| {
-                    TrackError::new(
-                        ErrorCode::RemoteDispatchFailed,
-                        format!("Remote review result is not valid JSON: {error}"),
-                    )
-                },
+            let outcome = parse_remote_agent_output::<RemoteAgentReviewOutcome>(
+                remote_result,
+                record.preferred_tool,
+                "Remote review result",
             )?;
 
             // The review agent now owns the GitHub side effect directly, just
@@ -2577,7 +2598,7 @@ impl<'a> RemoteReviewService<'a> {
         let remote_run_directory =
             derive_review_run_directory(worktree_path, &dispatch_record.dispatch_id)?;
         let ssh_client = SshClient::new(&remote_agent)?;
-        ssh_client.cancel_codex_dispatch(&remote_run_directory)
+        ssh_client.cancel_remote_dispatch(&remote_run_directory)
     }
 
     fn cleanup_review_remote_artifacts(
@@ -3399,16 +3420,13 @@ fn refresh_dispatch_record_from_snapshot(
         let remote_result = snapshot.result.as_deref().ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
-                "Remote Codex run completed without producing a structured result.",
+                "Remote agent run completed without producing a structured result.",
             )
         })?;
-        let outcome = serde_json::from_str::<RemoteAgentDispatchOutcome>(&remote_result).map_err(
-            |error| {
-                TrackError::new(
-                    ErrorCode::RemoteDispatchFailed,
-                    format!("Remote Codex result is not valid JSON: {error}"),
-                )
-            },
+        let outcome = parse_remote_agent_output::<RemoteAgentDispatchOutcome>(
+            remote_result,
+            record.preferred_tool,
+            "Remote agent result",
         )?;
         record.status = outcome.status;
         record.summary = Some(outcome.summary);
@@ -3436,7 +3454,7 @@ fn refresh_dispatch_record_from_snapshot(
         .filter(|value| !value.is_empty())
         .map(|value| value.to_owned())
         .or_else(|| {
-            Some("Remote Codex run failed before returning a structured result.".to_owned())
+            Some("Remote agent run failed before returning a structured result.".to_owned())
         });
     Ok(record)
 }
@@ -3754,7 +3772,70 @@ fn render_remote_script_with_shell_prelude(script: &str, shell_prelude: &str) ->
     rendered
 }
 
-fn build_remote_codex_launcher(shell_prelude: &str) -> String {
+fn build_remote_agent_command(preferred_tool: RemoteAgentPreferredTool) -> String {
+    match preferred_tool {
+        RemoteAgentPreferredTool::Codex => format!(
+            "codex --search exec --dangerously-bypass-approvals-and-sandbox -C \"$WORKTREE_PATH\" --json --output-schema \"$RUN_DIR/{REMOTE_SCHEMA_FILE_NAME}\" -o \"$RUN_DIR/{REMOTE_RESULT_FILE_NAME}\" - < \"$RUN_DIR/{REMOTE_PROMPT_FILE_NAME}\" > \"$RUN_DIR/events.jsonl\" 2> \"$RUN_DIR/{REMOTE_STDERR_FILE_NAME}\" &\n"
+        ),
+        RemoteAgentPreferredTool::Claude => {
+            let mut command = String::new();
+            command.push_str(&format!(
+                "SCHEMA_CONTENT=\"$(tr -d '\\n' < \"$RUN_DIR/{REMOTE_SCHEMA_FILE_NAME}\")\"\n"
+            ));
+            command.push_str("cd \"$WORKTREE_PATH\"\n");
+            // Claude Code's JSON-schema mode emits request metadata plus the
+            // validated payload under `structured_output`, so we launch it in
+            // JSON mode and let the refresh path unwrap that envelope later.
+            command.push_str(&format!(
+                "claude -p --dangerously-skip-permissions --add-dir \"$WORKTREE_PATH\" --output-format json --json-schema \"$SCHEMA_CONTENT\" < \"$RUN_DIR/{REMOTE_PROMPT_FILE_NAME}\" > \"$RUN_DIR/{REMOTE_RESULT_FILE_NAME}\" 2> \"$RUN_DIR/{REMOTE_STDERR_FILE_NAME}\" &\n"
+            ));
+            command
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeStructuredOutputEnvelope<T> {
+    #[serde(rename = "structured_output")]
+    structured_output: T,
+}
+
+fn parse_remote_agent_output<T>(
+    raw_result: &str,
+    preferred_tool: RemoteAgentPreferredTool,
+    result_label: &str,
+) -> Result<T, TrackError>
+where
+    T: DeserializeOwned,
+{
+    match serde_json::from_str::<T>(raw_result) {
+        Ok(outcome) => Ok(outcome),
+        Err(direct_error) if preferred_tool == RemoteAgentPreferredTool::Claude => {
+            // Codex writes the structured payload directly, while Claude wraps
+            // it in a metadata envelope. Accepting both shapes keeps existing
+            // fixtures and any transitional persisted results readable.
+            serde_json::from_str::<ClaudeStructuredOutputEnvelope<T>>(raw_result)
+                .map(|envelope| envelope.structured_output)
+                .map_err(|envelope_error| {
+                    TrackError::new(
+                        ErrorCode::RemoteDispatchFailed,
+                        format!(
+                            "{result_label} did not match the expected direct or Claude structured-output format: direct parse failed with {direct_error}; envelope parse failed with {envelope_error}",
+                        ),
+                    )
+                })
+        }
+        Err(error) => Err(TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("{result_label} is not valid JSON: {error}"),
+        )),
+    }
+}
+
+fn build_remote_agent_launcher(
+    preferred_tool: RemoteAgentPreferredTool,
+    shell_prelude: &str,
+) -> String {
     let mut launcher = String::from("#!/usr/bin/env bash\n");
     launcher.push_str("set -e\n");
     if !shell_prelude.trim().is_empty() {
@@ -3793,9 +3874,7 @@ fn build_remote_codex_launcher(shell_prelude: &str) -> String {
     launcher.push_str(&format!(
         "printf 'running\\n' > \"$RUN_DIR/{REMOTE_STATUS_FILE_NAME}\"\n"
     ));
-    launcher.push_str(&format!(
-        "codex --search exec --dangerously-bypass-approvals-and-sandbox -C \"$WORKTREE_PATH\" --json --output-schema \"$RUN_DIR/{REMOTE_SCHEMA_FILE_NAME}\" -o \"$RUN_DIR/{REMOTE_RESULT_FILE_NAME}\" - < \"$RUN_DIR/{REMOTE_PROMPT_FILE_NAME}\" > \"$RUN_DIR/events.jsonl\" 2> \"$RUN_DIR/{REMOTE_STDERR_FILE_NAME}\" &\n"
-    ));
+    launcher.push_str(&build_remote_agent_command(preferred_tool));
     launcher.push_str("CODEX_PID=\"$!\"\n");
     launcher.push_str(&format!(
         "printf '%s\\n' \"$CODEX_PID\" > \"$RUN_DIR/{REMOTE_CODEX_PID_FILE_NAME}\"\n"
@@ -4314,12 +4393,13 @@ exit 1
         Ok(())
     }
 
-    fn launch_codex_dispatch(
+    fn launch_remote_dispatch(
         &self,
         remote_run_directory: &str,
         worktree_path: &str,
+        preferred_tool: RemoteAgentPreferredTool,
     ) -> Result<(), TrackError> {
-        let launcher_contents = build_remote_codex_launcher(&self.shell_prelude);
+        let launcher_contents = build_remote_agent_launcher(preferred_tool, &self.shell_prelude);
         self.upload_remote_file(
             &format!("{remote_run_directory}/launch.sh"),
             &launcher_contents,
@@ -4347,7 +4427,7 @@ nohup bash "$LAUNCHER_PATH" "$RUN_DIR" "$WORKTREE_PATH" >/dev/null 2>&1 </dev/nu
         Ok(())
     }
 
-    fn cancel_codex_dispatch(&self, remote_run_directory: &str) -> Result<(), TrackError> {
+    fn cancel_remote_dispatch(&self, remote_run_directory: &str) -> Result<(), TrackError> {
         let cancel_script = format!(
             r#"
 set -eu
@@ -5278,6 +5358,7 @@ mod tests {
         Arc,
     };
 
+    use serde_json::json;
     use tempfile::TempDir;
 
     use crate::backend_config::RemoteAgentConfigService;
@@ -5293,13 +5374,13 @@ mod tests {
     use crate::test_support::{set_env_var, track_data_env_lock};
     use crate::time_utils::{now_utc, parse_iso_8601_seconds};
     use crate::types::{
-        DispatchStatus, Priority, ReviewRecord, ReviewRunRecord, Status, TaskCreateInput,
-        TaskDispatchRecord, TaskSource, TaskUpdateInput,
+        DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
+        TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
     };
     use time::Duration;
 
     use super::{
-        build_create_review_worktree_script, build_remote_codex_launcher,
+        build_create_review_worktree_script, build_remote_agent_launcher,
         build_remote_dispatch_prompt, build_remote_dispatch_schema, build_remote_review_prompt,
         build_remote_review_schema, build_review_follow_up_request, build_review_workspace_key,
         describe_remote_reset_blockers, latest_pull_request_for_branch,
@@ -5422,7 +5503,7 @@ mod tests {
         fn create_running_dispatch(&self, task: &crate::types::Task) -> TaskDispatchRecord {
             let mut dispatch = self
                 .dispatch_repository
-                .create_dispatch(task, "198.51.100.10")
+                .create_dispatch(task, "198.51.100.10", RemoteAgentPreferredTool::Codex)
                 .expect("dispatch should be created");
             dispatch.status = DispatchStatus::Running;
             dispatch.branch_name = Some(format!("track/{}", dispatch.dispatch_id));
@@ -5460,6 +5541,7 @@ mod tests {
                 pull_request_url: review.pull_request_url.clone(),
                 repository_full_name: review.repository_full_name.clone(),
                 workspace_key: review.workspace_key.clone(),
+                preferred_tool: review.preferred_tool,
                 status,
                 created_at: timestamp,
                 updated_at: timestamp,
@@ -5530,6 +5612,7 @@ mod tests {
             git_url: "git@github.com:acme/project-x.git".to_owned(),
             base_branch: "main".to_owned(),
             workspace_key: "project-x".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             project: Some("project-x".to_owned()),
             main_user: "octocat".to_owned(),
             default_review_prompt: Some("Focus on regressions and missing tests.".to_owned()),
@@ -5595,6 +5678,7 @@ mod tests {
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
+            preferred_tool: review.preferred_tool,
             status: DispatchStatus::Succeeded,
             created_at: now_utc(),
             updated_at: now_utc(),
@@ -5621,6 +5705,7 @@ mod tests {
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
+            preferred_tool: review.preferred_tool,
             status: DispatchStatus::Preparing,
             created_at: now_utc(),
             updated_at: now_utc(),
@@ -5753,6 +5838,7 @@ mod tests {
             port: 2222,
             workspace_root: "~/workspace".to_owned(),
             projects_registry_path: "~/track-projects.json".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
             review_follow_up: None,
         })));
@@ -5833,9 +5919,11 @@ mod tests {
     }
 
     #[test]
-    fn builds_launcher_with_runner_shell_prelude() {
-        let launcher =
-            build_remote_codex_launcher("export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n");
+    fn builds_codex_launcher_with_runner_shell_prelude() {
+        let launcher = build_remote_agent_launcher(
+            RemoteAgentPreferredTool::Codex,
+            "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n",
+        );
 
         assert!(launcher.starts_with("#!/usr/bin/env bash"));
         assert!(launcher.contains("export NVM_DIR=\"$HOME/.nvm\""));
@@ -5849,11 +5937,168 @@ mod tests {
     }
 
     #[test]
+    fn builds_claude_launcher_with_schema_validation_and_yolo_mode() {
+        let launcher = build_remote_agent_launcher(
+            RemoteAgentPreferredTool::Claude,
+            "export PATH=\"$HOME/.local/bin:$PATH\"\n",
+        );
+
+        assert!(launcher.starts_with("#!/usr/bin/env bash"));
+        assert!(launcher.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
+        assert!(launcher.contains("SCHEMA_CONTENT=\"$(tr -d '\\n'"));
+        assert!(launcher.contains("cd \"$WORKTREE_PATH\""));
+        assert!(launcher.contains("claude -p --dangerously-skip-permissions"));
+        assert!(launcher.contains("--output-format json"));
+        assert!(launcher.contains("--json-schema \"$SCHEMA_CONTENT\""));
+        assert!(launcher.contains("codex.pid"));
+    }
+
+    #[test]
+    fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
+        let created_at = now_utc();
+        let record = TaskDispatchRecord {
+            dispatch_id: "dispatch-1".to_owned(),
+            task_id: "task-1".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Claude,
+            project: "project-a".to_owned(),
+            status: DispatchStatus::Running,
+            created_at,
+            updated_at: created_at,
+            finished_at: None,
+            remote_host: "192.0.2.25".to_owned(),
+            branch_name: Some("track/dispatch-1".to_owned()),
+            worktree_path: Some("~/workspace/project-a/worktrees/dispatch-1".to_owned()),
+            pull_request_url: None,
+            follow_up_request: None,
+            summary: None,
+            notes: None,
+            error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
+        };
+        let snapshot = RemoteDispatchSnapshot {
+            status: Some("completed\n".to_owned()),
+            result: Some(
+                json!({
+                    "result": "Mock Claude completed successfully.",
+                    "structured_output": {
+                        "status": "succeeded",
+                        "summary": "Mock Claude completed successfully.",
+                        "pullRequestUrl": "https://github.com/acme/project-a/pull/42",
+                        "branchName": "track/dispatch-1",
+                        "worktreePath": "/tmp/project-a/worktrees/dispatch-1",
+                        "notes": "Captured from the Claude mock."
+                    }
+                })
+                .to_string(),
+            ),
+            stderr: None,
+            finished_at: Some("2026-03-18T10:35:31Z\n".to_owned()),
+        };
+
+        let refreshed = refresh_dispatch_record_from_snapshot(record, &snapshot)
+            .expect("Claude envelope should refresh successfully");
+
+        assert_eq!(refreshed.status, DispatchStatus::Succeeded);
+        assert_eq!(
+            refreshed.summary.as_deref(),
+            Some("Mock Claude completed successfully.")
+        );
+        assert_eq!(
+            refreshed.pull_request_url.as_deref(),
+            Some("https://github.com/acme/project-a/pull/42")
+        );
+        assert_eq!(
+            refreshed.worktree_path.as_deref(),
+            Some("/tmp/project-a/worktrees/dispatch-1")
+        );
+        assert_eq!(
+            refreshed.notes.as_deref(),
+            Some("Captured from the Claude mock.")
+        );
+    }
+
+    #[test]
+    fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
+        let context = TestContext::new(base_test_config(None));
+        let created_at = now_utc();
+        let record = ReviewRunRecord {
+            dispatch_id: "review-dispatch-1".to_owned(),
+            review_id: "review-1".to_owned(),
+            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
+            repository_full_name: "acme/project-a".to_owned(),
+            workspace_key: "project-a".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Claude,
+            status: DispatchStatus::Running,
+            created_at,
+            updated_at: created_at,
+            finished_at: None,
+            remote_host: "192.0.2.25".to_owned(),
+            branch_name: Some("track-review/review-dispatch-1".to_owned()),
+            worktree_path: Some("~/workspace/project-a/review-worktrees/review-1".to_owned()),
+            follow_up_request: None,
+            target_head_oid: Some("abc123def456".to_owned()),
+            summary: None,
+            review_submitted: false,
+            github_review_id: None,
+            github_review_url: None,
+            notes: None,
+            error_message: None,
+        };
+        let snapshot = RemoteDispatchSnapshot {
+            status: Some("completed\n".to_owned()),
+            result: Some(
+                json!({
+                    "result": "Mock Claude reviewed the pull request successfully.",
+                    "structured_output": {
+                        "status": "succeeded",
+                        "summary": "Mock Claude reviewed the pull request successfully.",
+                        "reviewSubmitted": true,
+                        "githubReviewId": "1001",
+                        "githubReviewUrl": "https://github.com/acme/project-a/pull/42#pullrequestreview-1001",
+                        "worktreePath": "/tmp/project-a/review-worktrees/review-1",
+                        "notes": "Captured from the Claude review mock."
+                    }
+                })
+                .to_string(),
+            ),
+            stderr: None,
+            finished_at: Some("2026-03-18T10:35:31Z\n".to_owned()),
+        };
+
+        let refreshed = context
+            .review_service()
+            .refresh_review_dispatch_record_from_snapshot(record, &snapshot)
+            .expect("Claude review envelope should refresh successfully");
+
+        assert_eq!(refreshed.status, DispatchStatus::Succeeded);
+        assert_eq!(
+            refreshed.summary.as_deref(),
+            Some("Mock Claude reviewed the pull request successfully.")
+        );
+        assert!(refreshed.review_submitted);
+        assert_eq!(refreshed.github_review_id.as_deref(), Some("1001"));
+        assert_eq!(
+            refreshed.github_review_url.as_deref(),
+            Some("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
+        );
+        assert_eq!(
+            refreshed.worktree_path.as_deref(),
+            Some("/tmp/project-a/review-worktrees/review-1")
+        );
+        assert_eq!(
+            refreshed.notes.as_deref(),
+            Some("Captured from the Claude review mock.")
+        );
+    }
+
+    #[test]
     fn refresh_marks_remote_canceled_runs_as_terminal() {
         let created_at = now_utc();
         let record = TaskDispatchRecord {
             dispatch_id: "dispatch-1".to_owned(),
             task_id: "task-1".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             project: "project-a".to_owned(),
             status: DispatchStatus::Running,
             created_at,
@@ -5895,6 +6140,7 @@ mod tests {
             TaskDispatchRecord {
                 dispatch_id: "dispatch-3".to_owned(),
                 task_id: "task-1".to_owned(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
                 project: "project-a".to_owned(),
                 status: DispatchStatus::Failed,
                 created_at: created_at + Duration::seconds(2),
@@ -5914,6 +6160,7 @@ mod tests {
             TaskDispatchRecord {
                 dispatch_id: "dispatch-2".to_owned(),
                 task_id: "task-1".to_owned(),
+                preferred_tool: RemoteAgentPreferredTool::Claude,
                 project: "project-a".to_owned(),
                 status: DispatchStatus::Succeeded,
                 created_at: created_at + Duration::seconds(1),
@@ -5933,6 +6180,7 @@ mod tests {
             TaskDispatchRecord {
                 dispatch_id: "dispatch-1".to_owned(),
                 task_id: "task-1".to_owned(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
                 project: "project-a".to_owned(),
                 status: DispatchStatus::Failed,
                 created_at,
@@ -5978,6 +6226,7 @@ mod tests {
                 pull_request_url: review.pull_request_url.clone(),
                 repository_full_name: review.repository_full_name.clone(),
                 workspace_key: review.workspace_key.clone(),
+                preferred_tool: review.preferred_tool,
                 status: DispatchStatus::Preparing,
                 created_at: now_utc(),
                 updated_at: now_utc(),
@@ -6000,6 +6249,7 @@ mod tests {
                 pull_request_url: review.pull_request_url.clone(),
                 repository_full_name: review.repository_full_name.clone(),
                 workspace_key: review.workspace_key.clone(),
+                preferred_tool: review.preferred_tool,
                 status: DispatchStatus::Succeeded,
                 created_at: now_utc(),
                 updated_at: now_utc(),
@@ -6024,6 +6274,7 @@ mod tests {
                 pull_request_url: review.pull_request_url.clone(),
                 repository_full_name: review.repository_full_name.clone(),
                 workspace_key: review.workspace_key.clone(),
+                preferred_tool: review.preferred_tool,
                 status: DispatchStatus::Succeeded,
                 created_at: now_utc(),
                 updated_at: now_utc(),
@@ -6143,6 +6394,7 @@ mod tests {
             port: 1,
             workspace_root: "~/workspace".to_owned(),
             projects_registry_path: "~/track-projects.json".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
             shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
             review_follow_up: None,
         })));
@@ -6156,7 +6408,7 @@ mod tests {
 
         let queued_dispatch = context
             .service()
-            .queue_dispatch(&task.id)
+            .queue_dispatch(&task.id, None)
             .expect("queueing should release the stale active dispatch first");
         let released_dispatch = context
             .dispatch_repository
@@ -6174,6 +6426,49 @@ mod tests {
             )
         );
         assert!(released_dispatch.error_message.is_some());
+    }
+
+    #[test]
+    fn follow_up_dispatch_keeps_the_original_runner_tool() {
+        let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
+            host: "127.0.0.1".to_owned(),
+            user: "builder".to_owned(),
+            port: 2222,
+            workspace_root: "~/workspace".to_owned(),
+            projects_registry_path: "~/track-projects.json".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
+            shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
+            review_follow_up: None,
+        })));
+        let task = context.create_task("project-a", "Keep using the same runner on follow-up");
+        context.write_project_metadata(&task.project);
+        let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
+        install_dummy_managed_remote_agent_material(&context.data_dir);
+
+        let mut first_dispatch = context
+            .service()
+            .queue_dispatch(&task.id, Some(RemoteAgentPreferredTool::Claude))
+            .expect("initial dispatch should queue");
+        first_dispatch.status = DispatchStatus::Succeeded;
+        first_dispatch.finished_at = Some(first_dispatch.updated_at);
+        context
+            .dispatch_repository
+            .save_dispatch(&first_dispatch)
+            .expect("initial dispatch should save as terminal");
+
+        let follow_up_dispatch = context
+            .service()
+            .queue_follow_up_dispatch(&task.id, "Address the review comments.")
+            .expect("follow-up dispatch should queue");
+
+        assert_eq!(
+            first_dispatch.preferred_tool,
+            RemoteAgentPreferredTool::Claude
+        );
+        assert_eq!(
+            follow_up_dispatch.preferred_tool,
+            RemoteAgentPreferredTool::Claude
+        );
     }
 
     #[test]

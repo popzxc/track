@@ -48,6 +48,35 @@ pub enum TaskSource {
     Web,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteAgentPreferredTool {
+    #[default]
+    Codex,
+    Claude,
+}
+
+impl RemoteAgentPreferredTool {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "codex" => Some(Self::Codex),
+            "claude" => Some(Self::Claude),
+            _ => None,
+        }
+    }
+
+    pub fn is_codex(&self) -> bool {
+        matches!(self, Self::Codex)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DispatchStatus {
@@ -245,6 +274,8 @@ pub struct TaskDispatchRecord {
     pub dispatch_id: String,
     #[serde(rename = "taskId")]
     pub task_id: String,
+    #[serde(rename = "preferredTool", default)]
+    pub preferred_tool: RemoteAgentPreferredTool,
     pub project: String,
     pub status: DispatchStatus,
     #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
@@ -302,6 +333,8 @@ pub struct ReviewRecord {
     pub base_branch: String,
     #[serde(rename = "workspaceKey")]
     pub workspace_key: String,
+    #[serde(rename = "preferredTool", default)]
+    pub preferred_tool: RemoteAgentPreferredTool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(rename = "mainUser")]
@@ -331,6 +364,8 @@ pub struct ReviewRunRecord {
     pub repository_full_name: String,
     #[serde(rename = "workspaceKey")]
     pub workspace_key: String,
+    #[serde(rename = "preferredTool", default)]
+    pub preferred_tool: RemoteAgentPreferredTool,
     pub status: DispatchStatus,
     #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
@@ -379,6 +414,8 @@ pub struct ReviewRunRecord {
 pub struct CreateReviewInput {
     #[serde(rename = "pullRequestUrl")]
     pub pull_request_url: String,
+    #[serde(rename = "preferredTool", default)]
+    pub preferred_tool: Option<RemoteAgentPreferredTool>,
     #[serde(rename = "extraInstructions", skip_serializing_if = "Option::is_none")]
     pub extra_instructions: Option<String>,
 }
@@ -400,6 +437,7 @@ impl CreateReviewInput {
 
         Ok(Self {
             pull_request_url,
+            preferred_tool: self.preferred_tool,
             extra_instructions,
         })
     }
@@ -434,6 +472,7 @@ pub struct RemoteAgentRuntimeConfig {
     pub port: u16,
     pub workspace_root: String,
     pub projects_registry_path: String,
+    pub preferred_tool: RemoteAgentPreferredTool,
     pub shell_prelude: Option<String>,
     pub review_follow_up: Option<RemoteAgentReviewFollowUpRuntimeConfig>,
     pub managed_key_path: PathBuf,
