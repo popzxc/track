@@ -19,7 +19,13 @@ This page is for lookup, not onboarding. If you are still setting things up for 
 
 ## Where the backend state lives
 
-When you run the shipped Docker Compose setup, the backend state lives in the Docker volume named `track-backend-state`.
+When you run the shipped Docker Compose setup, the backend state bind-mounts from:
+
+```text
+${HOME}/.track/backend
+```
+
+Compose creates that host directory if it is missing.
 
 When you run the backend outside Docker, the default state directory is:
 

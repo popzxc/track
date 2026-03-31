@@ -18,13 +18,12 @@ services:
       TRACK_LEGACY_ROOT: /home/track/legacy-home/.track
       TRACK_LEGACY_CONFIG_PATH: /home/track/legacy-home/.config/track/config.json
     volumes:
-      - type: volume
-        source: track-backend-state
+      - type: bind
+        source: ${HOME}/.track/backend
         target: /home/track/backend-state
+        bind:
+          create_host_path: true
       - type: bind
         source: ${HOME}
         target: /home/track/legacy-home
         read_only: true
-
-volumes:
-  track-backend-state:
