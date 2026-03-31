@@ -2,7 +2,12 @@
 name = "track-core"
 edition.workspace = true
 version.workspace = true
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Shared backend primitives and repositories for the track issue tracker."
+readme = "../../README.md"
 
 [dependencies]
 dialoguer = { workspace = true }

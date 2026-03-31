@@ -1,0 +1,24 @@
+# The release workflow treats this workspace as one product release even though
+# crates.io publishes multiple crates. By default, packages publish without
+# their own git tags or GitHub releases so `track-cli` can own the single
+# product-facing tag, release notes, and attached CLI artifacts.
+[workspace]
+changelog_update = false
+git_release_enable = false
+git_tag_enable = false
+repo_url = "https://github.com/popzxc/track"
+semver_check = false
+
+[[package]]
+name = "track-cli"
+changelog_include = ["track-api", "track-capture", "track-core"]
+changelog_path = "CHANGELOG.md"
+changelog_update = true
+git_release_enable = true
+git_release_name = "track v{{ version }}"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+
+[[package]]
+name = "track-integration-tests"
+release = false

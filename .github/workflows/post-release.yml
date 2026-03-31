@@ -1,0 +1,231 @@
+name: Post Release
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Git tag for the existing GitHub release.
+        required: true
+        type: string
+      release_version:
+        description: Shared workspace version that owns the product release assets.
+        required: true
+        type: string
+      publish_latest:
+        description: Whether to also publish the Docker image as latest.
+        required: true
+        type: boolean
+      use_prebuilt_binaries:
+        description: Reuse CLI binaries that were already built earlier in the same workflow run.
+        required: true
+        type: boolean
+
+jobs:
+  verify_release:
+    name: Verify the GitHub release exists
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm the requested GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRACK_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TRACK_TAG" >/dev/null
+
+  publish_docker:
+    name: Publish Docker image
+    needs: verify_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY_IMAGE: ghcr.io/${{ github.repository_owner }}/track
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Derive Docker image metadata
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value=v${{ inputs.release_version }}
+            type=raw,value=latest,enable=${{ inputs.publish_latest }}
+          labels: |
+            org.opencontainers.image.description=track API and bundled WebUI
+
+      - name: Build and push the Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+
+  build_cli_binaries:
+    name: Build CLI binary (${{ matrix.target }})
+    if: ${{ !inputs.use_prebuilt_binaries }}
+    needs: verify_release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build the non-CUDA CLI
+        run: cargo build --release -p track-cli --locked --target ${{ matrix.target }}
+
+      - name: Stage the built binary for artifact upload
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          artifact_dir="dist/${TARGET}"
+          mkdir -p "$artifact_dir"
+          cp "target/${TARGET}/release/track" "${artifact_dir}/track"
+          chmod +x "${artifact_dir}/track"
+
+      - name: Upload the built binary
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: cli-binary-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/track
+          retention-days: 7
+
+    # TODO: Add a Linux CUDA artifact once the repository has a GPU-capable
+    # runner with the CUDA toolkit available during release builds.
+
+  upload_prebuilt_cli_assets:
+    name: Upload CLI release assets
+    if: ${{ inputs.use_prebuilt_binaries }}
+    needs: verify_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Download the prebuilt binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/raw
+          pattern: cli-binary-*
+
+      - name: Package release artifacts and generate checksums
+        env:
+          TRACK_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          packages_dir="dist/packages"
+          mkdir -p "$packages_dir"
+
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
+            asset_stem="track-v${TRACK_VERSION}-${target}"
+            asset_dir="${packages_dir}/${asset_stem}"
+            source_binary="dist/raw/cli-binary-${target}/track"
+
+            mkdir -p "$asset_dir"
+            cp "$source_binary" "${asset_dir}/track"
+            chmod +x "${asset_dir}/track"
+            cp README.md LICENSE "${asset_dir}/"
+            tar -C "$packages_dir" -czf "dist/${asset_stem}.tar.gz" "${asset_stem}"
+          done
+
+          sha256sum dist/*.tar.gz > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+
+      - name: Upload assets to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRACK_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TRACK_TAG" dist/*.tar.gz dist/*.txt --clobber
+
+  upload_rebuilt_cli_assets:
+    name: Upload rebuilt CLI release assets
+    if: ${{ !inputs.use_prebuilt_binaries }}
+    needs:
+      - verify_release
+      - build_cli_binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Download the rebuilt binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/raw
+          pattern: cli-binary-*
+
+      - name: Package release artifacts and generate checksums
+        env:
+          TRACK_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          packages_dir="dist/packages"
+          mkdir -p "$packages_dir"
+
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
+            asset_stem="track-v${TRACK_VERSION}-${target}"
+            asset_dir="${packages_dir}/${asset_stem}"
+            source_binary="dist/raw/cli-binary-${target}/track"
+
+            mkdir -p "$asset_dir"
+            cp "$source_binary" "${asset_dir}/track"
+            chmod +x "${asset_dir}/track"
+            cp README.md LICENSE "${asset_dir}/"
+            tar -C "$packages_dir" -czf "dist/${asset_stem}.tar.gz" "${asset_stem}"
+          done
+
+          sha256sum dist/*.tar.gz > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+
+      - name: Upload assets to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRACK_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TRACK_TAG" dist/*.tar.gz dist/*.txt --clobber

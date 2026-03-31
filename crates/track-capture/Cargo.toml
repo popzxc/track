@@ -2,7 +2,12 @@
 name = "track-capture"
 edition.workspace = true
 version.workspace = true
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Local task parsing and model integration for the track issue tracker."
+readme = "../../README.md"
 
 [features]
 default = []
@@ -12,7 +17,7 @@ cuda = ["llama-cpp-2/cuda"]
 hf-hub = { workspace = true, features = ["ureq"] }
 llama-cpp-2 = { workspace = true }
 serde_json = { workspace = true }
-track-core = { path = "../track-core" }
+track-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

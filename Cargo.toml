@@ -11,6 +11,10 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/popzxc/track"
+homepage = "https://popzxc.github.io/track/"
+documentation = "https://popzxc.github.io/track/"
 
 [workspace.dependencies]
 assert_cmd = "2.2.0"
@@ -33,6 +37,10 @@ tower = "0.5.2"
 tower-http = "0.6.6"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
+track-api = { version = "0.1.0", path = "crates/track-api" }
+track-capture = { version = "0.1.0", path = "crates/track-capture" }
+track-cli = { version = "0.1.0", path = "crates/track-cli" }
+track-core = { version = "0.1.0", path = "crates/track-core" }
 ureq = "3.2.0"
 url = "2.5.4"
 walkdir = "2.5.0"

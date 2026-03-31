@@ -2,7 +2,12 @@
 name = "track-cli"
 edition.workspace = true
 version.workspace = true
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "CLI for capturing tasks in the track issue tracker."
+readme = "../../README.md"
 
 [features]
 default = []
@@ -16,8 +21,8 @@ path = "src/main.rs"
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-track-capture = { path = "../track-capture" }
-track-core = { path = "../track-core" }
+track-capture = { workspace = true }
+track-core = { workspace = true }
 ureq = { workspace = true }
 url = { workspace = true }
 

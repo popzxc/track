@@ -1,0 +1,42 @@
+name: Recover Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Released workspace version to recover, for example 0.1.0.
+        required: true
+        type: string
+      publish_latest:
+        description: Also publish this recovered version as ghcr.io/popzxc/track:latest.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  validate_ref:
+    name: Validate recovery ref
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse manual recovery runs outside main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "workflow_dispatch recovery runs must target refs/heads/main." >&2
+          exit 1
+
+  publish_product_artifacts:
+    name: Republish Docker image and release assets
+    needs: validate_ref
+    uses: ./.github/workflows/post-release.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      release_tag: ${{ format('v{0}', inputs.release_version) }}
+      release_version: ${{ inputs.release_version }}
+      publish_latest: ${{ inputs.publish_latest }}
+      use_prebuilt_binaries: false
+    secrets: inherit

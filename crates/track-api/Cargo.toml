@@ -2,7 +2,12 @@
 name = "track-api"
 edition.workspace = true
 version.workspace = true
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "HTTP API and static asset server for the track issue tracker."
+readme = "../../README.md"
 
 [[bin]]
 name = "track-api"
@@ -16,7 +21,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 tower-http = { workspace = true, features = ["fs", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
-track-core = { path = "../track-core" }
+track-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

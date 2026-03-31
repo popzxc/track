@@ -12,7 +12,7 @@ Once you have worked through [Intro](./intro/), [Security](./security/), [Local 
 ```bash
 git clone <your-track-repo-url>
 cd track
-cargo install --path crates/track-cli --locked
+cargo install track-cli --locked
 ```
 
 Make sure `~/.cargo/bin` is on your `PATH`.
@@ -24,6 +24,8 @@ From the repository root:
 ```bash
 docker compose up --build -d
 ```
+
+Published releases also push the container image to `ghcr.io/popzxc/track:latest`. The commands on this page keep using `docker compose` so a local source checkout and the published image stay clearly separate.
 
 Then open:
 
