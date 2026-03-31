@@ -11,13 +11,14 @@ Open the WebUI, go to **Settings**, and use **Runner setup** to finish the part 
 
 This field is required for real remote work.
 
-The shell prelude runs before every remote command, so it should contain the environment setup that your non-interactive SSH sessions need. A common example looks like this:
+The shell prelude runs before every remote command, so it should contain the environment setup that your non-interactive SSH sessions need.
+Your prelude would probably look roughly like this:
 
 ```bash
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 . "$HOME/.cargo/env"
-export PATH="$PATH:/home/<your-user>/.foundry/bin"
+export PATH="$PATH:/home/<your-user>/.local/bin"
 ```
 
 Keep it focused on PATH and toolchain setup. If it prints extra text, remote command parsing becomes much less reliable.
@@ -35,7 +36,7 @@ This is only the default. You can still override it later per task dispatch or p
 
 If you plan to use the PR review workflow, also set:
 
-- **Main GitHub user**: the user name the bot should refer to in review output
+- **Main GitHub user**: the user name the bot should refer to in review output, and the only account whose review comments can trigger automatic follow-ups
 - **Default review prompt**: reusable guidance that gets appended to every manual review request
 
 If you also want automatic review follow-up after relevant PR activity, turn on **Review follow-up**. Manual reviews only need the main GitHub user; automatic follow-up needs both the user and the toggle.

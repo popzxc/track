@@ -12,7 +12,7 @@ hero:
     alt: Stylized open book mark inspired by the track UI.
   actions:
     - text: Start Initial Setup
-      link: ./initial-setup/local-and-remote-prerequisites/
+      link: ./initial-setup/intro/
       icon: right-arrow
     - text: Jump to Reference
       link: ./reference/config-files/
@@ -27,7 +27,7 @@ hero:
 
 The docs are organized around the order most people need:
 
-- **Initial Setup** gets the CLI, local stack, and remote machine ready.
+- **Initial Setup** explains the model, security boundaries, and the steps to prepare both the local machine and the remote runner.
 - **Configuring** covers project registration, runner settings, and project metadata.
 - **Using WebUI** walks through dispatches, follow-ups, PR reviews, and runner choice.
 - **Reference** is the place to look up files, commands, and settings.

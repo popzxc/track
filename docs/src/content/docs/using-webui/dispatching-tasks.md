@@ -12,7 +12,19 @@ The normal loop starts in the CLI and finishes in the WebUI.
 From any directory:
 
 ```bash
+track todoapp fix stale task status after a canceled run
+```
+
+or 
+
+```bash
 track todoapp prio high fix stale task status after a canceled run
+```
+
+or 
+
+```bash
+track fix stale task status after a canceled run in todoapp priority low
 ```
 
 You can be rough. The local parser is there to turn your note into a structured task, as long as the project name or alias resolves to something you already registered.

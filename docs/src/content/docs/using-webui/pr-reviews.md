@@ -35,6 +35,8 @@ When the pull request changes, ask for a re-review instead of creating a separat
 
 If you saved a default review prompt in **Settings**, it is appended to every manual review request before the one-off instructions you type for that specific run.
 
+You can think of it as an `AGENTS.md` for reviews specifically: one shared prompt that applies to every review request unless you override it with extra instructions for that run.
+
 That is a good place for standing guidance such as:
 
 - prioritize bugs and regressions

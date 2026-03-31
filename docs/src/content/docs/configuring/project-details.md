@@ -11,7 +11,7 @@ For remote dispatch, these three fields matter:
 
 - **Repo URL**
 - **Git URL**
-- **Base branch**
+- **Base branch**: the branch that `track` uses as the base for agent-opened pull requests. In the common case this matches the repository's default branch, but you can override it when your real integration branch is something longer-lived such as `develop`.
 
 The optional **Description** field is just for human context.
 

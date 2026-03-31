@@ -1,11 +1,11 @@
 ---
 title: Install and Launch
-description: Install the CLI, start the local stack, and register the remote host before moving into WebUI settings.
+description: Install the CLI, start the local stack, and register the remote host after both setup machines are ready.
 sidebar:
-  order: 2
+  order: 5
 ---
 
-Once the prerequisites are ready, the next goal is simple: get the local backend running and teach it how to reach your remote machine.
+Once you have worked through [Intro](./intro/), [Security](./security/), [Local Prerequisites](./local-prerequisites/), and [Remote Prerequisites](./remote-prerequisites/), the next goal is simple: get the local backend running and teach it how to reach your remote machine.
 
 ## 1. Clone the repository and install the CLI
 
@@ -48,7 +48,7 @@ track configure --backend-url http://127.0.0.1:4310
 track configure --model-path ~/.models/custom.gguf
 ```
 
-## 4. Register the remote host and SSH key
+## 4. Register the remote host and import the dedicated SSH key
 
 This is the one remote-agent step that belongs in initial setup rather than in the WebUI.
 
@@ -65,6 +65,8 @@ Optional flags:
 - `--workspace-root` defaults to `~/workspace`
 - `--projects-registry-path` defaults to `~/track-projects.json`
 - `--known-hosts-file` lets you provide a prebuilt `known_hosts` file
+
+If you followed the remote prerequisites page, `~/.ssh/track_remote_agent` is the dedicated key you created earlier. `track` imports it into its managed automation directory, which is why that key must be dedicated to this workflow.
 
 At this stage, do **not** worry about `--shell-prelude`, review settings, or default prompts. The next section of the book handles those inside the WebUI, which keeps the guided flow much simpler.
 

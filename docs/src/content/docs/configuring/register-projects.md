@@ -42,7 +42,25 @@ That inferred metadata is usually enough to get started, but you should still ve
 Once a project is registered, you can capture tasks against it from anywhere. For example:
 
 ```bash
+track todoapp redo the todo view
+```
+
+This example would create an issue for `todoapp` project with medium priority and body "Redo the todo view" (prettified by LLM).
+If you provide more context, the LLM can infer more details as well. For, in the following example:
+
+```bash
 track todoapp prio high tighten retry logic around remote cleanup
+```
+
+the task would be create with a high priority.
+
+Any created task can be edited in the WebUI after creation, so in CLI you can draft a quick idea just to not forget, and then
+refine it later in the WebUI when you have time.
+
+Tip: use ticks to avoid escaping, e.g.:
+
+```bash
+track todoapp 'some text with `backticks` that will confuse your shell otherwise'
 ```
 
 If you skip project registration entirely, task capture will fail because the backend has no valid destination projects to offer the local parser.
