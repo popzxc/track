@@ -46,6 +46,9 @@ jobs:
       - run: cargo test -p track-integration-tests
         env:
           RUN_TRACK_INTEGRATION_TESTS: "true"
+          # The tests set process-global env vars (TRACK_STATE_DIR, etc.) that
+          # would race if tests ran in parallel, so enforce sequential execution.
+          RUST_TEST_THREADS: "1"
 
   frontend-unit-test:
     name: Frontend unit tests

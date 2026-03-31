@@ -327,8 +327,8 @@ async function waitForHealth(healthUrl: string, apiLogPath: string): Promise<voi
 }
 
 async function seedApplicationData(apiBaseUrl: string): Promise<void> {
+  await upsertProject(apiBaseUrl)
   await createTask(apiBaseUrl, DISPATCH_TASK_TITLE)
-  await updateProjectMetadata(apiBaseUrl)
   await createTask(apiBaseUrl, FOLLOW_UP_TASK_TITLE)
 }
 
@@ -383,9 +383,9 @@ async function seedOrphanedCleanupArtifacts(options: {
   )
 }
 
-async function updateProjectMetadata(apiBaseUrl: string): Promise<void> {
+async function upsertProject(apiBaseUrl: string): Promise<void> {
   const response = await fetch(`${apiBaseUrl}/api/projects/${encodeURIComponent(E2E_PROJECT_NAME)}`, {
-    method: 'PATCH',
+    method: 'PUT',
     headers: {
       'content-type': 'application/json',
     },
@@ -396,10 +396,6 @@ async function updateProjectMetadata(apiBaseUrl: string): Promise<void> {
       description: 'Seed metadata for browser e2e tests.',
     }),
   })
-
-  if (response.ok) {
-    return
-  }
 
   if (!response.ok) {
     throw new Error(`Could not seed project metadata: ${await response.text()}`)
