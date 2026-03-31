@@ -34,12 +34,12 @@ beforeAll(async () => {
   browser = await chromium.launch({
     headless: true,
   })
-}, 120_000)
+})
 
 afterAll(async () => {
   await browser?.close()
   await teardownFrontendE2EEnvironment()
-}, 120_000)
+})
 
 async function openTaskDrawer(page: Page, taskTitle: string) {
   const taskRow = page.getByTestId('task-row').filter({ hasText: taskTitle }).first()
