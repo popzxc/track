@@ -7,25 +7,27 @@ sidebar:
 
 Once you have worked through [Intro](./intro/), [Security](./security/), [Local Prerequisites](./local-prerequisites/), and [Remote Prerequisites](./remote-prerequisites/), the next goal is simple: get the local backend running and teach it how to reach your remote machine.
 
-## 1. Clone the repository and install the CLI
+## 1. Install the release bundle
 
 ```bash
-git clone <your-track-repo-url>
-cd track
-cargo install track-cli --locked
+curl -fsSL https://raw.githubusercontent.com/popzxc/track/main/trackup/trackup | bash
 ```
 
-Make sure `~/.cargo/bin` is on your `PATH`.
+The installer downloads a matched GitHub release, puts `track`, `trackup`, and
+`track-backend` into `~/.track/bin`, writes the shipped backend Compose file
+into `~/.track/share`, and prompts you to reload your shell if it had to add
+`~/.track/bin` to your `PATH`.
+
+Released installers currently support Linux x86_64 and macOS arm64.
+
+Re-run `trackup` later to update to the newest release. Use `trackup vX.Y.Z`
+when you need to pin a specific release.
 
 ## 2. Start the local API and WebUI
 
-From the repository root:
-
 ```bash
-docker compose up --build -d
+track-backend up -d
 ```
-
-Published releases also push the container image to `ghcr.io/popzxc/track:latest`. The commands on this page keep using `docker compose` so a local source checkout and the published image stay clearly separate.
 
 Then open:
 
@@ -33,11 +35,9 @@ Then open:
 http://localhost:3210
 ```
 
-If your local user does not use UID/GID `1000:1000`, start the stack like this instead:
-
-```bash
-TRACK_UID=$(id -u) TRACK_GID=$(id -g) docker compose up --build -d
-```
+`track-backend` forwards to the installed release Compose file and exports your
+current UID/GID before calling `docker compose`, which keeps the bind-mounted
+backend state directory writable without requiring a local image build.
 
 ## 3. Keep the CLI on the default backend URL, unless you need an override
 
@@ -74,4 +74,5 @@ At this stage, do **not** worry about `--shell-prelude`, review settings, or def
 
 ## 5. Leave the stack running
 
-The remaining setup chapters assume the local backend is reachable. If you shut it down, bring it back with the same `docker compose up --build -d` command.
+The remaining setup chapters assume the local backend is reachable. If you shut
+it down, bring it back with `track-backend up -d`.

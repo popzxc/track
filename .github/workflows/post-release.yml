@@ -131,7 +131,7 @@ jobs:
   upload_prebuilt_cli_assets:
     name: Upload CLI release assets
     if: ${{ inputs.use_prebuilt_binaries }}
-    needs: verify_release
+    needs: publish_docker
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -150,25 +150,7 @@ jobs:
       - name: Package release artifacts and generate checksums
         env:
           TRACK_VERSION: ${{ inputs.release_version }}
-        run: |
-          set -euo pipefail
-
-          packages_dir="dist/packages"
-          mkdir -p "$packages_dir"
-
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
-            asset_stem="track-v${TRACK_VERSION}-${target}"
-            asset_dir="${packages_dir}/${asset_stem}"
-            source_binary="dist/raw/cli-binary-${target}/track"
-
-            mkdir -p "$asset_dir"
-            cp "$source_binary" "${asset_dir}/track"
-            chmod +x "${asset_dir}/track"
-            cp README.md LICENSE "${asset_dir}/"
-            tar -C "$packages_dir" -czf "dist/${asset_stem}.tar.gz" "${asset_stem}"
-          done
-
-          sha256sum dist/*.tar.gz > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+        run: bash ./trackup/package-release-assets.sh
 
       - name: Upload assets to the GitHub release
         env:
@@ -182,8 +164,8 @@ jobs:
     name: Upload rebuilt CLI release assets
     if: ${{ !inputs.use_prebuilt_binaries }}
     needs:
-      - verify_release
       - build_cli_binaries
+      - publish_docker
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -202,25 +184,7 @@ jobs:
       - name: Package release artifacts and generate checksums
         env:
           TRACK_VERSION: ${{ inputs.release_version }}
-        run: |
-          set -euo pipefail
-
-          packages_dir="dist/packages"
-          mkdir -p "$packages_dir"
-
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
-            asset_stem="track-v${TRACK_VERSION}-${target}"
-            asset_dir="${packages_dir}/${asset_stem}"
-            source_binary="dist/raw/cli-binary-${target}/track"
-
-            mkdir -p "$asset_dir"
-            cp "$source_binary" "${asset_dir}/track"
-            chmod +x "${asset_dir}/track"
-            cp README.md LICENSE "${asset_dir}/"
-            tar -C "$packages_dir" -czf "dist/${asset_stem}.tar.gz" "${asset_stem}"
-          done
-
-          sha256sum dist/*.tar.gz > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+        run: bash ./trackup/package-release-assets.sh
 
       - name: Upload assets to the GitHub release
         env:

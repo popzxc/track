@@ -14,7 +14,7 @@ The release pipeline has one product-facing outcome:
 - publish `track-core`, `track-capture`, `track-cli`, and `track-api` to crates.io
 - create one GitHub release, `track vX.Y.Z`, from `track-cli`
 - publish the Docker image to `ghcr.io/popzxc/track`
-- attach the non-CUDA CLI archives and checksum file to that GitHub release
+- attach the non-CUDA CLI archives, the shared `trackup` asset bundle, and the checksum file to that GitHub release
 
 That split keeps crates.io in sync with the workspace while still treating the CLI release as the public product release that users download.
 
@@ -44,7 +44,7 @@ The repository uses three workflows instead of chaining a second workflow from t
 - `.github/workflows/release.yml`
   Opens or updates the release PR, build-checks the Docker image, prebuilds the non-CUDA CLI binaries, publishes the workspace with `release-plz`, and then calls the reusable post-release workflow.
 - `.github/workflows/post-release.yml`
-  Shared post-release logic that verifies the GitHub release exists, publishes the Docker image, and uploads the CLI archives.
+  Shared post-release logic that verifies the GitHub release exists, publishes the Docker image, and uploads the CLI archives plus the installer asset bundle.
 - `.github/workflows/recover-release-assets.yml`
   Manual recovery entrypoint that rebuilds the Docker image and CLI binaries from an existing release tag, then calls the same shared post-release workflow. Its `publish_latest` input defaults to `false` so recovery runs do not move the floating GHCR tag unless you opt in.
 
@@ -58,6 +58,7 @@ Each product release currently ships:
 
 - `track-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
 - `track-vX.Y.Z-aarch64-apple-darwin.tar.gz`
+- `trackup-assets-vX.Y.Z.tar.gz`
 - `track-vX.Y.Z-sha256sums.txt`
 - `ghcr.io/popzxc/track:vX.Y.Z`
 - `ghcr.io/popzxc/track:latest`
