@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-All commands below assume the local backend is already reachable at the configured `backendBaseUrl`.
+Most commands below assume the local backend is already reachable at the configured `backendBaseUrl`. The exceptions are `track configure` and bare `track`, which work locally before the backend is up.
 
 ## `track <free-form task>`
 

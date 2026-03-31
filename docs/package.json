@@ -7,10 +7,11 @@
     "dev": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro dev",
     "build": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro build",
     "preview": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro preview",
-    "check": "NODE_TLS_REJECT_UNAUTHORIZED=1 astro check"
+    "check": "bun x tsc --noEmit"
   },
   "devDependencies": {
     "@astrojs/starlight": "0.35.2",
-    "astro": "5.13.5"
+    "astro": "5.13.5",
+    "typescript": "5.9.3"
   }
 }

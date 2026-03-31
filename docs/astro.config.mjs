@@ -9,29 +9,39 @@ import starlight from '@astrojs/starlight';
 // workflow provides the final public URL, we split it into the site origin and
 // the repository subpath so Astro generates correct canonical URLs and asset
 // links for both user sites and project sites.
-function resolveSiteConfig() {
-  const explicitSite = process.env.DOCS_SITE_URL;
-  if (explicitSite) {
-    return {
-      site: explicitSite,
-      base: '/',
-    };
-  }
-
-  const pagesUrl = process.env.GITHUB_PAGES_URL;
-  if (!pagesUrl) {
-    return {
-      site: 'https://example.com',
-      base: '/',
-    };
-  }
-
-  const resolvedUrl = new URL(pagesUrl);
+function splitPublicUrl(publicUrl) {
+  const resolvedUrl = new URL(publicUrl);
   const base = resolvedUrl.pathname.replace(/\/$/, '') || '/';
 
   return {
     site: resolvedUrl.origin,
     base,
+  };
+}
+
+function resolveSiteConfig() {
+  const explicitSite = process.env.DOCS_SITE_URL;
+  if (explicitSite) {
+    return splitPublicUrl(explicitSite);
+  }
+
+  const pagesUrl = process.env.GITHUB_PAGES_URL;
+  if (pagesUrl) {
+    return splitPublicUrl(pagesUrl);
+  }
+
+  // Local development is easier to work with at the root path, but production
+  // builds should default to the published GitHub Pages URL for this repo.
+  if (process.env.NODE_ENV !== 'production') {
+    return {
+      site: 'http://localhost:4321',
+      base: '/',
+    };
+  }
+
+  return {
+    site: 'https://popzxc.github.io',
+    base: '/track',
   };
 }
 
@@ -44,9 +54,20 @@ export default defineConfig({
     starlight({
       title: 'track',
       description:
-        'A practical guide to setting up track, configuring remote runs, using the WebUI, and understanding the project as a contributor.',
+        'Set up track, capture work from the CLI, run remote sessions, and manage reviews from the WebUI.',
       customCss: ['./src/styles/custom.css'],
-      pagefind: false,
+      pagefind: true,
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/popzxc/track',
+        },
+      ],
+      components: {
+        ThemeProvider: './src/components/StaticDarkThemeProvider.astro',
+        ThemeSelect: './src/components/NoThemeSelect.astro',
+      },
       sidebar: [
         {
           label: 'Initial Setup',
@@ -66,7 +87,6 @@ export default defineConfig({
         },
         {
           label: 'Development Flow',
-          badge: { text: 'Developers', variant: 'note' },
           autogenerate: { directory: 'development-flow' },
         },
       ],

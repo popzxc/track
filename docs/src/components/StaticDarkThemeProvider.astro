@@ -1,0 +1,9 @@
+---
+// Starlight defaults the page to `data-theme="dark"` server-side. We keep a
+// minimal provider so client-side hydration cannot switch the docs to light
+// mode from stored browser preferences.
+---
+
+<script is:inline>
+  document.documentElement.dataset.theme = 'dark';
+</script>

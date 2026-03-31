@@ -6,31 +6,31 @@ sidebar:
   hidden: true
 hero:
   title: track
-  tagline: A gruvbox-dark book for setting up the CLI, configuring remote runs, using the WebUI, and understanding the project as a contributor.
+  tagline: Capture rough notes as tasks, run remote coding sessions, and keep project work moving from one local tool.
   image:
     file: ../../assets/track-docs-mark.svg
     alt: Stylized open book mark inspired by the track UI.
   actions:
     - text: Start Initial Setup
-      link: /initial-setup/local-and-remote-prerequisites/
+      link: ./initial-setup/local-and-remote-prerequisites/
       icon: right-arrow
     - text: Jump to Reference
-      link: /reference/config-files/
+      link: ./reference/config-files/
       variant: minimal
 ---
 
-`track` combines three pieces into one workflow:
+`track` keeps the everyday loop in one place:
 
-- a local CLI that turns rough notes into tasks
-- a local WebUI for editing, dispatching, and reviewing
-- a remote runner that can use either Codex or Claude
+- capture a task quickly from the CLI
+- refine, dispatch, and follow up from the local WebUI
+- run remote work through Codex or Claude when the task is ready
 
-This book is split into five parts:
+The docs are organized around the order most people need:
 
-- **Initial Setup** gets the local CLI, the WebUI, and the remote machine ready.
-- **Configuring** covers the last mile: registering projects, saving runner settings, and checking project metadata.
+- **Initial Setup** gets the CLI, local stack, and remote machine ready.
+- **Configuring** covers project registration, runner settings, and project metadata.
 - **Using WebUI** walks through dispatches, follow-ups, PR reviews, and runner choice.
-- **Reference** is the lookup section for files, commands, and settings.
-- **Development Flow** is aimed at developers and contributors who need the codebase shape and local workflow.
+- **Reference** is the place to look up files, commands, and settings.
+- **Development Flow** is for contributors who need the repo shape and local workflow.
 
-If you are coming from older notes or screenshots, treat this book as the source of truth. The current build stores its live state in the backend database and in `~/.config/track/cli.json`; older `config.json`-centric instructions are covered only in the reference section as legacy material.
+If you are coming from older notes or screenshots, keep in mind that current installs store live state in the backend database and in `~/.config/track/cli.json`. Legacy `config.json` material is still covered in the reference section when you need migration details.
