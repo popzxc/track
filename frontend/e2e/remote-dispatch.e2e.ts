@@ -213,8 +213,18 @@ describe('remote dispatch smoke flow', () => {
       const followUpReadyText = await page.getByTestId('run-history-item').first().textContent()
       expect(followUpReadyText).toContain('Succeeded')
 
+      // Wait for the primary action button to switch to "Continue run" before
+      // clicking.  selectedTaskCanContinue requires branchName and worktreePath
+      // to be present on the dispatch in the Vue reactive state; clicking the
+      // button before that settles triggers a new dispatch instead of the
+      // follow-up modal.  Waiting for the exact label is a deterministic guard
+      // that avoids the race without resorting to a fixed sleep.
+      await page
+        .getByTestId('drawer-primary-action')
+        .filter({ hasText: 'Continue run' })
+        .waitFor({ timeout: 15_000 })
       await page.getByTestId('drawer-primary-action').click()
-      await page.getByTestId('follow-up-modal').waitFor()
+      await page.getByTestId('follow-up-modal').waitFor({ timeout: 30_000 })
       await page.getByTestId('follow-up-request').fill('Address the review comments on the open PR.')
       await page.getByTestId('follow-up-submit').click()
       await waitForRunHistoryLabel(page, FOLLOW_UP_TASK_TITLE, 'Follow-up', 20_000)
