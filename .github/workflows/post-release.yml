@@ -23,9 +23,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      # This reusable workflow starts on a fresh runner, so this job does not
+      # have a local git checkout. Point `gh` at the repository explicitly
+      # instead of letting it shell out to `git` to discover one.
       - name: Confirm the requested GitHub release exists
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TRACK_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
@@ -34,6 +38,7 @@ jobs:
       - name: Normalize the GitHub release title
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TRACK_TAG: ${{ inputs.release_tag }}
           TRACK_VERSION: ${{ inputs.release_version }}
         run: |
@@ -110,6 +115,7 @@ jobs:
       - name: Upload assets to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TRACK_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
