@@ -28,6 +28,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Derive git commit metadata
+        id: git_commit
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -37,6 +41,8 @@ jobs:
           context: .
           load: true
           push: false
+          build-args: |
+            TRACK_GIT_COMMIT=${{ steps.git_commit.outputs.short_sha }}
 
   release_please:
     name: Open release PR or publish release
