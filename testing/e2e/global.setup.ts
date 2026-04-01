@@ -110,6 +110,17 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await writeFile(path.join(remoteAgentRoot, 'known_hosts'), '', 'utf-8')
   await writeConfigFile(configPath, fixturePort, apiPort)
 
+  // Seed the orphan dispatch record into SQLite before the API starts so there
+  // is no write-lock contention with the running API process.  The remote SSH
+  // artifacts (worktree and run directory) are created here too since the
+  // fixture container is already up at this point.
+  await seedOrphanedCleanupArtifacts({
+    fixturePort,
+    keyPath: keyPrefix,
+    runtimeRoot,
+    stateDir: localTrackRoot,
+  })
+
   const apiLogPath = path.join(tempRoot, 'track-api.log')
   const apiLog = fs.createWriteStream(apiLogPath, { flags: 'a' })
   const apiProcess = spawn('cargo', ['run', '-p', 'track-api'], {
@@ -132,12 +143,6 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await waitForHealth(`${apiBaseUrl}/health`, apiLogPath)
   await configureRemoteAgent(apiBaseUrl, fixturePort, keyPrefix, runtimeRoot)
   await seedApplicationData(apiBaseUrl)
-  await seedOrphanedCleanupArtifacts({
-    fixturePort,
-    keyPath: keyPrefix,
-    runtimeRoot,
-    stateDir: localTrackRoot,
-  })
 
   saveFrontendE2EState({
     apiBaseUrl,
@@ -382,27 +387,38 @@ async function seedOrphanedCleanupArtifacts(options: {
   const orphanRunDirectory =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
-  // Seed the orphan dispatch record directly in SQLite so the API cleanup can
-  // find it.  We insert a task row to satisfy any application-level checks,
-  // then delete it — leaving the dispatch record as an orphan that the cleanup
-  // endpoint is meant to detect and remove.
+  // Seed the orphan dispatch record directly in SQLite before the API starts.
+  // The task_dispatches table has no FK constraint on task_id (the cascade was
+  // removed), so we can insert the dispatch record without a matching task row.
+  // The API will find this dispatch but no corresponding task and treat it as
+  // an orphan eligible for cleanup.  Creating the table here (idempotently) is
+  // safe because the API runs CREATE TABLE IF NOT EXISTS at startup.
   const dbPath = path.join(options.stateDir, 'track.sqlite')
+  await mkdir(path.dirname(dbPath), { recursive: true })
   const db = new Database(dbPath)
   try {
-    db.run(
-      `INSERT OR IGNORE INTO tasks
-         (id, project, priority, status, description, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        ORPHAN_CLEANUP_TASK_ID,
-        E2E_PROJECT_NAME,
-        'low',
-        'open',
-        'Orphaned task seeded for browser cleanup e2e.',
-        '2026-03-23T12:00:00.000Z',
-        '2026-03-23T12:00:00.000Z',
-      ],
-    )
+    db.run(`
+      CREATE TABLE IF NOT EXISTS task_dispatches (
+        dispatch_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        finished_at TEXT,
+        remote_host TEXT NOT NULL,
+        branch_name TEXT,
+        worktree_path TEXT,
+        pull_request_url TEXT,
+        preferred_tool TEXT NOT NULL DEFAULT 'codex',
+        follow_up_request TEXT,
+        summary TEXT,
+        notes TEXT,
+        error_message TEXT,
+        review_request_head_oid TEXT,
+        review_request_user TEXT
+      )
+    `)
     db.run(
       `INSERT OR IGNORE INTO task_dispatches
          (dispatch_id, task_id, project, status, created_at, updated_at, finished_at,
@@ -423,10 +439,6 @@ async function seedOrphanedCleanupArtifacts(options: {
         'Left behind on purpose for the browser cleanup e2e.',
       ],
     )
-    // Delete the task so the dispatch record becomes an orphan.  Because the
-    // task_dispatches table no longer has an ON DELETE CASCADE constraint, the
-    // dispatch record survives the task deletion and is eligible for cleanup.
-    db.run('DELETE FROM tasks WHERE id = ?', [ORPHAN_CLEANUP_TASK_ID])
   } finally {
     db.close()
   }
