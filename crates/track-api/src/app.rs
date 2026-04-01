@@ -13,6 +13,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
 use track_core::backend_config::RemoteAgentConfigService;
+use track_core::build_info::BuildInfo;
 use track_core::config::{
     RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile, DEFAULT_REMOTE_AGENT_PORT,
     DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
@@ -35,6 +36,8 @@ use track_core::types::{
     ReviewRecord, ReviewRunRecord, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
     TaskUpdateInput,
 };
+
+use crate::build_info::server_build_info;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -75,6 +78,7 @@ impl ApiError {
             | ErrorCode::InvalidProjectMetadata
             | ErrorCode::InvalidRemoteAgentConfig
             | ErrorCode::InvalidTaskUpdate
+            | ErrorCode::VersionMismatch
             | ErrorCode::MigrationRequired
             | ErrorCode::ConfigNotFound
             | ErrorCode::InvalidConfig
@@ -369,6 +373,10 @@ fn default_remote_projects_registry_path() -> String {
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { ok: true })
+}
+
+async fn get_server_version() -> Json<BuildInfo> {
+    Json(server_build_info())
 }
 
 async fn list_projects(State(state): State<AppState>) -> Result<Json<ProjectsResponse>, ApiError> {
@@ -1308,6 +1316,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
     // process so Docker can expose a single local port.
     let static_root = static_root.as_ref().to_path_buf();
     let migration_router = Router::new()
+        .route("/meta/server_version", get(get_server_version))
         .route("/migration/status", get(migration_status))
         .route("/migration/import", post(import_legacy_data));
 

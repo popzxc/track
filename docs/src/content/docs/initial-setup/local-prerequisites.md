@@ -9,15 +9,22 @@ This page is about your local machine: the one where you run `track`, capture ta
 
 ## Release installer prerequisites
 
-The normal install path uses the released `trackup` bootstrap script rather
-than a local source build.
+The normal install path uses the released `trackup` bootstrap script. That
+script downloads the shared backend assets from the GitHub release and builds
+the `track` CLI from the tagged source release with `cargo install`.
 
 Make sure these commands exist locally before you continue:
 
 ```bash
 curl --version
+rustc --version
+cargo --version
 jq --version
 tar --version
+cmake --version
+clang --version
+cc --version
+c++ --version
 docker compose version
 ```
 
@@ -25,13 +32,8 @@ docker compose version
 use either `sha256sum` or `shasum`, and most Linux and macOS systems already
 ship one of those by default.
 
-Released installers currently support Linux x86_64 and macOS arm64.
-
-## Building from source is optional
-
-You only need Rust, a native build toolchain, and `libclang` if you plan to
-build `track` from a repository checkout instead of using the released
-installer.
+On Linux x86_64, `trackup` can also install a CUDA-accelerated CLI build. That
+path requires a local CUDA toolkit installation with `nvcc` available.
 
 ## Local capture model
 

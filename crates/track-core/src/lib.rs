@@ -1,5 +1,6 @@
 pub mod api_notify;
 pub mod backend_config;
+pub mod build_info;
 pub mod config;
 pub mod database;
 pub mod dispatch_repository;
