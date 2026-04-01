@@ -27,6 +27,10 @@ const FIXTURE_SHELL_PRELUDE: &str =
 pub struct RemoteFixture {
     container_name: String,
     pub port: u16,
+    // key_dir is kept separate from runtime_dir so the container entrypoint's
+    // `chmod -R 777 $RUNTIME_DIR` does not make the private key world-readable,
+    // which OpenSSH rejects with "bad permissions".
+    key_dir: TempDir,
     runtime_dir: TempDir,
     workspace_root: PathBuf,
 }
@@ -34,6 +38,7 @@ pub struct RemoteFixture {
 impl RemoteFixture {
     pub fn start(workspace_root: &Path) -> Self {
         let runtime_dir = TempDir::new().expect("fixture runtime tempdir should be created");
+        let key_dir = TempDir::new().expect("key tempdir should be created");
         let container_name = format!(
             "track-testing-{}-{}",
             std::process::id(),
@@ -50,11 +55,7 @@ impl RemoteFixture {
             [
                 "generate-key",
                 "--output-prefix",
-                runtime_dir
-                    .path()
-                    .join("id_ed25519")
-                    .to_string_lossy()
-                    .as_ref(),
+                key_dir.path().join("id_ed25519").to_string_lossy().as_ref(),
             ],
         );
         run_fixturectl(
@@ -70,7 +71,7 @@ impl RemoteFixture {
                 "--runtime-dir",
                 runtime_dir.path().to_string_lossy().as_ref(),
                 "--authorized-key",
-                runtime_dir
+                key_dir
                     .path()
                     .join("id_ed25519.pub")
                     .to_string_lossy()
@@ -88,11 +89,7 @@ impl RemoteFixture {
                 "--port",
                 &port.to_string(),
                 "--private-key",
-                runtime_dir
-                    .path()
-                    .join("id_ed25519")
-                    .to_string_lossy()
-                    .as_ref(),
+                key_dir.path().join("id_ed25519").to_string_lossy().as_ref(),
                 "--known-hosts",
                 runtime_dir
                     .path()
@@ -107,6 +104,7 @@ impl RemoteFixture {
         Self {
             container_name,
             port,
+            key_dir,
             runtime_dir,
             workspace_root: workspace_root.to_path_buf(),
         }
@@ -148,7 +146,7 @@ impl RemoteFixture {
     }
 
     pub fn private_key_path(&self) -> PathBuf {
-        self.runtime_dir.path().join("id_ed25519")
+        self.key_dir.path().join("id_ed25519")
     }
 
     pub fn remote_agent_config(&self) -> RemoteAgentConfigFile {

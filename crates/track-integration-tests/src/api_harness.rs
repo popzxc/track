@@ -164,8 +164,7 @@ impl ApiHarness {
             .upsert_project_by_name(project_name, project_metadata, Vec::new())
             .expect("project metadata should save");
 
-        let task = self
-            .task_repository
+        self.task_repository
             .create_task(TaskCreateInput {
                 project: project_name.to_owned(),
                 priority: Priority::High,
@@ -173,9 +172,7 @@ impl ApiHarness {
                 source: Some(TaskSource::Cli),
             })
             .expect("task should be created")
-            .task;
-
-        task
+            .task
     }
 
     pub async fn dispatch_task(&self, task_id: &str) -> serde_json::Value {

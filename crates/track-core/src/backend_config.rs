@@ -147,10 +147,9 @@ impl RemoteAgentConfigService {
     pub fn load_remote_agent_runtime_config(
         &self,
     ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        Ok(self
-            .load_remote_agent_config()?
+        self.load_remote_agent_config()?
             .map(build_remote_agent_runtime_config)
-            .transpose()?)
+            .transpose()
     }
 
     pub fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {

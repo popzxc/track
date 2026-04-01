@@ -1,8 +1,9 @@
 import fs from 'node:fs'
-import { mkdir, mkdtemp, writeFile, copyFile, chmod } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, copyFile, chmod, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import net from 'node:net'
 import { spawn, spawnSync } from 'node:child_process'
+import { Database } from 'bun:sqlite'
 
 import {
   DISPATCH_TASK_TITLE,
@@ -109,6 +110,17 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await writeFile(path.join(remoteAgentRoot, 'known_hosts'), '', 'utf-8')
   await writeConfigFile(configPath, fixturePort, apiPort)
 
+  // Seed the orphan dispatch record into SQLite before the API starts so there
+  // is no write-lock contention with the running API process.  The remote SSH
+  // artifacts (worktree and run directory) are created here too since the
+  // fixture container is already up at this point.
+  await seedOrphanedCleanupArtifacts({
+    fixturePort,
+    keyPath: keyPrefix,
+    runtimeRoot,
+    stateDir: localTrackRoot,
+  })
+
   const apiLogPath = path.join(tempRoot, 'track-api.log')
   const apiLog = fs.createWriteStream(apiLogPath, { flags: 'a' })
   const apiProcess = spawn('cargo', ['run', '-p', 'track-api'], {
@@ -119,6 +131,7 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
       PORT: String(apiPort),
       TRACK_CONFIG_PATH: configPath,
       TRACK_DATA_DIR: issuesRoot,
+      TRACK_STATE_DIR: localTrackRoot,
       TRACK_STATIC_ROOT: path.join(REPO_ROOT, 'frontend', 'dist'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,13 +141,8 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   apiProcess.unref()
 
   await waitForHealth(`${apiBaseUrl}/health`, apiLogPath)
+  await configureRemoteAgent(apiBaseUrl, fixturePort, keyPrefix, runtimeRoot)
   await seedApplicationData(apiBaseUrl)
-  await seedOrphanedCleanupArtifacts({
-    fixturePort,
-    keyPath: keyPrefix,
-    issuesRoot,
-    runtimeRoot,
-  })
 
   saveFrontendE2EState({
     apiBaseUrl,
@@ -326,47 +334,114 @@ async function waitForHealth(healthUrl: string, apiLogPath: string): Promise<voi
   throw new Error(`track-api did not become healthy in time.\n\n${apiLog}`)
 }
 
+async function configureRemoteAgent(
+  apiBaseUrl: string,
+  fixturePort: number,
+  keyPath: string,
+  runtimeRoot: string,
+): Promise<void> {
+  const sshPrivateKey = await readFile(keyPath, 'utf-8')
+  const knownHosts = await readFile(path.join(runtimeRoot, 'known_hosts'), 'utf-8').catch(() => '')
+
+  const response = await fetch(`${apiBaseUrl}/api/remote-agent`, {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      host: FIXTURE_HOST,
+      user: FIXTURE_USER,
+      port: fixturePort,
+      workspaceRoot: FIXTURE_WORKSPACE_ROOT,
+      projectsRegistryPath: FIXTURE_PROJECTS_REGISTRY_PATH,
+      shellPrelude: FIXTURE_SHELL_PRELUDE,
+      reviewFollowUp: {
+        enabled: false,
+        mainUser: 'octocat',
+        defaultReviewPrompt: 'Focus on regressions and missing tests.',
+      },
+      sshPrivateKey,
+      knownHosts,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to configure remote agent: ${await response.text()}`)
+  }
+}
+
 async function seedApplicationData(apiBaseUrl: string): Promise<void> {
+  await upsertProject(apiBaseUrl)
   await createTask(apiBaseUrl, DISPATCH_TASK_TITLE)
-  await updateProjectMetadata(apiBaseUrl)
   await createTask(apiBaseUrl, FOLLOW_UP_TASK_TITLE)
 }
 
 async function seedOrphanedCleanupArtifacts(options: {
   fixturePort: number
   keyPath: string
-  issuesRoot: string
   runtimeRoot: string
+  stateDir: string
 }): Promise<void> {
-  const orphanDispatchDirectory = path.join(
-    options.issuesRoot,
-    '.dispatches',
-    ORPHAN_CLEANUP_TASK_ID,
-  )
-  await mkdir(orphanDispatchDirectory, { recursive: true })
-
   const orphanWorktreePath =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/worktrees/${ORPHAN_CLEANUP_DISPATCH_ID}`
   const orphanRunDirectory =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
-  await writeFile(
-    path.join(orphanDispatchDirectory, `${ORPHAN_CLEANUP_DISPATCH_ID}.json`),
-    `${JSON.stringify({
-      dispatchId: ORPHAN_CLEANUP_DISPATCH_ID,
-      taskId: ORPHAN_CLEANUP_TASK_ID,
-      project: E2E_PROJECT_NAME,
-      status: 'succeeded',
-      createdAt: '2026-03-23T12:05:00.000Z',
-      updatedAt: '2026-03-23T12:06:00.000Z',
-      finishedAt: '2026-03-23T12:06:00.000Z',
-      remoteHost: FIXTURE_HOST,
-      branchName: `track/${ORPHAN_CLEANUP_DISPATCH_ID}`,
-      worktreePath: orphanWorktreePath,
-      summary: 'Left behind on purpose for the browser cleanup e2e.',
-    }, null, 2)}\n`,
-    'utf-8',
-  )
+  // Seed the orphan dispatch record directly in SQLite before the API starts.
+  // The task_dispatches table has no FK constraint on task_id (the cascade was
+  // removed), so we can insert the dispatch record without a matching task row.
+  // The API will find this dispatch but no corresponding task and treat it as
+  // an orphan eligible for cleanup.  Creating the table here (idempotently) is
+  // safe because the API runs CREATE TABLE IF NOT EXISTS at startup.
+  const dbPath = path.join(options.stateDir, 'track.sqlite')
+  await mkdir(path.dirname(dbPath), { recursive: true })
+  const db = new Database(dbPath)
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS task_dispatches (
+        dispatch_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        finished_at TEXT,
+        remote_host TEXT NOT NULL,
+        branch_name TEXT,
+        worktree_path TEXT,
+        pull_request_url TEXT,
+        preferred_tool TEXT NOT NULL DEFAULT 'codex',
+        follow_up_request TEXT,
+        summary TEXT,
+        notes TEXT,
+        error_message TEXT,
+        review_request_head_oid TEXT,
+        review_request_user TEXT
+      )
+    `)
+    db.run(
+      `INSERT OR IGNORE INTO task_dispatches
+         (dispatch_id, task_id, project, status, created_at, updated_at, finished_at,
+          remote_host, branch_name, worktree_path, preferred_tool, summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        ORPHAN_CLEANUP_DISPATCH_ID,
+        ORPHAN_CLEANUP_TASK_ID,
+        E2E_PROJECT_NAME,
+        'succeeded',
+        '2026-03-23T12:05:00.000Z',
+        '2026-03-23T12:06:00.000Z',
+        '2026-03-23T12:06:00.000Z',
+        FIXTURE_HOST,
+        `track/${ORPHAN_CLEANUP_DISPATCH_ID}`,
+        orphanWorktreePath,
+        'codex',
+        'Left behind on purpose for the browser cleanup e2e.',
+      ],
+    )
+  } finally {
+    db.close()
+  }
 
   runRemoteCommand(
     {
@@ -383,9 +458,9 @@ async function seedOrphanedCleanupArtifacts(options: {
   )
 }
 
-async function updateProjectMetadata(apiBaseUrl: string): Promise<void> {
+async function upsertProject(apiBaseUrl: string): Promise<void> {
   const response = await fetch(`${apiBaseUrl}/api/projects/${encodeURIComponent(E2E_PROJECT_NAME)}`, {
-    method: 'PATCH',
+    method: 'PUT',
     headers: {
       'content-type': 'application/json',
     },
@@ -396,10 +471,6 @@ async function updateProjectMetadata(apiBaseUrl: string): Promise<void> {
       description: 'Seed metadata for browser e2e tests.',
     }),
   })
-
-  if (response.ok) {
-    return
-  }
 
   if (!response.ok) {
     throw new Error(`Could not seed project metadata: ${await response.text()}`)

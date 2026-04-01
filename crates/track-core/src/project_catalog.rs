@@ -78,11 +78,11 @@ fn normalize_lookup_key(value: &str) -> String {
 }
 
 mod path_string {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {

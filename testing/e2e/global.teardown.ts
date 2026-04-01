@@ -1,5 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import fs from 'node:fs'
 
 import { FIXTURECTL_PATH, REPO_ROOT } from './support/constants'
 import {
@@ -34,7 +33,12 @@ export async function teardownFrontendE2EEnvironment(): Promise<void> {
     encoding: 'utf-8',
   })
 
-  fs.rmSync(state.tempRoot, { force: true, recursive: true })
+  // The SSH fixture may have created files owned by a different UID inside the
+  // temp tree.  Use the shell rm so that the process inherits any elevated
+  // capabilities that the host runner may have, and ignore any residual
+  // failures so teardown does not block CI even when some files cannot be
+  // deleted (the ephemeral runner will be discarded anyway).
+  spawnSync('rm', ['-rf', state.tempRoot])
   clearFrontendE2EState()
 }
 

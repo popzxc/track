@@ -3211,7 +3211,7 @@ fn build_remote_review_prompt(
     if let Some(target_head_oid) = dispatch_record.target_head_oid.as_deref() {
         prompt.push_str(&format!("- Pinned review commit: {target_head_oid}\n"));
     }
-    prompt.push_str("\n");
+    prompt.push('\n');
     prompt.push_str("## Review instructions\n\n");
     prompt.push_str("- Submit one GitHub review in COMMENT mode.\n");
     prompt.push_str(&format!(
@@ -3256,7 +3256,7 @@ fn build_remote_review_prompt(
                 "- Previous review pinned commit: {target_head_oid}\n"
             ));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
         prompt.push_str("## Re-review guidance\n\n");
         prompt.push_str("- Inspect the current PR conversation on GitHub before deciding whether an older bot finding still matters.\n");
         prompt.push_str(&format!(
@@ -3637,13 +3637,7 @@ fn parse_github_pull_request_reference(
 }
 
 fn build_review_workspace_key(pull_request: &GithubPullRequestMetadata) -> String {
-    let slug = slug::slugify(
-        pull_request
-            .repository_full_name
-            .replace('/', "-")
-            .trim()
-            .to_owned(),
-    );
+    let slug = slug::slugify(pull_request.repository_full_name.replace('/', "-").trim());
 
     if slug.is_empty() {
         "review-repo".to_owned()
@@ -5320,7 +5314,7 @@ fn parse_remote_reset_summary(report: &str) -> Result<RemoteResetSummary, TrackE
 }
 
 fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(TrackError::new(
             ErrorCode::RemoteDispatchFailed,
             "Remote dispatch refresh data is not valid hexadecimal.",

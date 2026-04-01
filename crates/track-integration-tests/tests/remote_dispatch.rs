@@ -1030,7 +1030,9 @@ async fn resetting_remote_workspace_refuses_while_a_dispatch_is_active() {
     assert!(reset_error["error"]["message"]
         .as_str()
         .expect("error response should include a message")
-        .contains("Stop active remote dispatches before resetting the remote workspace"));
+        .contains(
+            "Stop active remote task runs and PR reviews before resetting the remote workspace"
+        ));
 }
 
 // =============================================================================

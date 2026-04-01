@@ -62,8 +62,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         notes TEXT,
         error_message TEXT,
         review_request_head_oid TEXT,
-        review_request_user TEXT,
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        review_request_user TEXT
     )
     "#,
     r#"
@@ -182,6 +181,7 @@ impl DatabaseContext {
                 }
 
                 apply_additive_schema_updates(connection).await?;
+                drop_task_dispatches_fk_cascade(connection).await?;
 
                 Ok(())
             })
@@ -269,6 +269,93 @@ impl DatabaseContext {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal))
     }
+}
+
+// =============================================================================
+// SQLite Destructive Migrations
+// =============================================================================
+//
+// These migrations recreate tables to change constraints or structure in ways
+// that ALTER TABLE cannot handle. Each runs idempotently by inspecting the
+// current schema before acting.
+
+// task_dispatches previously had `FOREIGN KEY (task_id) REFERENCES tasks(id)
+// ON DELETE CASCADE`, which deleted dispatch records whenever a task was deleted
+// directly in the repository. The cleanup system relies on those records
+// surviving task deletion so it can find and remove orphaned remote artifacts.
+// This migration recreates the table without the FK cascade.
+async fn drop_task_dispatches_fk_cascade(
+    connection: &mut SqliteConnection,
+) -> Result<(), TrackError> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'task_dispatches'",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| {
+        TrackError::new(
+            ErrorCode::TaskWriteFailed,
+            format!("Could not inspect task_dispatches schema: {error}"),
+        )
+    })?;
+
+    let Some((current_sql,)) = row else {
+        return Ok(());
+    };
+
+    if !current_sql.to_uppercase().contains("ON DELETE CASCADE") {
+        return Ok(());
+    }
+
+    // Recreate the table without the cascade FK.  We disable FK enforcement
+    // for the duration so the DROP does not fail on any existing references.
+    let statements = [
+        "PRAGMA foreign_keys = OFF",
+        r#"
+        CREATE TABLE task_dispatches_new (
+            dispatch_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            remote_host TEXT NOT NULL,
+            branch_name TEXT,
+            worktree_path TEXT,
+            pull_request_url TEXT,
+            preferred_tool TEXT NOT NULL DEFAULT 'codex',
+            follow_up_request TEXT,
+            summary TEXT,
+            notes TEXT,
+            error_message TEXT,
+            review_request_head_oid TEXT,
+            review_request_user TEXT
+        )
+        "#,
+        "INSERT OR IGNORE INTO task_dispatches_new SELECT * FROM task_dispatches",
+        "DROP TABLE task_dispatches",
+        "ALTER TABLE task_dispatches_new RENAME TO task_dispatches",
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_task_dispatches_task_id_created_at
+        ON task_dispatches(task_id, created_at DESC)
+        "#,
+        "PRAGMA foreign_keys = ON",
+    ];
+
+    for statement in &statements {
+        sqlx::query(statement)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| {
+                TrackError::new(
+                    ErrorCode::TaskWriteFailed,
+                    format!("Could not migrate task_dispatches to remove FK cascade: {error}"),
+                )
+            })?;
+    }
+
+    Ok(())
 }
 
 // =============================================================================
