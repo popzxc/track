@@ -11,6 +11,9 @@ RUN bun run build
 FROM rust:1.88-slim AS rust-build
 WORKDIR /app
 
+ARG TRACK_GIT_COMMIT=unknown
+ENV TRACK_GIT_COMMIT=${TRACK_GIT_COMMIT}
+
 COPY Cargo.toml Cargo.lock rust-toolchain.toml deny.toml ./
 COPY .config/nextest.toml .config/nextest.toml
 COPY crates/track-core/Cargo.toml crates/track-core/Cargo.toml
@@ -18,6 +21,8 @@ COPY crates/track-capture/Cargo.toml crates/track-capture/Cargo.toml
 COPY crates/track-cli/Cargo.toml crates/track-cli/Cargo.toml
 COPY crates/track-api/Cargo.toml crates/track-api/Cargo.toml
 COPY crates/track-integration-tests/Cargo.toml crates/track-integration-tests/Cargo.toml
+COPY crates/track-cli/build.rs crates/track-cli/build.rs
+COPY crates/track-api/build.rs crates/track-api/build.rs
 COPY crates/track-core/src crates/track-core/src
 COPY crates/track-capture/src crates/track-capture/src
 COPY crates/track-cli/src crates/track-cli/src
