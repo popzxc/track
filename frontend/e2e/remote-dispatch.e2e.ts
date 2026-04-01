@@ -92,6 +92,52 @@ async function waitForRunHistoryLabel(
   )
 }
 
+// Wait for the drawer's primary action button to show the expected text.
+//
+// The button label depends on selectedTaskLatestDispatch, which is loaded by
+// loadLatestDispatchesForVisibleTasks() — a separate fetch from the run-history
+// data that waitForRunHistoryLabel reads. When waitForRunHistoryLabel returns it
+// may have caught the run-history update from a watch-triggered fetch that
+// completed slightly before the refreshAll() second Promise.all finished. In
+// that case selectedTaskLatestDispatch still has stale data and the button shows
+// the wrong label. Reloading gives the page a full fresh cycle so both fetches
+// complete in the same Promise.all, and the button is guaranteed to reflect the
+// final dispatch state.
+async function waitForDrawerPrimaryAction(
+  page: Page,
+  taskTitle: string,
+  expectedText: string,
+  timeoutMs: number,
+) {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now()
+    try {
+      await page
+        .getByTestId('drawer-primary-action')
+        .filter({ hasText: expectedText })
+        .waitFor({ timeout: Math.min(5_000, remaining) })
+      return
+    } catch {
+      if (Date.now() >= deadline) {
+        break
+      }
+      // The button hasn't updated yet on the current page load. Reload so that
+      // all data fetches (including loadLatestDispatchesForVisibleTasks) run in
+      // a single coordinated refreshAll() pass.
+      await page.reload()
+      await openTaskDrawer(page, taskTitle)
+    }
+  }
+
+  const currentText = await page.getByTestId('drawer-primary-action').textContent()
+  throw new Error(
+    `Timed out waiting for drawer-primary-action with text "${expectedText}" for "${taskTitle}". ` +
+    `Current button text: "${currentText?.trim()}"`,
+  )
+}
+
 async function waitForReviewRunLabel(
   page: Page,
   reviewTitle: string,
@@ -214,15 +260,14 @@ describe('remote dispatch smoke flow', () => {
       expect(followUpReadyText).toContain('Succeeded')
 
       // Wait for the primary action button to switch to "Continue run" before
-      // clicking.  selectedTaskCanContinue requires branchName and worktreePath
-      // to be present on the dispatch in the Vue reactive state; clicking the
-      // button before that settles triggers a new dispatch instead of the
-      // follow-up modal.  Waiting for the exact label is a deterministic guard
-      // that avoids the race without resorting to a fixed sleep.
-      await page
-        .getByTestId('drawer-primary-action')
-        .filter({ hasText: 'Continue run' })
-        .waitFor({ timeout: 15_000 })
+      // clicking. The button uses selectedTaskLatestDispatch.branchName which
+      // requires loadLatestDispatchesForVisibleTasks() to have completed with
+      // the final dispatch data. That fetch runs in a different code path from
+      // the run-history fetch, so a reload may be needed to guarantee both
+      // settle together. 45 s is enough time for multiple reload cycles on a
+      // slow runner; reaching it would mean the API is not returning a completed
+      // dispatch with branchName/worktreePath, which is a genuine bug.
+      await waitForDrawerPrimaryAction(page, FOLLOW_UP_TASK_TITLE, 'Continue run', 45_000)
       await page.getByTestId('drawer-primary-action').click()
       await page.getByTestId('follow-up-modal').waitFor({ timeout: 30_000 })
       await page.getByTestId('follow-up-request').fill('Address the review comments on the open PR.')
