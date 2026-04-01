@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0](https://github.com/popzxc/track/compare/v0.1.0...v0.2.0) (2026-04-01)
+
+
+### Features
+
+* Implement version cross-check ([#6](https://github.com/popzxc/track/issues/6)) ([73fa8bc](https://github.com/popzxc/track/commit/73fa8bc4fe2c6dc9ac5b770f8fc574305b266b04))
+* Installation flow and release pipeline ([#3](https://github.com/popzxc/track/issues/3)) ([3cb1f09](https://github.com/popzxc/track/commit/3cb1f09a2355f8fd2298c0173c0c5fefe79603d6))
+
+
+### Bug Fixes
+
+* Fix release-please ([#4](https://github.com/popzxc/track/issues/4)) ([392d655](https://github.com/popzxc/track/commit/392d6557bcecb4b20f554cfcd4429a8f5b05614e))
+
+## Changelog
+
 All notable product-level changes to `track` are documented in this file.
 
 The release workflow lets `track-cli` own this changelog so one GitHub release

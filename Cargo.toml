@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0" # x-release-please-version
+version = "0.2.0" # x-release-please-version
 license = "MIT"
 repository = "https://github.com/popzxc/track"
 homepage = "https://popzxc.github.io/track/"
@@ -37,10 +37,10 @@ tower = "0.5.2"
 tower-http = "0.6.6"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
-track-api = { version = "0.1.0", path = "crates/track-api" } # x-release-please-version
-track-capture = { version = "0.1.0", path = "crates/track-capture" } # x-release-please-version
-track-cli = { version = "0.1.0", path = "crates/track-cli" } # x-release-please-version
-track-core = { version = "0.1.0", path = "crates/track-core" } # x-release-please-version
+track-api = { version = "0.2.0", path = "crates/track-api" } # x-release-please-version
+track-capture = { version = "0.2.0", path = "crates/track-capture" } # x-release-please-version
+track-cli = { version = "0.2.0", path = "crates/track-cli" } # x-release-please-version
+track-core = { version = "0.2.0", path = "crates/track-core" } # x-release-please-version
 ureq = "3.2.0"
 url = "2.5.4"
 walkdir = "2.5.0"
