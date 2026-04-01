@@ -3,14 +3,17 @@
   "bootstrap-sha": "3d3635491e260ab42bcdc39ef06eefa1e72273fc",
   "include-component-in-tag": false,
   "include-v-in-tag": true,
-  "plugins": [
-    "cargo-workspace"
-  ],
+  "release-type": "simple",
   "packages": {
     ".": {
       "component": "track",
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "Cargo.toml"
+        }
+      ]
     }
   }
 }
