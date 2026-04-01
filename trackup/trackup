@@ -1,0 +1,441 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# trackup bootstrap and updater
+# ==============================================================================
+#
+# `trackup` installs one coherent `track` release: the CLI binary, the backend
+# wrapper, and the release Compose file that pins the backend image tag.
+# Keeping those assets on the same GitHub release avoids a drift where a newer
+# CLI talks to an older backend image, or vice versa.
+
+TRACKUP_HOME="${TRACKUP_HOME:-$HOME/.track}"
+TRACKUP_BIN_DIR="${TRACKUP_BIN_DIR:-$TRACKUP_HOME/bin}"
+TRACKUP_SHARE_DIR="${TRACKUP_SHARE_DIR:-$TRACKUP_HOME/share}"
+
+REQUESTED_TAG=""
+RELEASE_TAG=""
+RELEASE_TARGET=""
+TEMP_DIR=""
+PATH_STATUS="unchanged"
+RELOAD_COMMAND=""
+RC_FILE=""
+
+main() {
+  parse_args "$@"
+  ensure_prerequisites
+
+  RELEASE_TAG="$(resolve_release_tag)"
+  RELEASE_TARGET="$(detect_release_target)"
+
+  prepare_temp_dir
+  download_release_assets
+  verify_downloaded_assets
+  install_release_assets
+  maybe_configure_path
+  print_next_steps
+}
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  trackup
+  trackup vX.Y.Z
+  trackup X.Y.Z
+
+Installs or updates `track` from GitHub release assets.
+
+Examples:
+  trackup
+  trackup v0.2.0
+
+Environment overrides:
+  TRACKUP_HOME        Override the ~/.track root used for installation.
+EOF
+}
+
+parse_args() {
+  while (($# > 0)); do
+    case "$1" in
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      --sha)
+        die "--sha is not supported yet. Install a tagged release instead."
+        ;;
+      --*)
+        die "Unknown option: $1"
+        ;;
+      *)
+        if [ -n "$REQUESTED_TAG" ]; then
+          die "Expected at most one release argument."
+        fi
+
+        REQUESTED_TAG="$1"
+        ;;
+    esac
+
+    shift
+  done
+
+  if [ -n "$REQUESTED_TAG" ] && [ "$REQUESTED_TAG" != "latest" ]; then
+    case "$REQUESTED_TAG" in
+      v*) ;;
+      *) REQUESTED_TAG="v$REQUESTED_TAG" ;;
+    esac
+  fi
+}
+
+ensure_prerequisites() {
+  require_command curl
+  require_command jq
+  require_command tar
+  require_command mktemp
+  require_command uname
+  require_command docker
+
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    die "Missing a SHA-256 tool. Install either `sha256sum` or `shasum` and rerun trackup."
+  fi
+
+  if ! docker compose version >/dev/null 2>&1; then
+    die "Docker Compose is required. Install a Docker build that includes `docker compose`."
+  fi
+}
+
+resolve_release_tag() {
+  local response
+
+  if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = "latest" ]; then
+    response="$(github_api_get "https://api.github.com/repos/popzxc/track/releases/latest")"
+  else
+    response="$(github_api_get "https://api.github.com/repos/popzxc/track/releases/tags/${REQUESTED_TAG}")"
+  fi
+
+  jq -er '.tag_name' <<<"$response" >/dev/null || die "GitHub did not return a release tag."
+  jq -r '.tag_name' <<<"$response"
+}
+
+detect_release_target() {
+  local os
+  local arch
+
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  # TODO: Extend this mapping when the release workflow publishes more targets.
+  case "${os}:${arch}" in
+    Linux:x86_64|Linux:amd64)
+      printf '%s\n' "x86_64-unknown-linux-gnu"
+      ;;
+    Darwin:arm64|Darwin:aarch64)
+      printf '%s\n' "aarch64-apple-darwin"
+      ;;
+    *)
+      die "Unsupported platform ${os}/${arch}. Released installers currently support Linux x86_64 and macOS arm64."
+      ;;
+  esac
+}
+
+prepare_temp_dir() {
+  TEMP_DIR="$(mktemp -d)"
+  trap cleanup_temp_dir EXIT INT TERM
+}
+
+download_release_assets() {
+  local cli_asset
+  local shared_asset
+  local checksum_asset
+  local base_url
+
+  cli_asset="$(cli_asset_name)"
+  shared_asset="$(shared_asset_name)"
+  checksum_asset="$(checksum_asset_name)"
+  base_url="https://github.com/popzxc/track/releases/download/${RELEASE_TAG}"
+
+  download_file "${base_url}/${cli_asset}" "${TEMP_DIR}/${cli_asset}"
+  download_file "${base_url}/${shared_asset}" "${TEMP_DIR}/${shared_asset}"
+  download_file "${base_url}/${checksum_asset}" "${TEMP_DIR}/${checksum_asset}"
+}
+
+verify_downloaded_assets() {
+  local checksum_file
+
+  checksum_file="${TEMP_DIR}/$(checksum_asset_name)"
+  verify_file_checksum "$checksum_file" "$(cli_asset_name)"
+  verify_file_checksum "$checksum_file" "$(shared_asset_name)"
+}
+
+install_release_assets() {
+  local cli_extract_dir
+  local shared_extract_dir
+  local cli_binary
+  local shared_trackup
+  local shared_backend
+  local shared_compose
+
+  mkdir -p "$TRACKUP_BIN_DIR" "$TRACKUP_SHARE_DIR"
+
+  cli_extract_dir="${TEMP_DIR}/cli"
+  shared_extract_dir="${TEMP_DIR}/shared"
+  mkdir -p "$cli_extract_dir" "$shared_extract_dir"
+
+  tar -xzf "${TEMP_DIR}/$(cli_asset_name)" -C "$cli_extract_dir"
+  tar -xzf "${TEMP_DIR}/$(shared_asset_name)" -C "$shared_extract_dir"
+
+  cli_binary="${cli_extract_dir}/track-${RELEASE_TAG}-${RELEASE_TARGET}/track"
+  shared_trackup="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/trackup"
+  shared_backend="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/track-backend"
+  shared_compose="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/track-backend.compose.yaml"
+
+  [ -f "$cli_binary" ] || die "The CLI archive did not contain the expected `track` binary."
+  [ -f "$shared_trackup" ] || die "The shared asset bundle did not contain `trackup`."
+  [ -f "$shared_backend" ] || die "The shared asset bundle did not contain `track-backend`."
+  [ -f "$shared_compose" ] || die "The shared asset bundle did not contain the release compose file."
+
+  install_file "$cli_binary" "$TRACKUP_BIN_DIR/track" 0755
+  install_file "$shared_trackup" "$TRACKUP_BIN_DIR/trackup" 0755
+  install_file "$shared_backend" "$TRACKUP_BIN_DIR/track-backend" 0755
+  install_file "$shared_compose" "$TRACKUP_SHARE_DIR/track-backend.compose.yaml" 0644
+}
+
+maybe_configure_path() {
+  local default_bin_dir
+  local shell_name
+  local path_line
+
+  default_bin_dir="$HOME/.track/bin"
+  if path_contains "$TRACKUP_BIN_DIR"; then
+    PATH_STATUS="active"
+    return
+  fi
+
+  if [ "$TRACKUP_BIN_DIR" != "$default_bin_dir" ]; then
+    PATH_STATUS="manual"
+    return
+  fi
+
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh)
+      RC_FILE="${ZDOTDIR:-$HOME}/.zshrc"
+      RELOAD_COMMAND="source \"$RC_FILE\""
+      path_line='export PATH="$HOME/.track/bin:$PATH"'
+      ;;
+    bash)
+      if [ -f "$HOME/.bash_profile" ] && [ ! -f "$HOME/.bashrc" ]; then
+        RC_FILE="$HOME/.bash_profile"
+      else
+        RC_FILE="$HOME/.bashrc"
+      fi
+
+      RELOAD_COMMAND="source \"$RC_FILE\""
+      path_line='export PATH="$HOME/.track/bin:$PATH"'
+      ;;
+    fish)
+      RC_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+      RELOAD_COMMAND="source \"$RC_FILE\""
+      path_line='fish_add_path "$HOME/.track/bin"'
+      ;;
+    *)
+      PATH_STATUS="manual"
+      return
+      ;;
+  esac
+
+  mkdir -p "$(dirname "$RC_FILE")"
+  touch "$RC_FILE"
+
+  if grep -Fqs '.track/bin' "$RC_FILE"; then
+    PATH_STATUS="configured"
+    return
+  fi
+
+  {
+    printf '\n'
+    printf '# Add track tools to PATH.\n'
+    printf '%s\n' "$path_line"
+  } >>"$RC_FILE"
+
+  PATH_STATUS="updated"
+}
+
+print_next_steps() {
+  printf 'Installed track %s for %s.\n' "$RELEASE_TAG" "$RELEASE_TARGET"
+  printf 'CLI: %s\n' "$TRACKUP_BIN_DIR/track"
+  printf 'Backend wrapper: %s\n' "$TRACKUP_BIN_DIR/track-backend"
+  printf 'Compose file: %s\n' "$TRACKUP_SHARE_DIR/track-backend.compose.yaml"
+
+  case "$PATH_STATUS" in
+    active)
+      printf '\nThe current shell already includes %s in PATH.\n' "$TRACKUP_BIN_DIR"
+      printf 'Next:\n'
+      printf '  track-backend up -d\n'
+      ;;
+    updated)
+      printf '\nReload your shell to pick up %s.\n' "$TRACKUP_BIN_DIR"
+      printf 'Run:\n'
+      printf '  %s\n' "$RELOAD_COMMAND"
+      printf '\nThen start or refresh the backend:\n'
+      printf '  track-backend up -d\n'
+      ;;
+    configured)
+      printf '\nA shell startup file already references %s.\n' "$TRACKUP_BIN_DIR"
+      printf 'Reload your shell before using the installed commands:\n'
+      printf '  %s\n' "$RELOAD_COMMAND"
+      printf '\nThen start or refresh the backend:\n'
+      printf '  track-backend up -d\n'
+      ;;
+    manual)
+      printf '\nAdd %s to PATH manually.\n' "$TRACKUP_BIN_DIR"
+      printf 'For POSIX-style shells:\n'
+      printf '  export PATH="%s:$PATH"\n' "$TRACKUP_BIN_DIR"
+      printf '\nThen start or refresh the backend:\n'
+      printf '  %s up -d\n' "$TRACKUP_BIN_DIR/track-backend"
+      ;;
+  esac
+
+  printf 'Open: http://127.0.0.1:3210\n'
+}
+
+cli_asset_name() {
+  printf 'track-%s-%s.tar.gz\n' "$RELEASE_TAG" "$RELEASE_TARGET"
+}
+
+shared_asset_name() {
+  printf 'trackup-assets-%s.tar.gz\n' "$RELEASE_TAG"
+}
+
+checksum_asset_name() {
+  printf 'track-%s-sha256sums.txt\n' "$RELEASE_TAG"
+}
+
+download_file() {
+  local url
+  local target
+
+  url="$1"
+  target="$2"
+
+  curl -fsSL "$url" -o "$target" || die "Could not download ${url}."
+}
+
+verify_file_checksum() {
+  local checksum_file
+  local asset_name
+  local expected
+  local actual
+
+  checksum_file="$1"
+  asset_name="$2"
+  expected="$(expected_checksum_for "$checksum_file" "$asset_name")"
+  actual="$(hash_file "${TEMP_DIR}/${asset_name}")"
+
+  if [ "$expected" != "$actual" ]; then
+    die "Checksum verification failed for ${asset_name}."
+  fi
+}
+
+expected_checksum_for() {
+  local checksum_file
+  local asset_name
+  local checksum
+
+  checksum_file="$1"
+  asset_name="$2"
+  checksum="$(
+    awk -v asset_name="$asset_name" '
+      {
+        file_path = $2
+        sub(/^dist\//, "", file_path)
+        if (file_path == asset_name) {
+          print $1
+          exit
+        }
+      }
+    ' "$checksum_file"
+  )"
+
+  [ -n "$checksum" ] || die "Could not find a checksum entry for ${asset_name}."
+  printf '%s\n' "$checksum"
+}
+
+hash_file() {
+  local file_path
+
+  file_path="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file_path" | awk '{print $1}'
+    return
+  fi
+
+  shasum -a 256 "$file_path" | awk '{print $1}'
+}
+
+install_file() {
+  local source
+  local target
+  local mode
+  local target_dir
+  local temp_target
+
+  source="$1"
+  target="$2"
+  mode="$3"
+  target_dir="$(dirname "$target")"
+  temp_target="${target}.tmp.$$"
+
+  mkdir -p "$target_dir"
+  cp "$source" "$temp_target"
+  chmod "$mode" "$temp_target"
+  mv -f "$temp_target" "$target"
+}
+
+path_contains() {
+  local candidate
+
+  candidate="$1"
+  case ":$PATH:" in
+    *":${candidate}:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+github_api_get() {
+  local url
+
+  url="$1"
+
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      "$url" || die "Could not query GitHub API at ${url}."
+    return
+  fi
+
+  curl -fsSL -H "Accept: application/vnd.github+json" "$url" || die "Could not query GitHub API at ${url}."
+}
+
+require_command() {
+  local command_name
+
+  command_name="$1"
+  command -v "$command_name" >/dev/null 2>&1 || die "Missing required command: ${command_name}."
+}
+
+cleanup_temp_dir() {
+  if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+    rm -rf "$TEMP_DIR"
+  fi
+}
+
+die() {
+  printf 'trackup: %s\n' "$1" >&2
+  exit 1
+}
+
+main "$@"

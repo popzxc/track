@@ -7,41 +7,31 @@ sidebar:
 
 This page is about your local machine: the one where you run `track`, capture tasks, and open the browser UI.
 
-## Rust toolchain
+## Release installer prerequisites
 
-You need Rust locally to build and install `track`.
+The normal install path uses the released `trackup` bootstrap script rather
+than a local source build.
 
-Install it with:
-
-```bash
-curl https://sh.rustup.rs -sSf | sh
-. "$HOME/.cargo/env"
-```
-
-After that, make sure `~/.cargo/bin` is on your `PATH`.
-
-## Native build prerequisites
-
-`track-cli` builds the local `llama.cpp` capture backend through Rust bindings, so your machine needs the normal native build tooling plus `libclang`.
-
-On Debian or Ubuntu, a good baseline is:
+Make sure these commands exist locally before you continue:
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential cmake clang libclang-dev pkg-config
-```
-
-If you use another distro or macOS, install the equivalent C/C++ toolchain, CMake, Clang, and `libclang` package for your platform.
-
-## Docker and Docker Compose
-
-You also need Docker with `docker compose` on the local machine so you can run the local API and WebUI.
-
-Verify that part before continuing:
-
-```bash
+curl --version
+jq --version
+tar --version
 docker compose version
 ```
+
+`trackup` also verifies release checksums before it installs anything. It can
+use either `sha256sum` or `shasum`, and most Linux and macOS systems already
+ship one of those by default.
+
+Released installers currently support Linux x86_64 and macOS arm64.
+
+## Building from source is optional
+
+You only need Rust, a native build toolchain, and `libclang` if you plan to
+build `track` from a repository checkout instead of using the released
+installer.
 
 ## Local capture model
 

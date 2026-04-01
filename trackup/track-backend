@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# track-backend release wrapper
+# ==============================================================================
+#
+# The installed backend stack lives outside the repository, so this wrapper
+# resolves the shipped Compose file relative to its own location instead of
+# relying on the caller's current directory. It also exports the host UID/GID
+# so the released image can write to the bind-mounted backend state directory
+# without rebuilding the image per machine.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TRACK_ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+TRACK_SHARE_DIR="${TRACK_ROOT_DIR}/share"
+COMPOSE_FILE="${TRACK_SHARE_DIR}/track-backend.compose.yaml"
+
+if [ ! -f "$COMPOSE_FILE" ]; then
+  printf 'track-backend: missing compose file at %s\n' "$COMPOSE_FILE" >&2
+  exit 1
+fi
+
+if [ -z "${TRACK_UID:-}" ]; then
+  TRACK_UID="$(id -u)"
+  export TRACK_UID
+fi
+
+if [ -z "${TRACK_GID:-}" ]; then
+  TRACK_GID="$(id -g)"
+  export TRACK_GID
+fi
+
+exec docker compose --project-name track -f "$COMPOSE_FILE" "$@"
