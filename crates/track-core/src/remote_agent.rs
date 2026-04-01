@@ -3637,12 +3637,7 @@ fn parse_github_pull_request_reference(
 }
 
 fn build_review_workspace_key(pull_request: &GithubPullRequestMetadata) -> String {
-    let slug = slug::slugify(
-        pull_request
-            .repository_full_name
-            .replace('/', "-")
-            .trim(),
-    );
+    let slug = slug::slugify(pull_request.repository_full_name.replace('/', "-").trim());
 
     if slug.is_empty() {
         "review-repo".to_owned()

@@ -34,6 +34,10 @@ export async function teardownFrontendE2EEnvironment(): Promise<void> {
     encoding: 'utf-8',
   })
 
+  // The SSH fixture may have created files owned by a different UID. Ensure
+  // the entire temp tree is world-writable before removing it so the host
+  // runner can delete container-owned files.
+  spawnSync('chmod', ['-R', '777', state.tempRoot])
   fs.rmSync(state.tempRoot, { force: true, recursive: true })
   clearFrontendE2EState()
 }

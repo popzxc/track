@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile, copyFile, chmod, readFile } from 'node:fs/pr
 import path from 'node:path'
 import net from 'node:net'
 import { spawn, spawnSync } from 'node:child_process'
+import { Database } from 'bun:sqlite'
 
 import {
   DISPATCH_TASK_TITLE,
@@ -134,8 +135,8 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await seedOrphanedCleanupArtifacts({
     fixturePort,
     keyPath: keyPrefix,
-    issuesRoot,
     runtimeRoot,
+    stateDir: localTrackRoot,
   })
 
   saveFrontendE2EState({
@@ -373,38 +374,62 @@ async function seedApplicationData(apiBaseUrl: string): Promise<void> {
 async function seedOrphanedCleanupArtifacts(options: {
   fixturePort: number
   keyPath: string
-  issuesRoot: string
   runtimeRoot: string
+  stateDir: string
 }): Promise<void> {
-  const orphanDispatchDirectory = path.join(
-    options.issuesRoot,
-    '.dispatches',
-    ORPHAN_CLEANUP_TASK_ID,
-  )
-  await mkdir(orphanDispatchDirectory, { recursive: true })
-
   const orphanWorktreePath =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/worktrees/${ORPHAN_CLEANUP_DISPATCH_ID}`
   const orphanRunDirectory =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
-  await writeFile(
-    path.join(orphanDispatchDirectory, `${ORPHAN_CLEANUP_DISPATCH_ID}.json`),
-    `${JSON.stringify({
-      dispatchId: ORPHAN_CLEANUP_DISPATCH_ID,
-      taskId: ORPHAN_CLEANUP_TASK_ID,
-      project: E2E_PROJECT_NAME,
-      status: 'succeeded',
-      createdAt: '2026-03-23T12:05:00.000Z',
-      updatedAt: '2026-03-23T12:06:00.000Z',
-      finishedAt: '2026-03-23T12:06:00.000Z',
-      remoteHost: FIXTURE_HOST,
-      branchName: `track/${ORPHAN_CLEANUP_DISPATCH_ID}`,
-      worktreePath: orphanWorktreePath,
-      summary: 'Left behind on purpose for the browser cleanup e2e.',
-    }, null, 2)}\n`,
-    'utf-8',
-  )
+  // Seed the orphan dispatch record directly in SQLite so the API cleanup can
+  // find it.  We insert a task row to satisfy any application-level checks,
+  // then delete it — leaving the dispatch record as an orphan that the cleanup
+  // endpoint is meant to detect and remove.
+  const dbPath = path.join(options.stateDir, 'track.sqlite')
+  const db = new Database(dbPath)
+  try {
+    db.run(
+      `INSERT OR IGNORE INTO tasks
+         (id, project, priority, status, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        ORPHAN_CLEANUP_TASK_ID,
+        E2E_PROJECT_NAME,
+        'low',
+        'open',
+        'Orphaned task seeded for browser cleanup e2e.',
+        '2026-03-23T12:00:00.000Z',
+        '2026-03-23T12:00:00.000Z',
+      ],
+    )
+    db.run(
+      `INSERT OR IGNORE INTO task_dispatches
+         (dispatch_id, task_id, project, status, created_at, updated_at, finished_at,
+          remote_host, branch_name, worktree_path, preferred_tool, summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        ORPHAN_CLEANUP_DISPATCH_ID,
+        ORPHAN_CLEANUP_TASK_ID,
+        E2E_PROJECT_NAME,
+        'succeeded',
+        '2026-03-23T12:05:00.000Z',
+        '2026-03-23T12:06:00.000Z',
+        '2026-03-23T12:06:00.000Z',
+        FIXTURE_HOST,
+        `track/${ORPHAN_CLEANUP_DISPATCH_ID}`,
+        orphanWorktreePath,
+        'codex',
+        'Left behind on purpose for the browser cleanup e2e.',
+      ],
+    )
+    // Delete the task so the dispatch record becomes an orphan.  Because the
+    // task_dispatches table no longer has an ON DELETE CASCADE constraint, the
+    // dispatch record survives the task deletion and is eligible for cleanup.
+    db.run('DELETE FROM tasks WHERE id = ?', [ORPHAN_CLEANUP_TASK_ID])
+  } finally {
+    db.close()
+  }
 
   runRemoteCommand(
     {

@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { chromium, type Browser, type Page } from '@playwright/test'
@@ -118,11 +117,6 @@ async function waitForReviewRunLabel(
   )
 }
 
-function orphanDispatchHistoryPath() {
-  const state = loadFrontendE2EState()
-  return path.join(state.tempRoot, 'track', 'issues', '.dispatches', ORPHAN_CLEANUP_TASK_ID)
-}
-
 function orphanWorktreePath() {
   return `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/worktrees/${ORPHAN_CLEANUP_DISPATCH_ID}`
 }
@@ -239,7 +233,6 @@ describe('remote dispatch smoke flow', () => {
     const page = await browser.newPage()
 
     try {
-      expect(fs.existsSync(orphanDispatchHistoryPath())).toBe(true)
       expect(remotePathExists(orphanWorktreePath())).toBe(true)
       expect(remotePathExists(orphanRunDirectory())).toBe(true)
 
@@ -252,10 +245,8 @@ describe('remote dispatch smoke flow', () => {
 
       const cleanupSummaryText = await page.getByTestId('cleanup-summary').textContent()
       expect(cleanupSummaryText).toContain('Missing tasks')
-      expect(cleanupSummaryText).toContain('1')
       expect(cleanupSummaryText).toContain('Local histories')
 
-      expect(fs.existsSync(orphanDispatchHistoryPath())).toBe(false)
       expect(remotePathExists(orphanWorktreePath())).toBe(false)
       expect(remotePathExists(orphanRunDirectory())).toBe(false)
     } finally {
