@@ -37,7 +37,7 @@ enum CliInvocation {
 #[command(
     name = "track",
     about = "Capture tasks through the track backend.",
-    version
+    version = crate::build_info::CLI_VERSION_TEXT
 )]
 struct CommandLine {
     #[command(subcommand)]

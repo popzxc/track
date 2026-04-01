@@ -1,12 +1,17 @@
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use track_core::build_info::BuildInfo;
 use track_core::errors::{ErrorCode, TrackError};
 use track_core::migration::{MigrationImportSummary, MigrationStatus};
 use track_core::project_repository::{ProjectMetadata, ProjectRecord};
 use track_core::types::{Task, TaskCreateInput};
 
+use crate::build_info::cli_build_info;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVER_VERSION_PATH: &str = "/api/meta/server_version";
 
 pub trait TrackBackend {
     fn fetch_projects(&self) -> Result<Vec<ProjectRecord>, TrackError>;
@@ -29,6 +34,7 @@ pub trait TrackBackend {
 pub struct HttpTrackBackend {
     base_url: String,
     agent: ureq::Agent,
+    version_match_verified: Arc<OnceLock<()>>,
 }
 
 impl HttpTrackBackend {
@@ -42,6 +48,7 @@ impl HttpTrackBackend {
         Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
             agent,
+            version_match_verified: Arc::new(OnceLock::new()),
         }
     }
 
@@ -69,6 +76,43 @@ impl HttpTrackBackend {
     }
 
     fn send<B, T>(&self, method: &str, path: &str, body: Option<&B>) -> Result<T, TrackError>
+    where
+        B: Serialize,
+        T: for<'de> Deserialize<'de>,
+    {
+        if path != SERVER_VERSION_PATH {
+            self.ensure_server_version_match()?;
+        }
+
+        self.send_unchecked(method, path, body)
+    }
+
+    // The CLI talks only to the local server, so one successful handshake is
+    // enough for the rest of the process lifetime. We intentionally skip
+    // caching failures so a restarted server can be retried on the next
+    // command invocation without extra state management here.
+    fn ensure_server_version_match(&self) -> Result<(), TrackError> {
+        if self.version_match_verified.get().is_some() {
+            return Ok(());
+        }
+
+        let server_build =
+            self.send_unchecked::<(), BuildInfo>("GET", SERVER_VERSION_PATH, None)?;
+        let cli_build = cli_build_info();
+        if !cli_build.matches_release(&server_build) {
+            return Err(version_mismatch_error(&cli_build, &server_build));
+        }
+
+        let _ = self.version_match_verified.set(());
+        Ok(())
+    }
+
+    fn send_unchecked<B, T>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<T, TrackError>
     where
         B: Serialize,
         T: for<'de> Deserialize<'de>,
@@ -273,10 +317,22 @@ fn map_api_error_code(code: &str) -> ErrorCode {
         "INVALID_JSON" => ErrorCode::InvalidJson,
         "INVALID_REMOTE_AGENT_CONFIG" => ErrorCode::InvalidRemoteAgentConfig,
         "INVALID_TASK_UPDATE" => ErrorCode::InvalidTaskUpdate,
+        "VERSION_MISMATCH" => ErrorCode::VersionMismatch,
         "TASK_NOT_FOUND" => ErrorCode::TaskNotFound,
         "INVALID_CONFIG" => ErrorCode::InvalidConfig,
         "INVALID_CONFIG_INPUT" => ErrorCode::InvalidConfigInput,
         "REMOTE_AGENT_NOT_CONFIGURED" => ErrorCode::RemoteAgentNotConfigured,
         _ => ErrorCode::InvalidConfigInput,
     }
+}
+
+fn version_mismatch_error(cli_build: &BuildInfo, server_build: &BuildInfo) -> TrackError {
+    TrackError::new(
+        ErrorCode::VersionMismatch,
+        format!(
+            "CLI and WebUI/API versions do not match.\nCLI: {}\nWebUI/API: {}\nRebuild and restart both together before retrying.",
+            cli_build.release_label(),
+            server_build.release_label(),
+        ),
+    )
 }

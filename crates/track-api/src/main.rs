@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use track_api::{build_app, spawn_remote_review_follow_up_reconciler, AppState};
+use track_api::{
+    build_app, spawn_remote_review_follow_up_reconciler, AppState, SERVER_VERSION_TEXT,
+};
 use track_core::backend_config::RemoteAgentConfigService;
 use track_core::dispatch_repository::DispatchRepository;
 use track_core::migration_service::MigrationService;
@@ -63,7 +65,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_remote_review_follow_up_reconciler(state.clone());
     let app = build_app(state, static_root());
 
-    tracing::info!("track API listening on http://{}", listener.local_addr()?);
+    tracing::info!(
+        "track API {} listening on http://{}",
+        SERVER_VERSION_TEXT,
+        listener.local_addr()?
+    );
     axum::serve(listener, app).await?;
 
     Ok(())
