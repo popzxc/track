@@ -38,5 +38,4 @@ jobs:
       release_tag: ${{ format('v{0}', inputs.release_version) }}
       release_version: ${{ inputs.release_version }}
       publish_latest: ${{ inputs.publish_latest }}
-      use_prebuilt_binaries: false
     secrets: inherit

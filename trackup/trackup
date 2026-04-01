@@ -5,19 +5,20 @@ set -euo pipefail
 # trackup bootstrap and updater
 # ==============================================================================
 #
-# `trackup` installs one coherent `track` release: the CLI binary, the backend
-# wrapper, and the release Compose file that pins the backend image tag.
-# Keeping those assets on the same GitHub release avoids a drift where a newer
-# CLI talks to an older backend image, or vice versa.
+# `trackup` installs one coherent `track` release: the CLI is built from the
+# tagged source release, while the backend wrapper and release Compose file come
+# from the matching GitHub release assets. Using the same tag for both sides
+# keeps the local CLI and the backend image contract aligned.
 
 TRACKUP_HOME="${TRACKUP_HOME:-$HOME/.track}"
 TRACKUP_BIN_DIR="${TRACKUP_BIN_DIR:-$TRACKUP_HOME/bin}"
 TRACKUP_SHARE_DIR="${TRACKUP_SHARE_DIR:-$TRACKUP_HOME/share}"
+TRACKUP_REPOSITORY_URL="https://github.com/popzxc/track"
 
 REQUESTED_TAG=""
-REQUEST_CUDA="false"
+REQUESTED_VARIANT=""
 RELEASE_TAG=""
-RELEASE_TARGET=""
+INSTALL_VARIANT=""
 TEMP_DIR=""
 PATH_STATUS="unchanged"
 RELOAD_COMMAND=""
@@ -25,15 +26,16 @@ RC_FILE=""
 
 main() {
   parse_args "$@"
-  ensure_prerequisites
 
+  ensure_prerequisites
   RELEASE_TAG="$(resolve_release_tag)"
-  RELEASE_TARGET="$(detect_release_target)"
+  INSTALL_VARIANT="$(determine_install_variant)"
 
   prepare_temp_dir
   download_release_assets
   verify_downloaded_assets
-  install_release_assets
+  install_track_cli
+  install_shared_assets
   maybe_configure_path
   print_next_steps
 }
@@ -42,17 +44,14 @@ print_usage() {
   cat <<'EOF'
 Usage:
   trackup
-  trackup --cuda
   trackup vX.Y.Z
   trackup X.Y.Z
 
-Installs or updates `track` from GitHub release assets.
+Installs or updates `track` from the tagged release source and shared assets.
 
 Examples:
   trackup
-  trackup --cuda
   trackup v0.2.0
-  trackup --cuda v0.2.0
 
 Environment overrides:
   TRACKUP_HOME        Override the ~/.track root used for installation.
@@ -67,7 +66,12 @@ parse_args() {
         exit 0
         ;;
       --cuda)
-        REQUEST_CUDA="true"
+        [ -z "$REQUESTED_VARIANT" ] || die "Choose at most one CLI variant."
+        REQUESTED_VARIANT="cuda"
+        ;;
+      --default)
+        [ -z "$REQUESTED_VARIANT" ] || die "Choose at most one CLI variant."
+        REQUESTED_VARIANT="default"
         ;;
       --sha)
         die "--sha is not supported yet. Install a tagged release instead."
@@ -97,11 +101,17 @@ parse_args() {
 
 ensure_prerequisites() {
   require_command curl
+  require_command cargo
+  require_command rustc
   require_command jq
   require_command tar
   require_command mktemp
   require_command uname
   require_command docker
+  require_command cmake
+  require_command clang
+  require_any_command "a C compiler" cc gcc clang
+  require_any_command "a C++ compiler" c++ g++ clang++
 
   if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
     die "Missing a SHA-256 tool. Install either `sha256sum` or `shasum` and rerun trackup."
@@ -125,38 +135,70 @@ resolve_release_tag() {
   jq -r '.tag_name' <<<"$response"
 }
 
-detect_release_target() {
+determine_install_variant() {
   local os
   local arch
 
   os="$(uname -s)"
   arch="$(uname -m)"
 
-  # Keep the release-target mapping explicit because the installer has to select
-  # one concrete asset name, and CUDA is only published for one Linux target.
   case "${os}:${arch}" in
     Linux:x86_64|Linux:amd64)
-      if [ "$REQUEST_CUDA" = "true" ]; then
-        printf '%s\n' "x86_64-unknown-linux-gnu-cuda"
-      else
-        printf '%s\n' "x86_64-unknown-linux-gnu"
-      fi
-      ;;
-    Darwin:arm64|Darwin:aarch64)
-      if [ "$REQUEST_CUDA" = "true" ]; then
-        die "--cuda is not supported on macOS. Install the default Apple Silicon release instead."
+      if [ -n "$REQUESTED_VARIANT" ]; then
+        printf '%s\n' "$REQUESTED_VARIANT"
+        return
       fi
 
-      printf '%s\n' "aarch64-apple-darwin"
+      if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        prompt_install_variant
+        return
+      fi
+
+      printf 'No interactive terminal detected; installing the default CLI build.\n' >&2
+      printf '%s\n' "default"
       ;;
     *)
-      if [ "$REQUEST_CUDA" = "true" ]; then
-        die "--cuda is only available for the Linux x86_64 release artifact."
+      if [ "$REQUESTED_VARIANT" = "cuda" ]; then
+        die "--cuda is only available on Linux x86_64 and requires a local CUDA toolkit installation."
       fi
 
-      die "Unsupported platform ${os}/${arch}. Released installers currently support Linux x86_64 and macOS arm64."
+      printf '%s\n' "default"
       ;;
   esac
+}
+
+prompt_install_variant() {
+  local response
+
+  # `trackup` is commonly run via `curl ... | bash`, so stdin is the script
+  # body rather than the user's terminal. Prompting through /dev/tty keeps the
+  # installer interactive without requiring awkward `bash -s -- ...` arguments.
+  printf '\nSelect the track CLI build to install for %s:\n' "$RELEASE_TAG" > /dev/tty
+  printf '  1) Default\n' > /dev/tty
+  printf '     Portable build with no CUDA requirement.\n' > /dev/tty
+  printf '  2) CUDA-accelerated\n' > /dev/tty
+  printf '     Linux x86_64 only. Requires a local CUDA toolkit installation.\n' > /dev/tty
+
+  while true; do
+    printf 'Select [1/2] (default 1): ' > /dev/tty
+    IFS= read -r response < /dev/tty || break
+
+    case "${response:-1}" in
+      1|"")
+        printf '%s\n' "default"
+        return
+        ;;
+      2)
+        printf '%s\n' "cuda"
+        return
+        ;;
+      *)
+        printf 'Enter 1 or 2.\n' > /dev/tty
+        ;;
+    esac
+  done
+
+  printf '%s\n' "default"
 }
 
 prepare_temp_dir() {
@@ -165,17 +207,14 @@ prepare_temp_dir() {
 }
 
 download_release_assets() {
-  local cli_asset
   local shared_asset
   local checksum_asset
   local base_url
 
-  cli_asset="$(cli_asset_name)"
   shared_asset="$(shared_asset_name)"
   checksum_asset="$(checksum_asset_name)"
-  base_url="https://github.com/popzxc/track/releases/download/${RELEASE_TAG}"
+  base_url="${TRACKUP_REPOSITORY_URL}/releases/download/${RELEASE_TAG}"
 
-  download_file "${base_url}/${cli_asset}" "${TEMP_DIR}/${cli_asset}"
   download_file "${base_url}/${shared_asset}" "${TEMP_DIR}/${shared_asset}"
   download_file "${base_url}/${checksum_asset}" "${TEMP_DIR}/${checksum_asset}"
 }
@@ -184,38 +223,63 @@ verify_downloaded_assets() {
   local checksum_file
 
   checksum_file="${TEMP_DIR}/$(checksum_asset_name)"
-  verify_file_checksum "$checksum_file" "$(cli_asset_name)"
   verify_file_checksum "$checksum_file" "$(shared_asset_name)"
 }
 
-install_release_assets() {
-  local cli_extract_dir
+install_track_cli() {
+  local cargo_install_args
+  local cargo_install_root
+  local staged_track_binary
+
+  # Reinstall the requested binary even when the git tag is unchanged so users
+  # can switch between the default and CUDA builds without manual cleanup.
+  # Stage the cargo install into a temporary root first so TRACKUP_BIN_DIR
+  # remains the single source of truth for where the final `track` binary lands.
+  cargo_install_root="${TEMP_DIR}/cargo-install-root"
+  staged_track_binary="${cargo_install_root}/bin/track"
+  cargo_install_args=(
+    cargo install
+    --root "$cargo_install_root"
+    --git "$TRACKUP_REPOSITORY_URL"
+    --tag "$RELEASE_TAG"
+    --locked
+    --force
+    --bin track
+  )
+
+  if [ "$INSTALL_VARIANT" = "cuda" ]; then
+    require_command nvcc
+    cargo_install_args+=(--features cuda)
+  fi
+
+  cargo_install_args+=(track-cli)
+
+  "${cargo_install_args[@]}" || die "Could not install track from ${RELEASE_TAG}."
+  [ -f "$staged_track_binary" ] || die "cargo install did not produce the expected `track` binary."
+  install_file "$staged_track_binary" "$TRACKUP_BIN_DIR/track" 0755
+}
+
+install_shared_assets() {
   local shared_extract_dir
-  local cli_binary
   local shared_trackup
   local shared_backend
   local shared_compose
 
   mkdir -p "$TRACKUP_BIN_DIR" "$TRACKUP_SHARE_DIR"
 
-  cli_extract_dir="${TEMP_DIR}/cli"
   shared_extract_dir="${TEMP_DIR}/shared"
-  mkdir -p "$cli_extract_dir" "$shared_extract_dir"
+  mkdir -p "$shared_extract_dir"
 
-  tar -xzf "${TEMP_DIR}/$(cli_asset_name)" -C "$cli_extract_dir"
   tar -xzf "${TEMP_DIR}/$(shared_asset_name)" -C "$shared_extract_dir"
 
-  cli_binary="${cli_extract_dir}/track-${RELEASE_TAG}-${RELEASE_TARGET}/track"
   shared_trackup="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/trackup"
   shared_backend="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/track-backend"
   shared_compose="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/track-backend.compose.yaml"
 
-  [ -f "$cli_binary" ] || die "The CLI archive did not contain the expected `track` binary."
   [ -f "$shared_trackup" ] || die "The shared asset bundle did not contain `trackup`."
   [ -f "$shared_backend" ] || die "The shared asset bundle did not contain `track-backend`."
   [ -f "$shared_compose" ] || die "The shared asset bundle did not contain the release compose file."
 
-  install_file "$cli_binary" "$TRACKUP_BIN_DIR/track" 0755
   install_file "$shared_trackup" "$TRACKUP_BIN_DIR/trackup" 0755
   install_file "$shared_backend" "$TRACKUP_BIN_DIR/track-backend" 0755
   install_file "$shared_compose" "$TRACKUP_SHARE_DIR/track-backend.compose.yaml" 0644
@@ -283,7 +347,7 @@ maybe_configure_path() {
 }
 
 print_next_steps() {
-  printf 'Installed track %s for %s.\n' "$RELEASE_TAG" "$RELEASE_TARGET"
+  printf 'Installed track %s (%s build).\n' "$RELEASE_TAG" "$INSTALL_VARIANT"
   printf 'CLI: %s\n' "$TRACKUP_BIN_DIR/track"
   printf 'Backend wrapper: %s\n' "$TRACKUP_BIN_DIR/track-backend"
   printf 'Compose file: %s\n' "$TRACKUP_SHARE_DIR/track-backend.compose.yaml"
@@ -318,10 +382,6 @@ print_next_steps() {
   esac
 
   printf 'Open: http://127.0.0.1:3210\n'
-}
-
-cli_asset_name() {
-  printf 'track-%s-%s.tar.gz\n' "$RELEASE_TAG" "$RELEASE_TARGET"
 }
 
 shared_asset_name() {
@@ -422,6 +482,19 @@ path_contains() {
     *":${candidate}:"*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+require_any_command() {
+  local description="$1"
+  shift
+
+  for command_name in "$@"; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      return
+    fi
+  done
+
+  die "Missing ${description}. Install one of: $*."
 }
 
 github_api_get() {
