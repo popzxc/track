@@ -44,4 +44,12 @@ chown -R track:track "$TRACK_HOME" "$RUNTIME_DIR"
 # known_hosts while the container is running.
 chmod -R 777 "$RUNTIME_DIR"
 
+# The fixture volume is seeded by the host test runner after the container
+# starts, so newly created files (bare git repos, state files) are owned by the
+# host UID rather than the container's 'track' user.  Git 2.35.2+ refuses to
+# operate on repositories owned by a different user unless they are explicitly
+# marked safe.  Marking '*' as safe lets the track user clone and work inside
+# any path on the volume without per-directory workarounds.
+su -s /bin/sh track -c "git config --global --add safe.directory '*'"
+
 exec /usr/sbin/sshd -D -e

@@ -351,11 +351,7 @@ fn prompt_remote_agent_key_import(
     has_existing_managed_key: bool,
 ) -> Result<(), TrackError> {
     loop {
-        let label = if has_existing_managed_key {
-            "SSH private key to import"
-        } else {
-            "SSH private key to import"
-        };
+        let label = "SSH private key to import";
         let response = prompt_with_default(prompter, label, None, false)?;
         let trimmed = response.trim();
 

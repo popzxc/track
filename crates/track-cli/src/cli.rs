@@ -547,7 +547,7 @@ fn format_migration_status(status: &MigrationStatus) -> String {
     );
 
     if status.requires_migration {
-        rendered.push_str("\n");
+        rendered.push('\n');
         rendered.push_str(&format_note(
             "Next",
             "Run `track migrate import` to copy legacy data into the SQLite backend.",
@@ -595,23 +595,23 @@ fn format_migration_import_summary(summary: &MigrationImportSummary) -> String {
         ],
     );
     if !summary.cleanup_candidates.is_empty() {
-        rendered.push_str("\n");
+        rendered.push('\n');
         rendered.push_str(&format_note(
             "Next",
             "Run `track configure` to materialize `~/.config/track/cli.json` before removing legacy config.",
         ));
-        rendered.push_str("\n");
+        rendered.push('\n');
         rendered.push_str(&format_note(
             "Install",
             "From your `airbender-platform` checkout, run `cargo install --path crates/cargo-airbender --force`.",
         ));
-        rendered.push_str("\n");
+        rendered.push('\n');
         rendered.push_str(&format_note(
             "Keep",
             "Preserve `~/.track/models` if you use local capture.",
         ));
         for candidate in &summary.cleanup_candidates {
-            rendered.push_str("\n");
+            rendered.push('\n');
             rendered.push_str(&format_note(
                 "Remove",
                 &migration_cleanup_command(&candidate.path),

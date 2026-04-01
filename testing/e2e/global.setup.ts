@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { mkdir, mkdtemp, writeFile, copyFile, chmod } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, copyFile, chmod, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import net from 'node:net'
 import { spawn, spawnSync } from 'node:child_process'
@@ -119,6 +119,7 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
       PORT: String(apiPort),
       TRACK_CONFIG_PATH: configPath,
       TRACK_DATA_DIR: issuesRoot,
+      TRACK_STATE_DIR: localTrackRoot,
       TRACK_STATIC_ROOT: path.join(REPO_ROOT, 'frontend', 'dist'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,6 +129,7 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   apiProcess.unref()
 
   await waitForHealth(`${apiBaseUrl}/health`, apiLogPath)
+  await configureRemoteAgent(apiBaseUrl, fixturePort, keyPrefix, runtimeRoot)
   await seedApplicationData(apiBaseUrl)
   await seedOrphanedCleanupArtifacts({
     fixturePort,
@@ -324,6 +326,42 @@ async function waitForHealth(healthUrl: string, apiLogPath: string): Promise<voi
     ? fs.readFileSync(apiLogPath, 'utf-8').trim()
     : '(no API log captured)'
   throw new Error(`track-api did not become healthy in time.\n\n${apiLog}`)
+}
+
+async function configureRemoteAgent(
+  apiBaseUrl: string,
+  fixturePort: number,
+  keyPath: string,
+  runtimeRoot: string,
+): Promise<void> {
+  const sshPrivateKey = await readFile(keyPath, 'utf-8')
+  const knownHosts = await readFile(path.join(runtimeRoot, 'known_hosts'), 'utf-8').catch(() => '')
+
+  const response = await fetch(`${apiBaseUrl}/api/remote-agent`, {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      host: FIXTURE_HOST,
+      user: FIXTURE_USER,
+      port: fixturePort,
+      workspaceRoot: FIXTURE_WORKSPACE_ROOT,
+      projectsRegistryPath: FIXTURE_PROJECTS_REGISTRY_PATH,
+      shellPrelude: FIXTURE_SHELL_PRELUDE,
+      reviewFollowUp: {
+        enabled: false,
+        mainUser: 'octocat',
+        defaultReviewPrompt: 'Focus on regressions and missing tests.',
+      },
+      sshPrivateKey,
+      knownHosts,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to configure remote agent: ${await response.text()}`)
+  }
 }
 
 async function seedApplicationData(apiBaseUrl: string): Promise<void> {
