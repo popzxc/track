@@ -1,4 +1,4 @@
-name: Recover Release Assets
+name: Recover Release Publication
 
 on:
   workflow_dispatch:

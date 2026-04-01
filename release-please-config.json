@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "3d3635491e260ab42bcdc39ef06eefa1e72273fc",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "plugins": [
+    "cargo-workspace"
+  ],
+  "packages": {
+    ".": {
+      "component": "track",
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

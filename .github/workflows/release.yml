@@ -20,32 +20,6 @@ jobs:
           echo "workflow_dispatch release runs must target refs/heads/main." >&2
           exit 1
 
-  release_pr:
-    name: Open release PR
-    needs: validate_ref
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    concurrency:
-      group: release-plz-pr
-      cancel-in-progress: true
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Open or update the release PR
-        uses: release-plz/action@v0.5
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   verify_docker_build:
     name: Verify Docker image build
     needs: validate_ref
@@ -110,76 +84,46 @@ jobs:
     # TODO: Add a Linux CUDA artifact once the repository has a GPU-capable
     # runner with the CUDA toolkit available during release builds.
 
-  release:
-    name: Publish workspace
+  release_please:
+    name: Open release PR or publish release
     needs:
-      - release_pr
+      - validate_ref
       - verify_docker_build
       - build_cli_binaries
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
+      issues: write
+      pull-requests: write
+    concurrency:
+      group: release-please
+      cancel-in-progress: true
     outputs:
-      cli_release_created: ${{ steps.cli_release.outputs.created }}
-      cli_tag: ${{ steps.cli_release.outputs.tag }}
-      cli_version: ${{ steps.cli_release.outputs.version }}
+      release_created: ${{ steps.release_please.outputs.release_created }}
+      release_tag: ${{ steps.release_please.outputs.tag_name }}
+      release_version: ${{ steps.release_please.outputs.version }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Open or update the release PR, or publish the release
+        id: release_please
+        uses: googleapis/release-please-action@v4
         with:
-          fetch-depth: 0
-
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish crates and create releases
-        id: release_plz
-        uses: release-plz/action@v0.5
-        with:
-          command: release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract the product release metadata
-        id: cli_release
-        env:
-          RELEASES: ${{ steps.release_plz.outputs.releases }}
-        run: |
-          set -euo pipefail
-
-          releases_json="${RELEASES:-[]}"
-          if [[ -z "$releases_json" ]]; then
-            releases_json='[]'
-          fi
-
-          cli_release="$(jq -c '[.[] | select(.package_name == "track-cli")] | first' <<<"$releases_json")"
-          if [[ -z "$cli_release" || "$cli_release" == "null" ]]; then
-            echo "created=false" >> "$GITHUB_OUTPUT"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          version="$(jq -r '.version' <<<"$cli_release")"
-
-          echo "created=true" >> "$GITHUB_OUTPUT"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   publish_product_artifacts:
     name: Publish Docker image and release assets
     needs:
-      - release
+      - release_please
       - build_cli_binaries
-    if: needs.release.outputs.cli_release_created == 'true'
+    if: needs.release_please.outputs.release_created == 'true'
     uses: ./.github/workflows/post-release.yml
     permissions:
       contents: write
       packages: write
     with:
-      release_tag: ${{ needs.release.outputs.cli_tag }}
-      release_version: ${{ needs.release.outputs.cli_version }}
+      release_tag: ${{ needs.release_please.outputs.release_tag }}
+      release_version: ${{ needs.release_please.outputs.release_version }}
       publish_latest: true
       use_prebuilt_binaries: true
     secrets: inherit
