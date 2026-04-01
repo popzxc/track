@@ -134,8 +134,57 @@ jobs:
           path: dist/${{ matrix.target }}/track
           retention-days: 7
 
-    # TODO: Add a Linux CUDA artifact once the repository has a GPU-capable
-    # runner with the CUDA toolkit available during release builds.
+  # The recovery path rebuilds the release assets from the tagged source, so it
+  # needs the same CUDA-only compile job as the main release workflow.
+  build_cli_binary_cuda_linux:
+    name: Build CLI binary (x86_64-unknown-linux-gnu-cuda)
+    if: ${{ !inputs.use_prebuilt_binaries }}
+    needs: verify_release
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.9.1-devel-ubuntu22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare the CUDA build container
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y build-essential ca-certificates clang cmake curl git libclang-dev libssl-dev pkg-config
+          echo "/usr/local/nvidia/bin:/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the CUDA CLI
+        env:
+          CUDACXX: /usr/local/cuda/bin/nvcc
+        run: cargo build --release -p track-cli --locked --features cuda --target x86_64-unknown-linux-gnu
+
+      - name: Stage the built binary for artifact upload
+        run: |
+          set -euo pipefail
+
+          artifact_dir="dist/x86_64-unknown-linux-gnu-cuda"
+          mkdir -p "$artifact_dir"
+          cp "target/x86_64-unknown-linux-gnu/release/track" "${artifact_dir}/track"
+          chmod +x "${artifact_dir}/track"
+
+      - name: Upload the built binary
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: cli-binary-x86_64-unknown-linux-gnu-cuda
+          path: dist/x86_64-unknown-linux-gnu-cuda/track
+          retention-days: 7
 
   upload_prebuilt_cli_assets:
     name: Upload CLI release assets
@@ -174,6 +223,7 @@ jobs:
     if: ${{ !inputs.use_prebuilt_binaries }}
     needs:
       - build_cli_binaries
+      - build_cli_binary_cuda_linux
       - publish_docker
     runs-on: ubuntu-latest
     permissions:

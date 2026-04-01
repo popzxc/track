@@ -20,8 +20,16 @@ into `~/.track/share`, and prompts you to reload your shell if it had to add
 
 Released installers currently support Linux x86_64 and macOS arm64.
 
+To install the Linux CUDA CLI instead of the default portable build, pass `--cuda` to the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/popzxc/track/main/trackup/trackup | bash -s -- --cuda
+```
+
+`--cuda` is only supported for Linux x86_64. On other platforms, `trackup` fails instead of silently installing a different binary.
+
 Re-run `trackup` later to update to the newest release. Use `trackup vX.Y.Z`
-when you need to pin a specific release.
+when you need to pin a specific release. Combine it with `--cuda` when you want a specific CUDA-enabled version.
 
 ## 2. Start the local API and WebUI
 

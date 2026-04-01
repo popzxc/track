@@ -14,10 +14,21 @@ TRACK_VERSION="${TRACK_VERSION:?TRACK_VERSION must be set}"
 packages_dir="dist/packages"
 mkdir -p "$packages_dir"
 
-for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
-  asset_stem="track-v${TRACK_VERSION}-${target}"
+# Each release archive maps one uploaded Actions artifact directory to one
+# published asset name. Keep the table explicit because the Linux CPU and CUDA
+# builds share an OS/architecture family but are different download surfaces.
+cli_asset_specs=(
+  "x86_64-unknown-linux-gnu:cli-binary-x86_64-unknown-linux-gnu"
+  "x86_64-unknown-linux-gnu-cuda:cli-binary-x86_64-unknown-linux-gnu-cuda"
+  "aarch64-apple-darwin:cli-binary-aarch64-apple-darwin"
+)
+
+for asset_spec in "${cli_asset_specs[@]}"; do
+  IFS=':' read -r asset_target artifact_name <<<"$asset_spec"
+
+  asset_stem="track-v${TRACK_VERSION}-${asset_target}"
   asset_dir="${packages_dir}/${asset_stem}"
-  source_binary="dist/raw/cli-binary-${target}/track"
+  source_binary="dist/raw/${artifact_name}/track"
 
   mkdir -p "$asset_dir"
   cp "$source_binary" "${asset_dir}/track"

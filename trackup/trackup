@@ -15,6 +15,7 @@ TRACKUP_BIN_DIR="${TRACKUP_BIN_DIR:-$TRACKUP_HOME/bin}"
 TRACKUP_SHARE_DIR="${TRACKUP_SHARE_DIR:-$TRACKUP_HOME/share}"
 
 REQUESTED_TAG=""
+REQUEST_CUDA="false"
 RELEASE_TAG=""
 RELEASE_TARGET=""
 TEMP_DIR=""
@@ -41,6 +42,7 @@ print_usage() {
   cat <<'EOF'
 Usage:
   trackup
+  trackup --cuda
   trackup vX.Y.Z
   trackup X.Y.Z
 
@@ -48,7 +50,9 @@ Installs or updates `track` from GitHub release assets.
 
 Examples:
   trackup
+  trackup --cuda
   trackup v0.2.0
+  trackup --cuda v0.2.0
 
 Environment overrides:
   TRACKUP_HOME        Override the ~/.track root used for installation.
@@ -61,6 +65,9 @@ parse_args() {
       -h|--help)
         print_usage
         exit 0
+        ;;
+      --cuda)
+        REQUEST_CUDA="true"
         ;;
       --sha)
         die "--sha is not supported yet. Install a tagged release instead."
@@ -125,15 +132,28 @@ detect_release_target() {
   os="$(uname -s)"
   arch="$(uname -m)"
 
-  # TODO: Extend this mapping when the release workflow publishes more targets.
+  # Keep the release-target mapping explicit because the installer has to select
+  # one concrete asset name, and CUDA is only published for one Linux target.
   case "${os}:${arch}" in
     Linux:x86_64|Linux:amd64)
-      printf '%s\n' "x86_64-unknown-linux-gnu"
+      if [ "$REQUEST_CUDA" = "true" ]; then
+        printf '%s\n' "x86_64-unknown-linux-gnu-cuda"
+      else
+        printf '%s\n' "x86_64-unknown-linux-gnu"
+      fi
       ;;
     Darwin:arm64|Darwin:aarch64)
+      if [ "$REQUEST_CUDA" = "true" ]; then
+        die "--cuda is not supported on macOS. Install the default Apple Silicon release instead."
+      fi
+
       printf '%s\n' "aarch64-apple-darwin"
       ;;
     *)
+      if [ "$REQUEST_CUDA" = "true" ]; then
+        die "--cuda is only available for the Linux x86_64 release artifact."
+      fi
+
       die "Unsupported platform ${os}/${arch}. Released installers currently support Linux x86_64 and macOS arm64."
       ;;
   esac

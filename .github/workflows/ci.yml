@@ -50,6 +50,32 @@ jobs:
           # would race if tests ran in parallel, so enforce sequential execution.
           RUST_TEST_THREADS: "1"
 
+  # The CUDA CLI build only needs the toolkit during compilation, so CI can
+  # validate it inside a CUDA container on a standard Linux runner.
+  rust-cuda-build:
+    name: Rust CUDA build
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.9.1-devel-ubuntu22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare the CUDA build container
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y build-essential ca-certificates clang cmake curl git libclang-dev libssl-dev pkg-config
+          echo "/usr/local/nvidia/bin:/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p track-cli --locked --features cuda --target x86_64-unknown-linux-gnu
+        env:
+          CUDACXX: /usr/local/cuda/bin/nvcc
+
   frontend-unit-test:
     name: Frontend unit tests
     runs-on: ubuntu-latest
