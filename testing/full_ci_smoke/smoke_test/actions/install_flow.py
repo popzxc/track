@@ -3,8 +3,6 @@ import time
 
 from ..api_client import TrackApiClient
 from ..constants import (
-    FIXTURE_HOST,
-    FIXTURE_USER,
     PROJECT_GIT_URL,
     PROJECT_NAME,
     REPO_ROOT,
@@ -174,11 +172,11 @@ def configure_remote_agent(context: SmokeContext) -> None:
         "remote-agent",
         "configure",
         "--host",
-        FIXTURE_HOST,
+        context.remote_agent_host(),
         "--user",
-        FIXTURE_USER,
+        context.remote_agent_user(),
         "--port",
-        str(context.fixture_port),
+        str(context.remote_agent_port()),
     ]
     if context.install_flow_options.remote_agent_workspace_root is not None:
         command.extend(

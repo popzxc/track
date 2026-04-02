@@ -4,7 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .constants import FIXTURE_HOST, FIXTURE_SHELL_PRELUDE, FIXTURE_USER, PROJECT_NAME, TASK_TITLE
+from .constants import (
+    FIXTURE_SHELL_PRELUDE,
+    LINUX_FIXTURE_REMOTE_HOST,
+    LINUX_FIXTURE_REMOTE_PORT,
+    LINUX_FIXTURE_REMOTE_USER,
+    MACOS_HOST_FIXTURE_REMOTE_HOST,
+    MACOS_HOST_FIXTURE_REMOTE_USER,
+    PROJECT_NAME,
+    TASK_TITLE,
+)
 
 SmokePlatform = Literal["linux-docker", "macos-host"]
 
@@ -66,9 +75,9 @@ class SmokeContext:
             env["TRACK_SMOKE_REMOTE_HOME"] = str(self.remote_home_dir)
             env["TRACK_SMOKE_REMOTE_RUNTIME_DIR"] = str(self.fixture_runtime_dir)
             env["TRACK_SMOKE_REMOTE_BIN_DIR"] = str(self.remote_bin_dir)
-            env["TRACK_SMOKE_EXPECTED_REMOTE_HOST"] = FIXTURE_HOST
-            env["TRACK_SMOKE_EXPECTED_REMOTE_PORT"] = str(self.fixture_port or 22)
-            env["TRACK_SMOKE_EXPECTED_REMOTE_USER"] = FIXTURE_USER
+            env["TRACK_SMOKE_EXPECTED_REMOTE_HOST"] = self.remote_agent_host()
+            env["TRACK_SMOKE_EXPECTED_REMOTE_PORT"] = str(self.remote_agent_port())
+            env["TRACK_SMOKE_EXPECTED_REMOTE_USER"] = self.remote_agent_user()
         if extra is not None:
             env.update(extra)
         return env
@@ -93,6 +102,35 @@ class SmokeContext:
             f'export PATH="{self.remote_bin_dir}:$PATH"\n'
             f'export TRACK_TESTING_RUNTIME_DIR="{self.fixture_runtime_dir}"'
         )
+
+    def remote_agent_host(self) -> str:
+        if self.install_flow_options is None:
+            raise RuntimeError("The install-flow scenario did not initialize its options.")
+
+        if self.install_flow_options.platform == "linux-docker":
+            return LINUX_FIXTURE_REMOTE_HOST
+
+        return MACOS_HOST_FIXTURE_REMOTE_HOST
+
+    def remote_agent_port(self) -> int:
+        if self.install_flow_options is None:
+            raise RuntimeError("The install-flow scenario did not initialize its options.")
+
+        if self.install_flow_options.platform == "linux-docker":
+            return LINUX_FIXTURE_REMOTE_PORT
+
+        if self.fixture_port is None:
+            raise RuntimeError("The install-flow scenario did not reserve a fixture port.")
+        return self.fixture_port
+
+    def remote_agent_user(self) -> str:
+        if self.install_flow_options is None:
+            raise RuntimeError("The install-flow scenario did not initialize its options.")
+
+        if self.install_flow_options.platform == "linux-docker":
+            return LINUX_FIXTURE_REMOTE_USER
+
+        return MACOS_HOST_FIXTURE_REMOTE_USER
 
 
 def create_context(revision: str | None, expected_commit: str | None) -> SmokeContext:

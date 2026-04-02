@@ -85,20 +85,29 @@ def command_run(args: argparse.Namespace) -> None:
     if args.authorized_key is not None:
         shutil.copyfile(args.authorized_key, runtime_dir / "authorized_keys")
 
+    docker_run_command = [
+        "docker",
+        "run",
+        "--detach",
+        "--rm",
+        "--name",
+        args.name,
+        "--publish",
+        f"127.0.0.1:{args.port}:22",
+        "--volume",
+        f"{runtime_dir}:/srv/track-testing",
+    ]
+    if args.network is not None:
+        docker_run_command.extend(["--network", args.network])
+    if args.network_alias is not None:
+        if args.network is None:
+            raise SystemExit("--network-alias requires --network.")
+        docker_run_command.extend(["--network-alias", args.network_alias])
+
+    docker_run_command.append(args.image)
+
     run(
-        [
-            "docker",
-            "run",
-            "--detach",
-            "--rm",
-            "--name",
-            args.name,
-            "--publish",
-            f"127.0.0.1:{args.port}:22",
-            "--volume",
-            f"{runtime_dir}:/srv/track-testing",
-            args.image,
-        ]
+        docker_run_command
     )
 
     print(
@@ -364,6 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--port", type=int, required=True)
     run_parser.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
     run_parser.add_argument("--authorized-key", type=Path)
+    run_parser.add_argument("--network")
+    run_parser.add_argument("--network-alias")
     run_parser.set_defaults(func=command_run)
 
     stop_parser = subparsers.add_parser("stop", help="Stop the SSH fixture container.")

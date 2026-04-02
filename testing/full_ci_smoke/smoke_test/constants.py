@@ -6,14 +6,21 @@ FIXTURECTL_PATH = REPO_ROOT / "testing" / "support" / "fixturectl.py"
 TRACKUP_PATH = REPO_ROOT / "trackup" / "trackup"
 
 FIXTURE_IMAGE = "track-testing/ssh-fixture:install-smoke"
-FIXTURE_HOST = "127.0.0.1"
-FIXTURE_USER = "fixture-user"
-FIXTURE_WORKSPACE_ROOT = "/home/track/workspace"
-FIXTURE_PROJECTS_REGISTRY_PATH = "/srv/track-testing/state/track-projects.json"
+FIXTURE_GH_LOGIN = "fixture-user"
+LINUX_FIXTURE_PROBE_HOST = "127.0.0.1"
+LINUX_FIXTURE_NETWORK = "track_default"
+LINUX_FIXTURE_NETWORK_ALIAS = "track-ssh-fixture"
+LINUX_FIXTURE_REMOTE_HOST = LINUX_FIXTURE_NETWORK_ALIAS
+LINUX_FIXTURE_REMOTE_PORT = 22
+LINUX_FIXTURE_REMOTE_USER = "track"
+LINUX_FIXTURE_WORKSPACE_ROOT = "/home/track/workspace"
+LINUX_FIXTURE_PROJECTS_REGISTRY_PATH = "/srv/track-testing/state/track-projects.json"
 FIXTURE_SHELL_PRELUDE = (
     'export PATH="/opt/track-testing/bin:$PATH"\n'
     'export TRACK_TESTING_RUNTIME_DIR="/srv/track-testing"'
 )
+MACOS_HOST_FIXTURE_REMOTE_HOST = "127.0.0.1"
+MACOS_HOST_FIXTURE_REMOTE_USER = "fixture-user"
 MACOS_HOST_FIXTURE_WORKSPACE_ROOT = "~/workspace-smoke"
 MACOS_HOST_FIXTURE_PROJECTS_REGISTRY_PATH = "~/track-projects-smoke.json"
 
