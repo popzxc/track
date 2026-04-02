@@ -18,7 +18,7 @@ The release version tracked by `release-please` lives in [Cargo.toml](https://gi
 The repository currently uses these release workflows:
 
 - [release.yml](https://github.com/popzxc/track/blob/main/.github/workflows/release.yml)
-  Runs on pushes to `main` and on manual dispatch. It prebuilds the multi-architecture Docker image matrix, then runs `release-please`. When `release-please` creates a new release, this workflow calls the shared post-release workflow.
+  Runs on pushes to `main` and on manual dispatch. It only handles the `release-please` flow, and when `release-please` creates a new release, this workflow calls the shared post-release workflow.
 - [post-release.yml](https://github.com/popzxc/track/blob/main/.github/workflows/post-release.yml)
   Verifies the GitHub release exists, sets its title to `track vX.Y.Z`, publishes the multi-architecture Docker image to GHCR, and uploads the shared release asset bundle.
 - [recover-release-assets.yml](https://github.com/popzxc/track/blob/main/.github/workflows/recover-release-assets.yml)

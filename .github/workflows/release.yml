@@ -6,9 +6,6 @@ on:
       - main
   workflow_dispatch:
 
-env:
-  TRACK_DOCKER_PLATFORMS: linux/amd64,linux/arm64
-
 permissions:
   contents: read
 
@@ -23,42 +20,14 @@ jobs:
           echo "workflow_dispatch release runs must target refs/heads/main." >&2
           exit 1
 
-  verify_docker_build:
-    name: Verify Docker image build
-    needs: validate_ref
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Derive git commit metadata
-        id: git_commit
-        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Buildx cannot `load` a multi-platform image into the runner's local
-      # Docker daemon, so validation stops after the cross-platform build
-      # completes successfully.
-      - name: Build the runtime image matrix before publishing
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          platforms: ${{ env.TRACK_DOCKER_PLATFORMS }}
-          build-args: |
-            TRACK_GIT_COMMIT=${{ steps.git_commit.outputs.short_sha }}
-
   release_please:
     name: Open release PR or publish release
     needs:
       - validate_ref
-      - verify_docker_build
     runs-on: ubuntu-latest
+    # CI already validates that the repository still builds. The release flow
+    # therefore avoids a second pre-publication Docker build and only triggers
+    # the slower multi-architecture publish path after a release actually exists.
     permissions:
       contents: write
       issues: write
