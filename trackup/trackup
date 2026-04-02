@@ -13,7 +13,13 @@ set -euo pipefail
 TRACKUP_HOME="${TRACKUP_HOME:-$HOME/.track}"
 TRACKUP_BIN_DIR="${TRACKUP_BIN_DIR:-$TRACKUP_HOME/bin}"
 TRACKUP_SHARE_DIR="${TRACKUP_SHARE_DIR:-$TRACKUP_HOME/share}"
-TRACKUP_REPOSITORY_URL="${TRACKUP_REPOSITORY_URL:-https://github.com/popzxc/track}"
+TRACKUP_RELEASE_REPOSITORY_URL="https://github.com/popzxc/track"
+TRACKUP_RELEASE_REPOSITORY_API_URL="https://api.github.com/repos/popzxc/track"
+# This override exists only for the internal `--ref` developer path used by the
+# smoke installer. Release installs intentionally stay pinned to the canonical
+# upstream repository so tag resolution, asset downloads, and cargo installs all
+# resolve one coherent published release.
+TRACKUP_REPOSITORY_URL="${TRACKUP_REPOSITORY_URL:-$TRACKUP_RELEASE_REPOSITORY_URL}"
 TRACKUP_EXPECTED_COMMIT="${TRACKUP_EXPECTED_COMMIT:-}"
 
 REQUESTED_TAG=""
@@ -72,8 +78,6 @@ Examples:
 
 Environment overrides:
   TRACKUP_HOME        Override the ~/.track root used for installation.
-  TRACKUP_REPOSITORY_URL
-                      Override the git repository used for release or ref installs.
 EOF
 }
 
@@ -168,9 +172,9 @@ resolve_release_tag() {
   local response
 
   if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = "latest" ]; then
-    response="$(github_api_get "https://api.github.com/repos/popzxc/track/releases/latest")"
+    response="$(github_api_get "${TRACKUP_RELEASE_REPOSITORY_API_URL}/releases/latest")"
   else
-    response="$(github_api_get "https://api.github.com/repos/popzxc/track/releases/tags/${REQUESTED_TAG}")"
+    response="$(github_api_get "${TRACKUP_RELEASE_REPOSITORY_API_URL}/releases/tags/${REQUESTED_TAG}")"
   fi
 
   jq -er '.tag_name' <<<"$response" >/dev/null || die "GitHub did not return a release tag."
@@ -287,7 +291,7 @@ download_release_assets() {
 
   shared_asset="$(shared_asset_name)"
   checksum_asset="$(checksum_asset_name)"
-  base_url="${TRACKUP_REPOSITORY_URL}/releases/download/${RELEASE_TAG}"
+  base_url="${TRACKUP_RELEASE_REPOSITORY_URL}/releases/download/${RELEASE_TAG}"
 
   download_file "${base_url}/${shared_asset}" "${TEMP_DIR}/${shared_asset}"
   download_file "${base_url}/${checksum_asset}" "${TEMP_DIR}/${checksum_asset}"
@@ -366,7 +370,7 @@ install_track_cli() {
 
   if [ "$INSTALL_SOURCE" = "release" ]; then
     cargo_install_args+=(
-      --git "$TRACKUP_REPOSITORY_URL"
+      --git "$TRACKUP_RELEASE_REPOSITORY_URL"
       --tag "$RELEASE_TAG"
       track-cli
     )

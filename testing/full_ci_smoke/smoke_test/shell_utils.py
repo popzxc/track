@@ -1,6 +1,7 @@
 import json
 import shlex
 import socket
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -90,3 +91,7 @@ def wait_until(
 def write_text(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(contents, encoding="utf-8")
+
+
+def make_executable(path: Path) -> None:
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

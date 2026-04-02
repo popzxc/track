@@ -35,4 +35,8 @@ sed "s|__TRACK_IMAGE_REF__|${TRACK_IMAGE_REF}|g" \
 
 tar -C "$packages_dir" -czf "dist/${shared_asset_stem}.tar.gz" "${shared_asset_stem}"
 
-sha256sum "dist/${shared_asset_stem}.tar.gz" > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "dist/${shared_asset_stem}.tar.gz" > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+else
+  shasum -a 256 "dist/${shared_asset_stem}.tar.gz" > "dist/track-v${TRACK_VERSION}-sha256sums.txt"
+fi

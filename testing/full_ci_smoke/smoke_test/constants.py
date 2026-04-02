@@ -14,6 +14,8 @@ FIXTURE_SHELL_PRELUDE = (
     'export PATH="/opt/track-testing/bin:$PATH"\n'
     'export TRACK_TESTING_RUNTIME_DIR="/srv/track-testing"'
 )
+MACOS_HOST_FIXTURE_WORKSPACE_ROOT = "~/workspace-smoke"
+MACOS_HOST_FIXTURE_PROJECTS_REGISTRY_PATH = "~/track-projects-smoke.json"
 
 PROJECT_NAME = "project-a"
 PROJECT_REPO_URL = "https://github.com/acme/project-a"

@@ -48,8 +48,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (*review_repository).clone(),
         (*review_dispatch_repository).clone(),
     )?);
+    // Docker publishes the backend behind a localhost-only port mapping by
+    // default, so the binary still binds all interfaces inside the container.
+    // The macOS host-mode smoke runs the binary directly, though, so it needs
+    // a narrow bind-host escape hatch to keep that path localhost-only too.
+    let bind_host = env::var("TRACK_BIND_HOST").unwrap_or_else(|_| "0.0.0.0".to_owned());
     let port = env::var("PORT").unwrap_or_else(|_| "3210".to_owned());
-    let address = format!("0.0.0.0:{port}");
+    let address = format!("{bind_host}:{port}");
     let listener = TcpListener::bind(&address).await?;
 
     let state = AppState {
