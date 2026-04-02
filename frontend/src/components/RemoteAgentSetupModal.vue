@@ -152,7 +152,7 @@ function submit() {
               class="border border-red/25 bg-red/8 px-4 py-3 text-sm leading-6 text-red"
             >
               Remote dispatch itself is not configured yet. Run
-              <code>track remote-agent configure --host &lt;host&gt; --user &lt;user&gt; --identity-file ~/.ssh/id_ed25519</code>
+              <code>track remote-agent configure --host &lt;host&gt; --user &lt;user&gt; --identity-file ~/.ssh/track_remote_agent</code>
               locally first.
             </p>
 

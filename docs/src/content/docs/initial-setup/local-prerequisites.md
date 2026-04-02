@@ -13,9 +13,24 @@ The normal install path uses the released `trackup` bootstrap script. That
 script downloads the shared backend assets from the GitHub release and builds
 the `track` CLI from the tagged source release with `cargo install`.
 
-Make sure these commands exist locally before you continue:
+Make sure these tools exist locally before you continue:
+
+- `git`
+- `curl`
+- `rustc`
+- `cargo`
+- `jq`
+- `tar`
+- `cmake`
+- `clang`
+- `docker compose`
+- one C compiler: `cc`, `gcc`, or `clang`
+- one C++ compiler: `c++`, `g++`, or `clang++`
+
+If you want a quick verification pass, this is a reasonable checklist:
 
 ```bash
+git --version
 curl --version
 rustc --version
 cargo --version
@@ -23,9 +38,9 @@ jq --version
 tar --version
 cmake --version
 clang --version
-cc --version
-c++ --version
 docker compose version
+command -v cc || command -v gcc || command -v clang
+command -v c++ || command -v g++ || command -v clang++
 ```
 
 `trackup` also verifies release checksums before it installs anything. It can

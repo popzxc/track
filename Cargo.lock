@@ -2603,7 +2603,7 @@ dependencies = [
 
 [[package]]
 name = "track-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "serde",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "track-capture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hf-hub",
  "llama-cpp-2",
@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "track-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "track-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dialoguer",
  "owo-colors",
@@ -2665,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "track-integration-tests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "serde_json",
