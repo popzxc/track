@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-Once you have worked through [Intro](./intro/), [Security](./security/), [Local Prerequisites](./local-prerequisites/), and [Remote Prerequisites](./remote-prerequisites/), the next goal is simple: get the local backend running and teach it how to reach your remote machine.
+Once you have worked through [Intro](../intro/), [Security](../security/), [Local Prerequisites](../local-prerequisites/), and [Remote Prerequisites](../remote-prerequisites/), the next goal is simple: get the local backend running and teach it how to reach your remote machine.
 
 ## 1. Install the release bundle
 

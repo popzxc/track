@@ -23,7 +23,7 @@ If there is no PR yet, the follow-up still reuses the existing remote branch and
 
 You can also let `track` create follow-ups automatically after PR review activity.
 
-To enable that flow, open [Finish Runner Setup](../configuring/finish-runner-setup/) and set both:
+To enable that flow, open [Finish Runner Setup](../../configuring/finish-runner-setup/) and set both:
 
 - **Main GitHub user**
 - **Review follow-up**

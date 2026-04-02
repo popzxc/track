@@ -9,7 +9,7 @@ This page is about the remote machine that will run delegated tasks and delegate
 
 ## 1. Create a dedicated GitHub account for agentic work
 
-You are expected to create a dedicated GitHub account just for the agentic work. Do not use your personal account. See [Security](./security/) for details.
+You are expected to create a dedicated GitHub account just for the agentic work. Do not use your personal account. See [Security](../security/) for details.
 
 Keep that account's standing access limited to the repositories and actions you intentionally want to expose. At minimum, the remote flow should be able to:
 
