@@ -697,7 +697,7 @@ fn enrich_backend_error_for_cli(error: TrackError) -> TrackError {
         ),
         ErrorCode::RemoteAgentNotConfigured => TrackError::new(
             ErrorCode::RemoteAgentNotConfigured,
-            "Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/id_ed25519` first.",
+            "Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/track_remote_agent` first.",
         ),
         _ => error,
     }

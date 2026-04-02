@@ -45,14 +45,14 @@ Once a project is registered, you can capture tasks against it from anywhere. Fo
 track todoapp redo the todo view
 ```
 
-This example would create an issue for `todoapp` project with medium priority and body "Redo the todo view" (prettified by LLM).
-If you provide more context, the LLM can infer more details as well. For, in the following example:
+This usually routes the task to `todoapp` with the default medium priority.
+If you provide more context, the local parser can infer more details too. For example:
 
 ```bash
 track todoapp prio high tighten retry logic around remote cleanup
 ```
 
-the task would be create with a high priority.
+That task would be created with a high priority.
 
 Any created task can be edited in the WebUI after creation, so in CLI you can draft a quick idea just to not forget, and then
 refine it later in the WebUI when you have time.

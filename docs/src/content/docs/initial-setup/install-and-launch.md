@@ -19,8 +19,9 @@ into `~/.track/share`, builds `track` from the tagged source release, and
 prompts you to reload your shell if it had to add `~/.track/bin` to your
 `PATH`.
 
-This installer now expects a local Rust toolchain plus the native build tools
-needed by `cargo install`, including `cmake`, `clang`, and a C/C++ compiler.
+This installer now expects local prerequisites for both the release download
+and the tagged-source CLI build, including `git`, `jq`, a Rust toolchain,
+`cmake`, `clang`, and a C/C++ compiler.
 
 On Linux x86_64, `trackup` asks whether to install the default CLI build or a
 CUDA-accelerated build. The CUDA option requires a local CUDA toolkit

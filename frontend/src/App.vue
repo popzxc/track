@@ -182,7 +182,7 @@ const defaultRemoteAgentPreferredTool = computed<RemoteAgentPreferredTool>(
 const availableProjects = computed(() => mergeProjects(projects.value, taskProjectOptions.value))
 const reviewRequestDisabledReason = computed(() => {
   if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
-    return 'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/id_ed25519` locally first.'
+    return 'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/track_remote_agent` locally first.'
   }
 
   if (remoteAgentSettings.value && !runnerSetupReady.value) {
@@ -993,7 +993,7 @@ async function startRemoteRun(
 
   if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
     errorMessage.value =
-      'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/id_ed25519` locally first.'
+      'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/track_remote_agent` locally first.'
     currentPage.value = 'settings'
     return
   }

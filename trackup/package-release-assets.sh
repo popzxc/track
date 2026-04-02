@@ -10,6 +10,11 @@ set -euo pipefail
 # GitHub release only needs to ship the wrapper scripts and the pinned Compose
 # file that match the backend image tag.
 #
+# That image tag intentionally stays host-agnostic. The published GHCR tag is a
+# multi-architecture Linux manifest, so Docker can resolve the matching backend
+# image for Linux x86_64 or Apple Silicon hosts without `trackup` choosing
+# different tags per local OS.
+#
 # The smoke installer reuses this same packaging path for arbitrary git refs,
 # but swaps in a caller-provided local image tag instead of a published GHCR
 # tag. Keeping both paths on one script avoids drifting asset layouts.
