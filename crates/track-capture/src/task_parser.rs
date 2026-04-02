@@ -263,7 +263,10 @@ mod tests {
 
         for truthy in ["1", "true", "yes", "on"] {
             std::env::set_var(TRACK_TEST_INFERENCE_ENV, truthy);
-            assert!(test_inference_enabled(), "{truthy} should enable test inference");
+            assert!(
+                test_inference_enabled(),
+                "{truthy} should enable test inference"
+            );
         }
 
         for falsey in ["", "0", "false", "no", "off"] {
