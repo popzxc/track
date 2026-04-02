@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/popzxc/track/compare/v0.2.0...v0.3.0) (2026-04-02)
+
+
+### Features
+
+* smoke testing + hardened security ([#13](https://github.com/popzxc/track/issues/13)) ([9128c18](https://github.com/popzxc/track/commit/9128c188d461644476d0e2ac8e1cabacdbf667b2))
+
+
+### Bug Fixes
+
+* Fix problematic DB migration ([#10](https://github.com/popzxc/track/issues/10)) ([60129e7](https://github.com/popzxc/track/commit/60129e77bfcaf9e705ca1d0164da9dad839da48b))
+* repair markdown and docs site deadlinks ([#12](https://github.com/popzxc/track/issues/12)) ([9e6d0f1](https://github.com/popzxc/track/commit/9e6d0f1735b8dc095fe0281712e4a9e3eac21bcf))
+
 ## [0.2.0](https://github.com/popzxc/track/releases/tag/v0.2.0) (2026-04-01)
 
 
