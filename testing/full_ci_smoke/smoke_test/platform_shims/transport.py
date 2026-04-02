@@ -31,8 +31,9 @@ def ssh_main(argv: list[str]) -> int:
             "USER": expected_remote_user(),
         }
     )
+    normalized_remote_argv = normalize_mock_remote_home_arguments(remote_argv)
     completed = subprocess.run(
-        remote_argv,
+        normalized_remote_argv,
         cwd=remote_home,
         env=remote_env,
         input=sys.stdin.read(),
@@ -211,9 +212,37 @@ def expected_remote_port() -> int:
 
 
 def expand_remote_path(path_value: str) -> Path:
+    path_value = normalize_mock_remote_home_path(path_value)
     remote_home = expected_remote_home()
     if path_value == "~":
         return remote_home
     if path_value.startswith("~/"):
         return remote_home / path_value[2:]
     return Path(path_value)
+
+
+def normalize_mock_remote_home_arguments(argv: list[str]) -> list[str]:
+    if argv[:3] != ["bash", "-s", "--"]:
+        return argv
+
+    # The host-mode smoke mixes two transport layers: direct SCP uploads and
+    # bash scripts that expect `~/...` paths to be expanded remotely. When a
+    # mock-side step accidentally roots one of those shell-facing paths under
+    # the fake home first, the real remote machine would still treat it as the
+    # same logical path after shell expansion. Normalizing that rooted `~/`
+    # shape back into the canonical remote form keeps the host-mode transport
+    # behavior aligned with a real SSH session instead of inventing a sibling
+    # `~/` directory under the temp home.
+    normalized = argv[:3]
+    normalized.extend(normalize_mock_remote_home_path(value) for value in argv[3:])
+    return normalized
+
+
+def normalize_mock_remote_home_path(path_value: str) -> str:
+    remote_home = str(expected_remote_home())
+    if path_value == f"{remote_home}/~":
+        return "~"
+    remote_home_prefix = f"{remote_home}/~/"
+    if path_value.startswith(remote_home_prefix):
+        return "~/" + path_value[len(remote_home_prefix) :]
+    return path_value
