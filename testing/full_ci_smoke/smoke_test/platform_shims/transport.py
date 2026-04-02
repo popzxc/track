@@ -19,7 +19,7 @@ def ssh_main(argv: list[str]) -> int:
     validate_remote_target(key_path, port, destination)
     record_mock_known_host(known_hosts_path)
 
-    remote_home = expected_remote_home()
+    remote_home = resolved_remote_home()
     remote_home.mkdir(parents=True, exist_ok=True)
 
     remote_env = os.environ.copy()
@@ -190,6 +190,16 @@ def expected_remote_home() -> Path:
     return Path(value)
 
 
+def resolved_remote_home() -> Path:
+    # GitHub's macOS runners expose the same temp directory tree through both
+    # `/var/...` and `/private/var/...`. The host-mode smoke feeds the shim the
+    # former, while subprocess cwd reporting and some tool outputs use the
+    # latter. We normalize against both spellings and execute the mock remote
+    # session from the resolved location so SSH/SCP behavior stays consistent
+    # even when the runner flips between those equivalent path forms.
+    return expected_remote_home().resolve()
+
+
 def expected_remote_user() -> str:
     value = os.environ.get("TRACK_SMOKE_EXPECTED_REMOTE_USER")
     if not value:
@@ -213,7 +223,7 @@ def expected_remote_port() -> int:
 
 def expand_remote_path(path_value: str) -> Path:
     path_value = normalize_mock_remote_home_path(path_value)
-    remote_home = expected_remote_home()
+    remote_home = resolved_remote_home()
     if path_value == "~":
         return remote_home
     if path_value.startswith("~/"):
@@ -239,10 +249,26 @@ def normalize_mock_remote_home_arguments(argv: list[str]) -> list[str]:
 
 
 def normalize_mock_remote_home_path(path_value: str) -> str:
-    remote_home = str(expected_remote_home())
-    if path_value == f"{remote_home}/~":
-        return "~"
-    remote_home_prefix = f"{remote_home}/~/"
-    if path_value.startswith(remote_home_prefix):
-        return "~/" + path_value[len(remote_home_prefix) :]
+    for remote_home in remote_home_aliases():
+        if path_value == f"{remote_home}/~":
+            return "~"
+        remote_home_prefix = f"{remote_home}/~/"
+        if path_value.startswith(remote_home_prefix):
+            return "~/" + path_value[len(remote_home_prefix) :]
     return path_value
+
+
+def remote_home_aliases() -> list[str]:
+    aliases = {str(expected_remote_home()), str(resolved_remote_home())}
+    aliases.update(mac_temp_path_aliases(aliases))
+    return sorted(aliases, key=len, reverse=True)
+
+
+def mac_temp_path_aliases(paths: set[str]) -> set[str]:
+    aliases: set[str] = set()
+    for path in paths:
+        if path.startswith("/var/"):
+            aliases.add("/private" + path)
+        if path.startswith("/private/var/"):
+            aliases.add(path.removeprefix("/private"))
+    return aliases
