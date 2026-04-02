@@ -150,6 +150,13 @@ Favor small, high-signal tests.
   emulate a real local model.
 - If you change config shape, capture behavior, or storage semantics,
   update Rust tests in `track-core` or `track-cli`.
+- Every new SQLite migration must include a dedicated migration test under
+  `crates/track-core/src/database/migration_tests/` in its own numbered file,
+  for example `id_000_<migration_name>.rs`.
+- Each migration test must create the database in the immediately
+  pre-migration schema state, populate representative rows, run the real
+  `DatabaseContext::initialize()` path, and assert that the migration keeps the
+  rows intact without corrupting their data.
 - If you change the API surface, add or update Rust HTTP tests in `track-api`.
 - For remote-agent behavior that depends on real `ssh`/`scp`, prefer the live
   tests in `crates/track-integration-tests` over trying to mock the transport.

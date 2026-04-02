@@ -307,8 +307,15 @@ async fn drop_task_dispatches_fk_cascade(
         return Ok(());
     }
 
-    // Recreate the table without the cascade FK.  We disable FK enforcement
-    // for the duration so the DROP does not fail on any existing references.
+    // Recreate the table without the cascade FK. We disable FK enforcement for
+    // the duration so the DROP does not fail on any existing references.
+    //
+    // The legacy table can already have additive columns appended at the end,
+    // so we must copy by column name instead of `SELECT *`. Positional copying
+    // would shift `follow_up_request` into `preferred_tool`, and `OR IGNORE`
+    // would silently discard rows whose old follow-up was NULL.
+    // TODO: Add a one-time repair pass for databases that already ran the
+    // buggy positional copy before this migration fix shipped.
     let statements = [
         "PRAGMA foreign_keys = OFF",
         r#"
@@ -333,7 +340,20 @@ async fn drop_task_dispatches_fk_cascade(
             review_request_user TEXT
         )
         "#,
-        "INSERT OR IGNORE INTO task_dispatches_new SELECT * FROM task_dispatches",
+        r#"
+        INSERT INTO task_dispatches_new (
+            dispatch_id, task_id, project, status, created_at, updated_at,
+            finished_at, remote_host, branch_name, worktree_path,
+            pull_request_url, preferred_tool, follow_up_request, summary,
+            notes, error_message, review_request_head_oid, review_request_user
+        )
+        SELECT
+            dispatch_id, task_id, project, status, created_at, updated_at,
+            finished_at, remote_host, branch_name, worktree_path,
+            pull_request_url, preferred_tool, follow_up_request, summary,
+            notes, error_message, review_request_head_oid, review_request_user
+        FROM task_dispatches
+        "#,
         "DROP TABLE task_dispatches",
         "ALTER TABLE task_dispatches_new RENAME TO task_dispatches",
         r#"
@@ -503,3 +523,6 @@ fn run_database_operation<T>(
         operation(&mut connection).await
     })
 }
+
+#[cfg(test)]
+mod migration_tests;
