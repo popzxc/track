@@ -27,6 +27,14 @@ class InstallFlowOptions:
     remote_agent_projects_registry_path: str | None
 
 
+@dataclass(frozen=True)
+class FixtureRepository:
+    repo_url: str
+    base_branch: str
+    upstream_bare_path: str
+    upstream_bare_path_in_fixture: str
+
+
 @dataclass
 class SmokeContext:
     revision: str | None
@@ -59,6 +67,7 @@ class SmokeContext:
     install_flow_options: InstallFlowOptions | None = None
     source_checkout_dir: Path | None = None
     resolved_commit: str | None = None
+    fixture_repository: FixtureRepository | None = None
 
     def smoke_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = self.host_tool_env()
@@ -131,6 +140,17 @@ class SmokeContext:
             return LINUX_FIXTURE_REMOTE_USER
 
         return MACOS_HOST_FIXTURE_REMOTE_USER
+
+    def fixture_upstream_git_url(self) -> str:
+        if self.fixture_repository is None:
+            raise RuntimeError("The install-flow scenario did not seed the fixture repository yet.")
+        if self.install_flow_options is None:
+            raise RuntimeError("The install-flow scenario did not initialize its options.")
+
+        if self.install_flow_options.platform == "linux-docker":
+            return self.fixture_repository.upstream_bare_path_in_fixture
+
+        return self.fixture_repository.upstream_bare_path
 
 
 def create_context(revision: str | None, expected_commit: str | None) -> SmokeContext:

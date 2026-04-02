@@ -1,5 +1,6 @@
 from .guards import ensure_ci_only_execution, print_check_successful, request_example_dot_com
 from .install_flow import (
+    align_project_metadata_with_fixture,
     build_backend_image,
     configure_cli,
     configure_remote_agent,
@@ -25,6 +26,7 @@ __all__ = [
     "apply_install_flow_linux_docker_overrides",
     "apply_install_flow_macos_host_defaults",
     "apply_install_flow_macos_host_overrides",
+    "align_project_metadata_with_fixture",
     "build_backend_image",
     "capture_task",
     "cleanup_environment",

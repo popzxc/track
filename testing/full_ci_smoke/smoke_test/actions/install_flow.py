@@ -161,6 +161,30 @@ def register_project_checkout(context: SmokeContext) -> None:
     )
 
 
+def align_project_metadata_with_fixture(context: SmokeContext) -> None:
+    if context.fixture_repository is None:
+        raise RuntimeError("The install-flow scenario did not seed fixture repository metadata.")
+    if context.api_base_url is None:
+        raise RuntimeError("The install-flow scenario did not prepare the API base URL.")
+
+    # The smoke still uses the real `track project register` path so repo
+    # discovery exercises the installed CLI, but the remote fixture cannot
+    # reach a real GitHub SSH URL during CI. We therefore patch only the Git
+    # transport URL through the public API so the registered project keeps its
+    # GitHub-facing repo URL while remote `git fetch upstream` stays inside the
+    # seeded local fixture repository.
+    api = TrackApiClient(context.api_base_url)
+    existing_project = api.project(canonical_name=PROJECT_NAME)
+    existing_metadata = existing_project["metadata"]
+    api.update_project_metadata(
+        canonical_name=PROJECT_NAME,
+        repo_url=str(existing_metadata["repoUrl"]),
+        git_url=context.fixture_upstream_git_url(),
+        base_branch=str(existing_metadata["baseBranch"]),
+        description=existing_metadata.get("description"),
+    )
+
+
 def configure_remote_agent(context: SmokeContext) -> None:
     if context.fixture_port is None:
         raise RuntimeError("The install-flow scenario did not reserve a fixture port.")

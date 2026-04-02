@@ -59,14 +59,11 @@ def dispatch_task(context: SmokeContext) -> None:
     api = TrackApiClient(context.api_base_url)
     api.dispatch_task(task_id=context.task_id)
     dispatch = wait_until(
-        "the remote task dispatch to succeed",
-        lambda: (
-            latest := api.latest_dispatch_for_task(task_id=context.task_id)
-        )
-        and latest["status"] == "succeeded"
-        and latest,
+        "the remote task dispatch to reach a terminal status",
+        lambda: _latest_terminal_dispatch(api, task_id=context.task_id),
         timeout_seconds=30,
     )
+    _raise_if_dispatch_failed(dispatch, operation="task dispatch")
     context.dispatch_id = str(dispatch["dispatchId"])
     context.pull_request_url = str(dispatch["pullRequestUrl"])
 
@@ -84,15 +81,15 @@ def request_review(context: SmokeContext) -> None:
     )
     context.review_id = str(review_response["review"]["id"])
     review_run = wait_until(
-        "the PR review run to succeed",
-        lambda: (
-            latest := api.latest_review_run(review_id=context.review_id)
-        )
-        and latest["status"] == "succeeded"
-        and latest.get("reviewSubmitted") is True
-        and latest,
+        "the PR review run to reach a terminal status",
+        lambda: _latest_terminal_review_run(api, review_id=context.review_id),
         timeout_seconds=30,
     )
+    _raise_if_dispatch_failed(review_run, operation="review dispatch")
+    if review_run.get("reviewSubmitted") is not True:
+        raise RuntimeError(
+            "The smoke review run reached a terminal status without confirming review submission."
+        )
     if review_run["githubReviewId"] != "42001":
         raise RuntimeError(
             f"Expected the smoke review to submit review id 42001, got {review_run['githubReviewId']!r}."
@@ -111,3 +108,37 @@ def close_task(context: SmokeContext) -> None:
     closed_tasks = api.tasks(project=PROJECT_NAME, include_closed=True)
     if not any(task["id"] == context.task_id and task["status"] == "closed" for task in closed_tasks):
         raise RuntimeError("The closed task did not appear in the includeClosed task listing.")
+
+
+def _latest_terminal_dispatch(api: TrackApiClient, *, task_id: str) -> dict | None:
+    latest = api.latest_dispatch_for_task(task_id=task_id)
+    if latest is None:
+        return None
+    if latest["status"] in {"succeeded", "failed", "blocked", "canceled"}:
+        return latest
+    return None
+
+
+def _latest_terminal_review_run(api: TrackApiClient, *, review_id: str) -> dict | None:
+    latest = api.latest_review_run(review_id=review_id)
+    if latest is None:
+        return None
+    if latest["status"] in {"succeeded", "failed", "blocked", "canceled"}:
+        return latest
+    return None
+
+
+def _raise_if_dispatch_failed(run: dict, *, operation: str) -> None:
+    if run["status"] == "succeeded":
+        return
+
+    summary = run.get("summary")
+    error_message = run.get("errorMessage")
+    diagnostic_parts = [f"status={run['status']!r}"]
+    if summary:
+        diagnostic_parts.append(f"summary={summary!r}")
+    if error_message:
+        diagnostic_parts.append(f"error={error_message!r}")
+    raise RuntimeError(
+        f"The smoke {operation} did not succeed: {', '.join(diagnostic_parts)}."
+    )

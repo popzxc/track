@@ -46,6 +46,13 @@ class TrackApiClient:
                 return task
         raise RuntimeError(f"Could not find a task whose title is {title!r}.")
 
+    def project(self, *, canonical_name: str) -> dict:
+        response = self.request("/api/projects")
+        for project in response["projects"]:
+            if project["canonicalName"] == canonical_name:
+                return project
+        raise RuntimeError(f"Could not find the project {canonical_name!r}.")
+
     def latest_dispatch_for_task(self, *, task_id: str) -> dict | None:
         response = self.request(f"/api/dispatches?{urlencode([('taskId', task_id)])}")
         dispatches = response["dispatches"]
@@ -65,6 +72,26 @@ class TrackApiClient:
             f"/api/tasks/{quote(task_id, safe='')}/dispatch",
             method="POST",
             payload={},
+        )
+
+    def update_project_metadata(
+        self,
+        *,
+        canonical_name: str,
+        repo_url: str,
+        git_url: str,
+        base_branch: str,
+        description: str | None,
+    ) -> dict:
+        return self.request(
+            f"/api/projects/{quote(canonical_name, safe='')}",
+            method="PATCH",
+            payload={
+                "repoUrl": repo_url,
+                "gitUrl": git_url,
+                "baseBranch": base_branch,
+                "description": description,
+            },
         )
 
     def create_review(self, *, pull_request_url: str, extra_instructions: str) -> dict:

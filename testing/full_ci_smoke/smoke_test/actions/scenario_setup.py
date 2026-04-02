@@ -18,7 +18,7 @@ from ..constants import (
 )
 from ..platform_setup import ensure_host_fixture_layout, install_macos_host_shims
 from ..shell_utils import reserve_local_port, run_json, write_text
-from ..smoke_context import InstallFlowOptions, SmokeContext
+from ..smoke_context import FixtureRepository, InstallFlowOptions, SmokeContext
 
 
 # ==============================================================================
@@ -197,7 +197,7 @@ def start_macos_host_fixture(context: SmokeContext) -> None:
 
 
 def seed_fixture_repository(context: SmokeContext) -> None:
-    run_json(
+    seeded_repository = run_json(
         [
             "python3",
             str(FIXTURECTL_PATH),
@@ -215,6 +215,12 @@ def seed_fixture_repository(context: SmokeContext) -> None:
         ],
         cwd=REPO_ROOT,
         env=context.host_tool_env(),
+    )
+    context.fixture_repository = FixtureRepository(
+        repo_url=str(seeded_repository["repoUrl"]),
+        base_branch="main",
+        upstream_bare_path=str(seeded_repository["upstreamBarePath"]),
+        upstream_bare_path_in_fixture=str(seeded_repository["upstreamBarePathInFixture"]),
     )
 
 

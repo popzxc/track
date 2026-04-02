@@ -3,6 +3,7 @@ from .actions import (
     apply_install_flow_linux_docker_overrides,
     apply_install_flow_macos_host_defaults,
     apply_install_flow_macos_host_overrides,
+    align_project_metadata_with_fixture,
     build_backend_image,
     capture_task,
     cleanup_environment,
@@ -109,6 +110,10 @@ def install_flow_scenario(
             fixture_action,
             ScenarioAction("Configure the installed CLI against the packaged backend", configure_cli),
             ScenarioAction("Register a real git checkout with the installed CLI", register_project_checkout),
+            ScenarioAction(
+                "Align the registered project metadata with the seeded Git fixture",
+                align_project_metadata_with_fixture,
+            ),
             ScenarioAction("Configure the installed remote agent", configure_remote_agent),
             ScenarioAction("Capture a task through the deterministic smoke seam", capture_task),
             ScenarioAction("Dispatch the task and wait for the remote run to finish", dispatch_task),
