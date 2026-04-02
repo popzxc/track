@@ -29,7 +29,7 @@ The docs are organized around the order most people need:
 
 - **Initial Setup** explains the model, security boundaries, and the steps to prepare both the local machine and the remote runner.
 - **Configuring** covers project registration, runner settings, and project metadata.
-- **Using WebUI** walks through dispatches, follow-ups, PR reviews, and runner choice.
+- **Using WebUI** walks through dispatches, follow-ups, PR reviews, runner choice, and common workflows.
 - **Reference** is the place to look up files, commands, and settings.
 - **Development Flow** is for contributors who need the repo shape and local workflow.
 
