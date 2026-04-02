@@ -5383,10 +5383,10 @@ mod tests {
         describe_remote_reset_blockers, latest_pull_request_for_branch,
         parse_dispatch_snapshot_report, parse_github_pull_request_reference,
         parse_github_repository_name, refresh_dispatch_record_from_snapshot,
-        remote_path_helpers_shell,
-        render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
-        select_previous_submitted_review_run, GithubPullRequestMetadata, RemoteDispatchService,
-        RemoteDispatchSnapshot, RemoteReviewService,
+        remote_path_helpers_shell, render_remote_script_with_shell_prelude,
+        select_follow_up_base_dispatch, select_previous_submitted_review_run,
+        GithubPullRequestMetadata, RemoteDispatchService, RemoteDispatchSnapshot,
+        RemoteReviewService,
     };
 
     struct TestContext {
