@@ -15,6 +15,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TRACK_ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 TRACK_SHARE_DIR="${TRACK_ROOT_DIR}/share"
 COMPOSE_FILE="${TRACK_SHARE_DIR}/track-backend.compose.yaml"
+TRACK_BACKEND_STATE_DIR="${HOME}/.track/backend"
 
 if [ ! -f "$COMPOSE_FILE" ]; then
   printf 'track-backend: missing compose file at %s\n' "$COMPOSE_FILE" >&2
@@ -29,6 +30,14 @@ fi
 if [ -z "${TRACK_GID:-}" ]; then
   TRACK_GID="$(id -g)"
   export TRACK_GID
+fi
+
+# The packaged backend persists its SQLite database through a host bind mount.
+# Creating that source directory on the host before `docker compose up` keeps
+# ownership aligned with the caller's UID/GID instead of relying on Docker to
+# auto-create it with implementation-defined permissions.
+if [ "${1:-}" = "up" ]; then
+  mkdir -p "$TRACK_BACKEND_STATE_DIR"
 fi
 
 exec docker compose --project-name track -f "$COMPOSE_FILE" "$@"

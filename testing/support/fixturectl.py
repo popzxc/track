@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,12 +19,26 @@ FIXTURE_RUNTIME_MOUNT = Path("/srv/track-testing")
 
 
 def run(command: list[str], *, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+    # Most fixturectl subcommands act as machine-readable helpers whose stdout
+    # is consumed as a single JSON object by higher-level tests. When we need to
+    # show the underlying Git or Docker chatter for debugging, route it to
+    # stderr so stdout stays parseable.
+    if capture_output:
+        return subprocess.run(
+            command,
+            check=True,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+        )
+
     return subprocess.run(
         command,
         check=True,
         cwd=REPO_ROOT,
         text=True,
-        capture_output=capture_output,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
     )
 
 
