@@ -45,6 +45,20 @@ http://localhost:3210
 current UID/GID before calling `docker compose`, which keeps the bind-mounted
 backend state directory writable without requiring a local image build.
 
+By default the shipped Compose file binds the backend to `127.0.0.1` only.
+That is intentional because `track` does not provide a login or authorization
+flow.
+
+If you deliberately want LAN or host-network exposure, opt into it yourself:
+
+```bash
+TRACK_WEB_BIND_HOST=0.0.0.0 track-backend up -d
+```
+
+If you do that, it is your responsibility to place the service behind your own
+network controls, reverse proxy policy, VPN, firewall rules, or other access
+restrictions.
+
 ## 3. Keep the CLI on the default backend URL, unless you need an override
 
 Most setups do not need a manual CLI config at all because the default backend URL is already `http://127.0.0.1:3210`.

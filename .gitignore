@@ -7,6 +7,7 @@ dist
 *.log
 *.pyc
 __pycache__/
+testing/full_ci_smoke/.venv/
 frontend/test-results/
 target
 .codex

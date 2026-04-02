@@ -102,3 +102,22 @@ jobs:
       - run: bun install
       - run: bunx playwright install --with-deps chromium
       - run: bun run test:e2e
+
+  install-smoke:
+    name: Install smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Derive immutable install commit
+        id: install_target
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python3 -m venv testing/full_ci_smoke/.venv
+      - run: testing/full_ci_smoke/.venv/bin/pip install -r testing/full_ci_smoke/requirements.txt
+      - run: testing/full_ci_smoke/.venv/bin/python testing/full_ci_smoke/main.py --scenario install-flow-defaults --revision "$TRACK_INSTALL_REF" --expected-commit "$TRACK_INSTALL_COMMIT"
+        env:
+          CI: "1"
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/install-smoke
+          TRACK_INSTALL_REF: ${{ github.ref }}
+          TRACK_INSTALL_COMMIT: ${{ steps.install_target.outputs.commit }}

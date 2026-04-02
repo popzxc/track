@@ -1,12 +1,14 @@
 services:
   track-web:
-    image: ghcr.io/popzxc/track:__TRACK_VERSION__
+    image: __TRACK_IMAGE_REF__
     # The release image is prebuilt, so it cannot bake in the caller's UID/GID
     # the way the repository-local development compose file does. Running the
     # container as the host user keeps the backend state bind mount writable.
     user: "${TRACK_UID:-1000}:${TRACK_GID:-1000}"
     ports:
-      - "${TRACK_WEB_PORT:-3210}:3210"
+      # The shipped backend has no authentication layer, so keep it reachable
+      # from localhost only unless the caller explicitly opts into a wider bind.
+      - "${TRACK_WEB_BIND_HOST:-127.0.0.1}:${TRACK_WEB_PORT:-3210}:3210"
     environment:
       PORT: "3210"
       TRACK_STATE_DIR: /home/track/backend-state

@@ -94,7 +94,7 @@ def command_run(args: argparse.Namespace) -> None:
             "--name",
             args.name,
             "--publish",
-            f"{args.port}:22",
+            f"127.0.0.1:{args.port}:22",
             "--volume",
             f"{runtime_dir}:/srv/track-testing",
             args.image,
