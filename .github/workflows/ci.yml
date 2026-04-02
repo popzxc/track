@@ -5,9 +5,6 @@ on:
     branches: [main]
   pull_request:
 
-env:
-  TRACK_DOCKER_PLATFORMS: linux/amd64,linux/arm64
-
 jobs:
   docker-build:
     name: Docker image build
@@ -19,17 +16,17 @@ jobs:
         id: git_commit
         run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - uses: docker/setup-buildx-action@v3
 
+      # CI only needs to prove the Dockerfile still builds on the native Linux
+      # runner. The release publication path owns the slower multi-architecture
+      # build because that work is only needed for assets we actually publish.
       - name: Build the runtime image
         uses: docker/build-push-action@v6
         with:
           context: .
+          load: true
           push: false
-          platforms: ${{ env.TRACK_DOCKER_PLATFORMS }}
           build-args: |
             TRACK_GIT_COMMIT=${{ steps.git_commit.outputs.short_sha }}
 
