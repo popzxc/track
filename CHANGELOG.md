@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0](https://github.com/popzxc/track/compare/v0.1.0...v0.2.0) (2026-04-01)
+## [0.2.0](https://github.com/popzxc/track/releases/tag/v0.2.0) (2026-04-01)
 
 
 ### Features

@@ -12,7 +12,7 @@ The canonical documentation is published at [https://popzxc.github.io/track/](ht
 
 Start here:
 
-- [Initial setup](https://popzxc.github.io/track/initial-setup/local-and-remote-prerequisites/)
+- [Initial setup](https://popzxc.github.io/track/initial-setup/intro/)
 - [Configuring projects and runner settings](https://popzxc.github.io/track/configuring/register-projects/)
 - [Using the WebUI](https://popzxc.github.io/track/using-webui/dispatching-tasks/)
 - [Reference](https://popzxc.github.io/track/reference/config-files/)

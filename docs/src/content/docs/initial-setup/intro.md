@@ -23,4 +23,4 @@ Delegated PR reviews are useful for a similar reason. You can shape the review b
 Treat the remote host as a resettable sandbox. If something goes wrong, the expected recovery story is to recreate the machine and continue. Do not use a machine you are not willing to wipe.
 :::
 
-Read [Security](./security/) next before you set up either machine.
+Read [Security](../security/) next before you set up either machine.
