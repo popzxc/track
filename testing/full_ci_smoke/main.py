@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sys
 
+from smoke_test.logging_utils import configure_component_logger
 from smoke_test.scenarios import load_scenario, scenario_names
 from smoke_test.smoke_context import create_context
 
@@ -33,7 +35,16 @@ def main() -> int:
         raise SystemExit(f"--revision is required for scenario {args.scenario!r}")
 
     context = create_context(args.revision, args.expected_commit)
+    os.environ["TRACK_SMOKE_LOG_DIR"] = str(context.fixture_runtime_dir / "logs")
+    logger = configure_component_logger("main", log_dir=context.fixture_runtime_dir / "logs")
+    logger.info(
+        "Starting smoke scenario %s (revision=%r, expected_commit=%r)",
+        args.scenario,
+        args.revision,
+        args.expected_commit,
+    )
     scenario.run(context)
+    logger.info("Smoke scenario %s completed successfully", args.scenario)
     return 0
 
 

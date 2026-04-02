@@ -78,6 +78,8 @@ class SmokeContext:
 
     def host_tool_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
+        env.setdefault("TRACK_SMOKE_LOG_LEVEL", os.environ.get("TRACK_SMOKE_LOG_LEVEL", "INFO"))
+        env["TRACK_SMOKE_LOG_DIR"] = str(self.fixture_runtime_dir / "logs")
         if self.install_flow_options is not None and self.install_flow_options.platform == "macos-host":
             env["PATH"] = f"{self.shim_bin_dir}:{env.get('PATH', '')}"
             env["TRACK_SMOKE_DOCKER_STATE_DIR"] = str(self.shim_state_dir / "docker")
@@ -167,7 +169,7 @@ def create_context(revision: str | None, expected_commit: str | None) -> SmokeCo
     installed_bin_dir = home_dir / ".track" / "bin"
     shim_bin_dir = temp_root / "host-shims" / "bin"
     shim_state_dir = temp_root / "host-shims" / "state"
-    remote_home_dir = temp_root / "remote-home"
+    remote_home_dir = (temp_root / "remote-home").resolve()
     remote_bin_dir = temp_root / "remote-bin"
 
     return SmokeContext(

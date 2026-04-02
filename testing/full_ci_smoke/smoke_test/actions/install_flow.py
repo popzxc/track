@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+import sqlite3
 import time
 
 from ..api_client import TrackApiClient
@@ -9,6 +11,7 @@ from ..constants import (
     REVIEW_MAIN_USER,
     TRACKUP_PATH,
 )
+from ..logging_utils import configure_component_logger
 from ..shell_utils import run, wait_until, write_text
 from ..smoke_context import SmokeContext
 
@@ -20,6 +23,10 @@ from ..smoke_context import SmokeContext
 # Once the fixture is ready, we switch to the exact path a user would take:
 # install through trackup, start the packaged backend, and configure the
 # installed CLI against that live backend.
+
+
+def logger():
+    return configure_component_logger("actions.install_flow")
 
 
 def prepare_source_checkout(context: SmokeContext) -> None:
@@ -230,6 +237,7 @@ def configure_remote_agent(context: SmokeContext) -> None:
     )
 
     run(command, cwd=REPO_ROOT, env=context.smoke_env())
+    log_persisted_remote_agent_config(context)
 
 
 def build_project_checkout(checkout_path: Path) -> None:
@@ -257,3 +265,31 @@ def build_project_checkout(checkout_path: Path) -> None:
         cwd=REPO_ROOT,
     )
     run(["git", "-C", str(checkout_path), "remote", "add", "origin", PROJECT_GIT_URL], cwd=REPO_ROOT)
+
+
+def log_persisted_remote_agent_config(context: SmokeContext) -> None:
+    database_path = context.home_dir / ".track" / "backend" / "track.sqlite"
+    if not database_path.is_file():
+        logger().debug("Remote agent config database is not present yet at %s", database_path)
+        return
+
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT setting_json FROM backend_settings WHERE setting_key = ?",
+            ("remote_agent_config",),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        logger().debug("Remote agent config is not present in backend_settings yet")
+        return
+
+    try:
+        payload = json.loads(row[0])
+    except Exception:  # noqa: BLE001
+        logger().debug("Remote agent config row is not valid JSON: %r", row[0])
+        return
+
+    logger().debug("Persisted remote agent config: %s", json.dumps(payload, sort_keys=True))

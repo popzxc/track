@@ -146,6 +146,7 @@ jobs:
       - run: testing/full_ci_smoke/.venv/bin/python testing/full_ci_smoke/main.py --scenario "${{ matrix.scenario }}" --revision "$TRACK_INSTALL_REF" --expected-commit "$TRACK_INSTALL_COMMIT"
         env:
           CI: "1"
+          TRACK_SMOKE_LOG_LEVEL: DEBUG
           CARGO_TARGET_DIR: ${{ github.workspace }}/target/${{ matrix.cargo_target_dir }}
           # The smoke's `trackup --ref` path needs an immutable source. Using
           # the exact checked-out commit plus the local checkout as the clone

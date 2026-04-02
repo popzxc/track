@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 
+from ..logging_utils import configure_component_logger
 from .docker_state import (
     docker_process_file,
     docker_process_state,
@@ -22,6 +23,9 @@ from .utils import process_is_alive
 # The installed `track-backend` wrapper always talks to Docker through a fixed
 # Compose command shape. This host-mode shim mirrors only those exact
 # subcommands so any drift in the wrapper contract breaks loudly in CI.
+
+
+logger = configure_component_logger("platform_shims.docker_compose")
 
 
 def docker_compose_main(argv: list[str]) -> int:
@@ -106,6 +110,14 @@ def docker_compose_up(compose_path: Path) -> int:
             "TRACK_STATIC_ROOT": image["staticRoot"],
         }
     )
+    logger.debug(
+        "docker_compose_up compose_path=%s image=%s bind_host=%s host_port=%s track_state_dir=%s",
+        compose_path,
+        plan["imageTag"],
+        plan["bindHost"],
+        plan["hostPort"],
+        home_dir / ".track" / "backend",
+    )
 
     child = subprocess.Popen(
         [str(track_api_path)],
@@ -117,6 +129,7 @@ def docker_compose_up(compose_path: Path) -> int:
     )
     log_handle.close()
     time.sleep(0.5)
+    logger.debug("docker_compose_up spawned pid=%s", child.pid)
 
     save_docker_process_state(
         {
@@ -148,6 +161,7 @@ def docker_compose_down() -> int:
             os.kill(pid, signal.SIGKILL)
 
     docker_process_file().unlink(missing_ok=True)
+    logger.debug("docker_compose_down cleaned up process state")
     return 0
 
 

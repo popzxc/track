@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 
+from ..logging_utils import configure_component_logger
+
 
 # ==============================================================================
 # Strict SSH And SCP Transport Shims
@@ -12,6 +14,9 @@ import sys
 # The remote-agent implementation shells out through one fixed SSH/SCP shape.
 # The host-mode smoke keeps that transport contract intact but maps it onto a
 # local temp directory instead of a real remote machine.
+
+
+logger = configure_component_logger("platform_shims.transport")
 
 
 def ssh_main(argv: list[str]) -> int:
@@ -31,14 +36,24 @@ def ssh_main(argv: list[str]) -> int:
             "USER": expected_remote_user(),
         }
     )
+    script_input = sys.stdin.read()
     normalized_remote_argv = normalize_mock_remote_home_arguments(remote_argv)
+    logger.debug(
+        "ssh_main destination=%s raw_argv=%r normalized_argv=%r remote_home_aliases=%r script_head=%r",
+        destination,
+        remote_argv,
+        normalized_remote_argv,
+        remote_home_aliases(),
+        script_input.splitlines()[:12],
+    )
     completed = subprocess.run(
         normalized_remote_argv,
         cwd=remote_home,
         env=remote_env,
-        input=sys.stdin.read(),
+        input=script_input,
         text=True,
     )
+    logger.debug("ssh_main exit_code=%s destination=%s", completed.returncode, destination)
     return int(completed.returncode)
 
 
@@ -58,6 +73,14 @@ def scp_main(argv: list[str]) -> int:
         raise SystemExit(f"Mock scp expected a local source file at {source}.")
 
     remote_target = expand_remote_path(remote_path)
+    logger.debug(
+        "scp_main source=%s destination=%s remote_path=%s remote_target=%s remote_home_aliases=%r",
+        source,
+        destination,
+        remote_path,
+        remote_target,
+        remote_home_aliases(),
+    )
     remote_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, remote_target)
     return 0
@@ -251,10 +274,18 @@ def normalize_mock_remote_home_arguments(argv: list[str]) -> list[str]:
 def normalize_mock_remote_home_path(path_value: str) -> str:
     for remote_home in remote_home_aliases():
         if path_value == f"{remote_home}/~":
+            logger.debug("Normalizing rooted mock home path %s -> ~", path_value)
             return "~"
         remote_home_prefix = f"{remote_home}/~/"
         if path_value.startswith(remote_home_prefix):
-            return "~/" + path_value[len(remote_home_prefix) :]
+            normalized = "~/" + path_value[len(remote_home_prefix) :]
+            logger.debug("Normalizing rooted mock home path %s -> %s", path_value, normalized)
+            return normalized
+    if "/~/" in path_value:
+        logger.debug(
+            "Leaving rooted tilde path unchanged because it did not match a known remote-home alias: %s",
+            path_value,
+        )
     return path_value
 
 
