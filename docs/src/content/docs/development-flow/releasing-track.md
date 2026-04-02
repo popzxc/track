@@ -9,19 +9,19 @@ This page covers the current release workflow for `track`.
 
 ## Configuration
 
-`release-please` is configured in [config.json](/home/popzxc/workspace/airbender/track/.github/release-please/config.json) and [manifest.json](/home/popzxc/workspace/airbender/track/.github/release-please/manifest.json).
+`release-please` is configured in [config.json](https://github.com/popzxc/track/blob/main/.github/release-please/config.json) and [manifest.json](https://github.com/popzxc/track/blob/main/.github/release-please/manifest.json).
 
-The release version tracked by `release-please` lives in [Cargo.toml](/home/popzxc/workspace/airbender/track/Cargo.toml#L13). The workspace version and the internal `track-*` workspace dependency versions are marked with `# x-release-please-version`.
+The release version tracked by `release-please` lives in [Cargo.toml](https://github.com/popzxc/track/blob/main/Cargo.toml#L13). The workspace version and the internal `track-*` workspace dependency versions are marked with `# x-release-please-version`.
 
 ## Workflows
 
 The repository currently uses these release workflows:
 
-- [release.yml](/home/popzxc/workspace/airbender/track/.github/workflows/release.yml)
+- [release.yml](https://github.com/popzxc/track/blob/main/.github/workflows/release.yml)
   Runs on pushes to `main` and on manual dispatch. It prebuilds the Docker image, then runs `release-please`. When `release-please` creates a new release, this workflow calls the shared post-release workflow.
-- [post-release.yml](/home/popzxc/workspace/airbender/track/.github/workflows/post-release.yml)
+- [post-release.yml](https://github.com/popzxc/track/blob/main/.github/workflows/post-release.yml)
   Verifies the GitHub release exists, sets its title to `track vX.Y.Z`, publishes the Docker image to GHCR, and uploads the shared release asset bundle.
-- [recover-release-assets.yml](/home/popzxc/workspace/airbender/track/.github/workflows/recover-release-assets.yml)
+- [recover-release-assets.yml](https://github.com/popzxc/track/blob/main/.github/workflows/recover-release-assets.yml)
   Manual recovery workflow for an existing release version. It rebuilds the shared release assets from the release tag and reruns the post-release publication steps. Its `publish_latest` input defaults to `false`.
 
 Manual dispatches for the release and recovery workflows are restricted to `main`.
