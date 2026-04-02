@@ -172,6 +172,11 @@ Favor small, high-signal tests.
   the extra fixture cost is worth it for the change at hand.
 - If you change the frontend contract, keep the frontend types aligned with the
   Rust API responses.
+- `TRACK_TEST_INFERENCE=1` is an internal smoke-test seam for CLI capture.
+  `TRACK_TEST_INFERENCE_RESULT` may provide the deterministic
+  `ParsedTaskCandidate` JSON while the capture note itself stays realistic.
+  Keep both env vars out of user-facing docs and treat them as test-only
+  behavior.
 
 ## Documentation Style
 

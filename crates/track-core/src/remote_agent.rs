@@ -3737,7 +3737,10 @@ expand_remote_path() {
       printf '%s\n' "$HOME"
       ;;
     "~/"*)
-      printf '%s/%s\n' "$HOME" "${1#~/}"
+      # Strip the literal `~/` prefix before joining with $HOME. Bash expands
+      # an unescaped `~` inside `${var#pattern}` to the current home path,
+      # which leaves the original `~/...` intact and produces `$HOME/~/...`.
+      printf '%s/%s\n' "$HOME" "${1#\~/}"
       ;;
     *)
       printf '%s\n' "$1"
@@ -5380,9 +5383,10 @@ mod tests {
         describe_remote_reset_blockers, latest_pull_request_for_branch,
         parse_dispatch_snapshot_report, parse_github_pull_request_reference,
         parse_github_repository_name, refresh_dispatch_record_from_snapshot,
-        render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
-        select_previous_submitted_review_run, GithubPullRequestMetadata, RemoteDispatchService,
-        RemoteDispatchSnapshot, RemoteReviewService,
+        remote_path_helpers_shell, render_remote_script_with_shell_prelude,
+        select_follow_up_base_dispatch, select_previous_submitted_review_run,
+        GithubPullRequestMetadata, RemoteDispatchService, RemoteDispatchSnapshot,
+        RemoteReviewService,
     };
 
     struct TestContext {
@@ -5910,6 +5914,47 @@ mod tests {
         assert!(rendered.contains("export NVM_DIR=\"$HOME/.nvm\""));
         assert!(rendered.contains(". \"$HOME/.cargo/env\""));
         assert!(rendered.contains("printf '%s\\n' done"));
+    }
+
+    #[test]
+    fn expands_tilde_prefixed_remote_paths_without_reintroducing_a_literal_tilde_segment() {
+        let helper_script = format!(
+            r#"
+set -eu
+HOME="/tmp/remote-home"
+{path_helpers}
+expand_remote_path "$1"
+"#,
+            path_helpers = remote_path_helpers_shell(),
+        );
+
+        let output = std::process::Command::new("bash")
+            .arg("-s")
+            .arg("--")
+            .arg("~/workspace/project-a/dispatches/dispatch-1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+
+                let stdin = child.stdin.as_mut().expect("bash stdin should exist");
+                stdin
+                    .write_all(helper_script.as_bytes())
+                    .expect("helper script should write to bash stdin");
+                child.wait_with_output()
+            })
+            .expect("bash helper should run");
+
+        assert!(
+            output.status.success(),
+            "helper script should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "/tmp/remote-home/workspace/project-a/dispatches/dispatch-1"
+        );
     }
 
     #[test]

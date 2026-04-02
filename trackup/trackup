@@ -13,12 +13,25 @@ set -euo pipefail
 TRACKUP_HOME="${TRACKUP_HOME:-$HOME/.track}"
 TRACKUP_BIN_DIR="${TRACKUP_BIN_DIR:-$TRACKUP_HOME/bin}"
 TRACKUP_SHARE_DIR="${TRACKUP_SHARE_DIR:-$TRACKUP_HOME/share}"
-TRACKUP_REPOSITORY_URL="https://github.com/popzxc/track"
+TRACKUP_RELEASE_REPOSITORY_URL="https://github.com/popzxc/track"
+TRACKUP_RELEASE_REPOSITORY_API_URL="https://api.github.com/repos/popzxc/track"
+# This override exists only for the internal `--ref` developer path used by the
+# smoke installer. Release installs intentionally stay pinned to the canonical
+# upstream repository so tag resolution, asset downloads, and cargo installs all
+# resolve one coherent published release.
+TRACKUP_REPOSITORY_URL="${TRACKUP_REPOSITORY_URL:-$TRACKUP_RELEASE_REPOSITORY_URL}"
+TRACKUP_EXPECTED_COMMIT="${TRACKUP_EXPECTED_COMMIT:-}"
 
 REQUESTED_TAG=""
+REQUESTED_REF=""
 REQUESTED_VARIANT=""
+INSTALL_SOURCE=""
 RELEASE_TAG=""
+INSTALL_LABEL=""
 INSTALL_VARIANT=""
+ASSET_BUNDLE_LABEL=""
+LOCAL_IMAGE_REF=""
+SOURCE_CHECKOUT_DIR=""
 TEMP_DIR=""
 PATH_STATUS="unchanged"
 RELOAD_COMMAND=""
@@ -28,12 +41,17 @@ main() {
   parse_args "$@"
 
   ensure_prerequisites
-  RELEASE_TAG="$(resolve_release_tag)"
+  prepare_temp_dir
+  resolve_install_source
   INSTALL_VARIANT="$(determine_install_variant)"
 
-  prepare_temp_dir
-  download_release_assets
-  verify_downloaded_assets
+  if [ "$INSTALL_SOURCE" = "release" ]; then
+    download_release_assets
+    verify_downloaded_assets
+  else
+    package_ref_assets
+  fi
+
   install_track_cli
   install_shared_assets
   maybe_configure_path
@@ -46,12 +64,17 @@ Usage:
   trackup
   trackup vX.Y.Z
   trackup X.Y.Z
+  trackup --ref <git-ref>
 
 Installs or updates `track` from the tagged release source and shared assets.
+`--ref` is an internal developer path that packages the shared assets locally
+from the requested checkout and expects the backend image tag to already exist
+on the machine.
 
 Examples:
   trackup
   trackup v0.2.0
+  trackup --ref main
 
 Environment overrides:
   TRACKUP_HOME        Override the ~/.track root used for installation.
@@ -73,13 +96,18 @@ parse_args() {
         [ -z "$REQUESTED_VARIANT" ] || die "Choose at most one CLI variant."
         REQUESTED_VARIANT="default"
         ;;
-      --sha)
-        die "--sha is not supported yet. Install a tagged release instead."
+      --ref)
+        [ -z "$REQUESTED_REF" ] || die "Choose at most one git ref."
+        [ -z "$REQUESTED_TAG" ] || die "Choose either a release tag or --ref."
+        shift
+        [ $# -gt 0 ] || die "--ref expects a git ref."
+        REQUESTED_REF="$1"
         ;;
       --*)
         die "Unknown option: $1"
         ;;
       *)
+        [ -z "$REQUESTED_REF" ] || die "Choose either a release tag or --ref."
         if [ -n "$REQUESTED_TAG" ]; then
           die "Expected at most one release argument."
         fi
@@ -90,6 +118,10 @@ parse_args() {
 
     shift
   done
+
+  if [ -n "$REQUESTED_REF" ]; then
+    return
+  fi
 
   if [ -n "$REQUESTED_TAG" ] && [ "$REQUESTED_TAG" != "latest" ]; then
     case "$REQUESTED_TAG" in
@@ -107,6 +139,7 @@ ensure_prerequisites() {
   require_command tar
   require_command mktemp
   require_command uname
+  require_command git
   require_command docker
   require_command cmake
   require_command clang
@@ -122,17 +155,62 @@ ensure_prerequisites() {
   fi
 }
 
+resolve_install_source() {
+  if [ -n "$REQUESTED_REF" ]; then
+    INSTALL_SOURCE="ref"
+    prepare_ref_checkout
+    return
+  fi
+
+  INSTALL_SOURCE="release"
+  RELEASE_TAG="$(resolve_release_tag)"
+  INSTALL_LABEL="$RELEASE_TAG"
+  ASSET_BUNDLE_LABEL="$RELEASE_TAG"
+}
+
 resolve_release_tag() {
   local response
 
   if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = "latest" ]; then
-    response="$(github_api_get "https://api.github.com/repos/popzxc/track/releases/latest")"
+    response="$(github_api_get "${TRACKUP_RELEASE_REPOSITORY_API_URL}/releases/latest")"
   else
-    response="$(github_api_get "https://api.github.com/repos/popzxc/track/releases/tags/${REQUESTED_TAG}")"
+    response="$(github_api_get "${TRACKUP_RELEASE_REPOSITORY_API_URL}/releases/tags/${REQUESTED_TAG}")"
   fi
 
   jq -er '.tag_name' <<<"$response" >/dev/null || die "GitHub did not return a release tag."
   jq -r '.tag_name' <<<"$response"
+}
+
+prepare_ref_checkout() {
+  local resolved_commit
+  local short_ref
+
+  SOURCE_CHECKOUT_DIR="${TEMP_DIR}/source"
+
+  git clone "$TRACKUP_REPOSITORY_URL" "$SOURCE_CHECKOUT_DIR" >/dev/null 2>&1 \
+    || die "Could not clone ${TRACKUP_REPOSITORY_URL}."
+
+  if ! git -C "$SOURCE_CHECKOUT_DIR" checkout --detach "$REQUESTED_REF" >/dev/null 2>&1; then
+    git -C "$SOURCE_CHECKOUT_DIR" fetch --depth 1 origin "$REQUESTED_REF" >/dev/null 2>&1 \
+      || die "Could not fetch ref ${REQUESTED_REF} from ${TRACKUP_REPOSITORY_URL}."
+    git -C "$SOURCE_CHECKOUT_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1 \
+      || die "Could not check out ref ${REQUESTED_REF} from ${TRACKUP_REPOSITORY_URL}."
+  fi
+
+  short_ref="$(
+    git -C "$SOURCE_CHECKOUT_DIR" rev-parse --short HEAD 2>/dev/null
+  )" || die "Could not resolve the checked-out commit for ${REQUESTED_REF}."
+  resolved_commit="$(
+    git -C "$SOURCE_CHECKOUT_DIR" rev-parse HEAD 2>/dev/null
+  )" || die "Could not resolve the full commit for ${REQUESTED_REF}."
+
+  if [ -n "$TRACKUP_EXPECTED_COMMIT" ] && [ "$resolved_commit" != "$TRACKUP_EXPECTED_COMMIT" ]; then
+    die "Ref ${REQUESTED_REF} resolved to ${resolved_commit}, but ${TRACKUP_EXPECTED_COMMIT} was expected."
+  fi
+
+  INSTALL_LABEL="ref ${REQUESTED_REF} (${short_ref})"
+  ASSET_BUNDLE_LABEL="ref-${short_ref}"
+  LOCAL_IMAGE_REF="${TRACKUP_IMAGE_REF:-track-local:${short_ref}}"
 }
 
 determine_install_variant() {
@@ -173,7 +251,7 @@ prompt_install_variant() {
   # `trackup` is commonly run via `curl ... | bash`, so stdin is the script
   # body rather than the user's terminal. Prompting through /dev/tty keeps the
   # installer interactive without requiring awkward `bash -s -- ...` arguments.
-  printf '\nSelect the track CLI build to install for %s:\n' "$RELEASE_TAG" > /dev/tty
+  printf '\nSelect the track CLI build to install for %s:\n' "$INSTALL_LABEL" > /dev/tty
   printf '  1) Default\n' > /dev/tty
   printf '     Portable build with no CUDA requirement.\n' > /dev/tty
   printf '  2) CUDA-accelerated\n' > /dev/tty
@@ -213,10 +291,49 @@ download_release_assets() {
 
   shared_asset="$(shared_asset_name)"
   checksum_asset="$(checksum_asset_name)"
-  base_url="${TRACKUP_REPOSITORY_URL}/releases/download/${RELEASE_TAG}"
+  base_url="${TRACKUP_RELEASE_REPOSITORY_URL}/releases/download/${RELEASE_TAG}"
 
   download_file "${base_url}/${shared_asset}" "${TEMP_DIR}/${shared_asset}"
   download_file "${base_url}/${checksum_asset}" "${TEMP_DIR}/${checksum_asset}"
+}
+
+package_ref_assets() {
+  local packaged_archive
+  local track_version
+
+  track_version="$(workspace_version_from_checkout "$SOURCE_CHECKOUT_DIR")"
+  (
+    cd "$SOURCE_CHECKOUT_DIR"
+    TRACK_VERSION="$track_version" \
+      TRACK_ASSET_LABEL="$ASSET_BUNDLE_LABEL" \
+      TRACK_IMAGE_REF="$LOCAL_IMAGE_REF" \
+      bash ./trackup/package-release-assets.sh
+  ) || die "Could not package shared assets for ${REQUESTED_REF}."
+
+  packaged_archive="${SOURCE_CHECKOUT_DIR}/dist/$(shared_asset_name)"
+  [ -f "$packaged_archive" ] || die "Local packaging did not produce $(shared_asset_name)."
+  cp "$packaged_archive" "${TEMP_DIR}/$(shared_asset_name)"
+}
+
+workspace_version_from_checkout() {
+  local checkout_dir
+  local version
+
+  checkout_dir="$1"
+  version="$(
+    awk '
+      /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
+      /^\[/ { if (in_workspace_package) exit }
+      in_workspace_package && $1 == "version" {
+        gsub(/"/, "", $3)
+        print $3
+        exit
+      }
+    ' "${checkout_dir}/Cargo.toml"
+  )"
+
+  [ -n "$version" ] || die "Could not read the workspace version from ${checkout_dir}/Cargo.toml."
+  printf '%s\n' "$version"
 }
 
 verify_downloaded_assets() {
@@ -229,6 +346,7 @@ verify_downloaded_assets() {
 install_track_cli() {
   local cargo_install_args
   local cargo_install_root
+  local install_target_description
   local staged_track_binary
 
   # Reinstall the requested binary even when the git tag is unchanged so users
@@ -240,8 +358,6 @@ install_track_cli() {
   cargo_install_args=(
     cargo install
     --root "$cargo_install_root"
-    --git "$TRACKUP_REPOSITORY_URL"
-    --tag "$RELEASE_TAG"
     --locked
     --force
     --bin track
@@ -252,9 +368,19 @@ install_track_cli() {
     cargo_install_args+=(--features cuda)
   fi
 
-  cargo_install_args+=(track-cli)
+  if [ "$INSTALL_SOURCE" = "release" ]; then
+    cargo_install_args+=(
+      --git "$TRACKUP_RELEASE_REPOSITORY_URL"
+      --tag "$RELEASE_TAG"
+      track-cli
+    )
+    install_target_description="$RELEASE_TAG"
+  else
+    cargo_install_args+=(--path "${SOURCE_CHECKOUT_DIR}/crates/track-cli")
+    install_target_description="ref ${REQUESTED_REF}"
+  fi
 
-  "${cargo_install_args[@]}" || die "Could not install track from ${RELEASE_TAG}."
+  "${cargo_install_args[@]}" || die "Could not install track from ${install_target_description}."
   [ -f "$staged_track_binary" ] || die "cargo install did not produce the expected `track` binary."
   install_file "$staged_track_binary" "$TRACKUP_BIN_DIR/track" 0755
 }
@@ -272,9 +398,9 @@ install_shared_assets() {
 
   tar -xzf "${TEMP_DIR}/$(shared_asset_name)" -C "$shared_extract_dir"
 
-  shared_trackup="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/trackup"
-  shared_backend="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/track-backend"
-  shared_compose="${shared_extract_dir}/trackup-assets-${RELEASE_TAG}/track-backend.compose.yaml"
+  shared_trackup="${shared_extract_dir}/$(shared_asset_stem)/trackup"
+  shared_backend="${shared_extract_dir}/$(shared_asset_stem)/track-backend"
+  shared_compose="${shared_extract_dir}/$(shared_asset_stem)/track-backend.compose.yaml"
 
   [ -f "$shared_trackup" ] || die "The shared asset bundle did not contain `trackup`."
   [ -f "$shared_backend" ] || die "The shared asset bundle did not contain `track-backend`."
@@ -347,10 +473,13 @@ maybe_configure_path() {
 }
 
 print_next_steps() {
-  printf 'Installed track %s (%s build).\n' "$RELEASE_TAG" "$INSTALL_VARIANT"
+  printf 'Installed track %s (%s build).\n' "$INSTALL_LABEL" "$INSTALL_VARIANT"
   printf 'CLI: %s\n' "$TRACKUP_BIN_DIR/track"
   printf 'Backend wrapper: %s\n' "$TRACKUP_BIN_DIR/track-backend"
   printf 'Compose file: %s\n' "$TRACKUP_SHARE_DIR/track-backend.compose.yaml"
+  if [ "$INSTALL_SOURCE" = "ref" ]; then
+    printf 'Backend image: %s\n' "$LOCAL_IMAGE_REF"
+  fi
 
   case "$PATH_STATUS" in
     active)
@@ -382,10 +511,18 @@ print_next_steps() {
   esac
 
   printf 'Open: http://127.0.0.1:3210\n'
+  printf '\nThe shipped backend binds to 127.0.0.1 by default because it has no authentication layer.\n'
+  printf 'Only expose it beyond localhost if you are intentionally placing it behind your own network controls.\n'
+  printf 'Example override:\n'
+  printf '  TRACK_WEB_BIND_HOST=0.0.0.0 track-backend up -d\n'
+}
+
+shared_asset_stem() {
+  printf 'trackup-assets-%s\n' "$ASSET_BUNDLE_LABEL"
 }
 
 shared_asset_name() {
-  printf 'trackup-assets-%s.tar.gz\n' "$RELEASE_TAG"
+  printf '%s.tar.gz\n' "$(shared_asset_stem)"
 }
 
 checksum_asset_name() {

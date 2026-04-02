@@ -11,7 +11,9 @@ services:
     # UID/GID. The migration release still bind-mounts legacy data read-only,
     # and the matching passwd entry keeps SSH and file ownership predictable.
     ports:
-      - "${TRACK_WEB_PORT:-3210}:3210"
+      # The local backend has no authentication layer, so keep it on localhost
+      # unless the caller explicitly opts into broader network exposure.
+      - "${TRACK_WEB_BIND_HOST:-127.0.0.1}:${TRACK_WEB_PORT:-3210}:3210"
     environment:
       PORT: "3210"
       TRACK_STATE_DIR: /home/track/backend-state

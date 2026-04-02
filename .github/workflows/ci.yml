@@ -102,3 +102,56 @@ jobs:
       - run: bun install
       - run: bunx playwright install --with-deps chromium
       - run: bun run test:e2e
+
+  install-smoke:
+    name: Install smoke (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux defaults
+            scenario: install-flow-linux-docker-defaults
+            needs_bun: false
+            cargo_target_dir: install-smoke-linux-defaults
+          - os: ubuntu-latest
+            label: linux overrides
+            scenario: install-flow-linux-docker-overrides
+            needs_bun: false
+            cargo_target_dir: install-smoke-linux-overrides
+          - os: macos-latest
+            label: macos defaults
+            scenario: install-flow-macos-host-defaults
+            needs_bun: true
+            cargo_target_dir: install-smoke-macos-defaults
+          - os: macos-latest
+            label: macos overrides
+            scenario: install-flow-macos-host-overrides
+            needs_bun: true
+            cargo_target_dir: install-smoke-macos-overrides
+    steps:
+      - uses: actions/checkout@v5
+      - name: Derive immutable install commit
+        id: install_target
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ matrix.needs_bun }}
+        with:
+          bun-version: "1.3.0"
+      - run: python3 -m venv testing/full_ci_smoke/.venv
+      - run: testing/full_ci_smoke/.venv/bin/pip install -r testing/full_ci_smoke/requirements.txt
+      - run: testing/full_ci_smoke/.venv/bin/python testing/full_ci_smoke/main.py --scenario "${{ matrix.scenario }}" --revision "$TRACK_INSTALL_REF" --expected-commit "$TRACK_INSTALL_COMMIT"
+        env:
+          CI: "1"
+          TRACK_SMOKE_LOG_LEVEL: DEBUG
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/${{ matrix.cargo_target_dir }}
+          # The smoke's `trackup --ref` path needs an immutable source. Using
+          # the exact checked-out commit plus the local checkout as the clone
+          # source avoids mutable branch refs and GitHub PR merge refs drifting
+          # while the matrix job is in flight.
+          TRACK_INSTALL_REF: ${{ steps.install_target.outputs.commit }}
+          TRACK_INSTALL_COMMIT: ${{ steps.install_target.outputs.commit }}
+          TRACKUP_REPOSITORY_URL: ${{ github.workspace }}

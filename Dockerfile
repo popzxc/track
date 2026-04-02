@@ -49,8 +49,13 @@ ENV PORT=3210
 ENV HOME=/home/track
 ENV TRACK_STATIC_ROOT=/app/frontend/dist
 
+# The shipped backend runs with the caller's host UID/GID so bind-mounted state
+# stays writable without rebuilding the release image on each machine. That
+# means the runtime must remain functional even when Docker starts it under an
+# arbitrary numeric UID that does not exist in `/etc/passwd`, which would
+# otherwise break OpenSSH-based remote dispatches.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client \
+  && apt-get install -y --no-install-recommends libnss-wrapper openssh-client \
   && groupadd --gid "${TRACK_GID}" track \
   && useradd --uid "${TRACK_UID}" --gid "${TRACK_GID}" --create-home --home-dir /home/track --shell /bin/sh track \
   && mkdir -p /home/track/backend-state /home/track/legacy-home \
@@ -59,9 +64,12 @@ RUN apt-get update \
 
 COPY --from=rust-build /app/target/release/track-api /usr/local/bin/track-api
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY docker/track-api-entrypoint.sh /usr/local/bin/track-api-entrypoint
 
+RUN chmod +x /usr/local/bin/track-api-entrypoint
 USER track
 
 EXPOSE 3210
 
+ENTRYPOINT ["track-api-entrypoint"]
 CMD ["track-api"]

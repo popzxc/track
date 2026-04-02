@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,12 +19,26 @@ FIXTURE_RUNTIME_MOUNT = Path("/srv/track-testing")
 
 
 def run(command: list[str], *, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+    # Most fixturectl subcommands act as machine-readable helpers whose stdout
+    # is consumed as a single JSON object by higher-level tests. When we need to
+    # show the underlying Git or Docker chatter for debugging, route it to
+    # stderr so stdout stays parseable.
+    if capture_output:
+        return subprocess.run(
+            command,
+            check=True,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+        )
+
     return subprocess.run(
         command,
         check=True,
         cwd=REPO_ROOT,
         text=True,
-        capture_output=capture_output,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
     )
 
 
@@ -85,20 +100,29 @@ def command_run(args: argparse.Namespace) -> None:
     if args.authorized_key is not None:
         shutil.copyfile(args.authorized_key, runtime_dir / "authorized_keys")
 
+    docker_run_command = [
+        "docker",
+        "run",
+        "--detach",
+        "--rm",
+        "--name",
+        args.name,
+        "--publish",
+        f"127.0.0.1:{args.port}:22",
+        "--volume",
+        f"{runtime_dir}:/srv/track-testing",
+    ]
+    if args.network is not None:
+        docker_run_command.extend(["--network", args.network])
+    if args.network_alias is not None:
+        if args.network is None:
+            raise SystemExit("--network-alias requires --network.")
+        docker_run_command.extend(["--network-alias", args.network_alias])
+
+    docker_run_command.append(args.image)
+
     run(
-        [
-            "docker",
-            "run",
-            "--detach",
-            "--rm",
-            "--name",
-            args.name,
-            "--publish",
-            f"{args.port}:22",
-            "--volume",
-            f"{runtime_dir}:/srv/track-testing",
-            args.image,
-        ]
+        docker_run_command
     )
 
     print(
@@ -364,6 +388,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--port", type=int, required=True)
     run_parser.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
     run_parser.add_argument("--authorized-key", type=Path)
+    run_parser.add_argument("--network")
+    run_parser.add_argument("--network-alias")
     run_parser.set_defaults(func=command_run)
 
     stop_parser = subparsers.add_parser("stop", help="Stop the SSH fixture container.")
