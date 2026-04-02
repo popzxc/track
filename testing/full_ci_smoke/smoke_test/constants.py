@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURECTL_PATH = REPO_ROOT / "testing" / "support" / "fixturectl.py"
 TRACKUP_PATH = REPO_ROOT / "trackup" / "trackup"
 

@@ -147,5 +147,10 @@ jobs:
         env:
           CI: "1"
           CARGO_TARGET_DIR: ${{ github.workspace }}/target/${{ matrix.cargo_target_dir }}
-          TRACK_INSTALL_REF: ${{ github.ref }}
+          # The smoke's `trackup --ref` path needs an immutable source. Using
+          # the exact checked-out commit plus the local checkout as the clone
+          # source avoids mutable branch refs and GitHub PR merge refs drifting
+          # while the matrix job is in flight.
+          TRACK_INSTALL_REF: ${{ steps.install_target.outputs.commit }}
           TRACK_INSTALL_COMMIT: ${{ steps.install_target.outputs.commit }}
+          TRACKUP_REPOSITORY_URL: ${{ github.workspace }}

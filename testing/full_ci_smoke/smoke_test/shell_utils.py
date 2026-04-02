@@ -32,18 +32,20 @@ def run(
         capture_output=capture_output,
     )
     if check and completed.returncode != 0:
+        stdout_text = (completed.stdout or "").strip()
+        stderr_text = (completed.stderr or "").strip()
         raise CommandFailure(
             "\n\n".join(
                 part
                 for part in [
                     f"Command failed with exit code {completed.returncode}: {render_command(command)}",
-                    completed.stdout.strip() and f"stdout:\n{completed.stdout.strip()}",
-                    completed.stderr.strip() and f"stderr:\n{completed.stderr.strip()}",
+                    stdout_text and f"stdout:\n{stdout_text}",
+                    stderr_text and f"stderr:\n{stderr_text}",
                 ]
                 if part
             )
         )
-    if capture_output and completed.stdout.strip():
+    if capture_output and completed.stdout and completed.stdout.strip():
         print(completed.stdout.strip())
     return completed
 
