@@ -1,24 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
-import { ApiClientError } from './api/client'
+import { ApiClientError, dispatchTask } from './api/client'
 import MigrationStatePanel from './components/MigrationStatePanel.vue'
-import ProjectsPage from './components/ProjectsPage.vue'
-import ReviewsPage from './components/ReviewsPage.vue'
-import ShellOverlayMount from './components/ShellOverlayMount.vue'
+import ProjectsScreen from './components/ProjectsScreen.vue'
+import ReviewsScreen from './components/ReviewsScreen.vue'
+import RunsScreen from './components/RunsScreen.vue'
 import ShellSidebar from './components/ShellSidebar.vue'
-import RunsPage from './components/RunsPage.vue'
-import SettingsPage from './components/SettingsPage.vue'
-import TasksPage from './components/TasksPage.vue'
+import SettingsScreen from './components/SettingsScreen.vue'
+import TasksScreen from './components/TasksScreen.vue'
 import { useAppDataLoader } from './composables/useAppDataLoader'
 import { useBackgroundSync } from './composables/useBackgroundSync'
-import { useReviewMutations } from './composables/useReviewMutations'
 import { useProjectViewState } from './composables/useProjectViewState'
 import { useReviewViewState } from './composables/useReviewViewState'
 import { useRunState } from './composables/useRunState'
 import { useSettingsMutations } from './composables/useSettingsMutations'
-import { useShellOverlays } from './composables/useShellOverlays'
-import { useTaskMutations, type PendingRunnerSetupRequest } from './composables/useTaskMutations'
+import type { PendingRunnerSetupRequest } from './composables/useTaskMutations'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
   groupTasksByProject,
@@ -257,10 +254,6 @@ const followingUpDispatch = computed(() =>
 
 const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
-function openExternal(url: string) {
-  window.open(url, '_blank', 'noreferrer')
-}
-
 function setFriendlyError(error: unknown) {
   if (error instanceof ApiClientError) {
     errorMessage.value = error.message
@@ -280,6 +273,23 @@ function openSelectedTaskProjectDetails() {
 }
 
 let syncTaskChangeVersion = async () => undefined
+
+async function resumeQueuedTaskDispatch(task: Task, preferredTool: RemoteAgentPreferredTool) {
+  dispatchingTaskId.value = task.id
+  errorMessage.value = ''
+
+  try {
+    const dispatch = await dispatchTask(task.id, { preferredTool })
+    upsertRunRecord(task, dispatch)
+    upsertLatestTaskDispatch(dispatch)
+    upsertSelectedTaskRun(task, dispatch)
+  } catch (error) {
+    await loadRuns().catch(() => undefined)
+    setFriendlyError(error)
+  } finally {
+    dispatchingTaskId.value = null
+  }
+}
 
 const {
   loadRemoteAgentSettings,
@@ -311,78 +321,6 @@ const {
 })
 
 const {
-  cancelRemoteRun,
-  confirmDelete,
-  createTaskFromWeb,
-  discardRunHistory,
-  handlePrimaryAction,
-  saveTaskEdits,
-  startRemoteRun,
-  submitFollowUp,
-  updateTaskStatus,
-} = useTaskMutations({
-  cancelingDispatchTaskId,
-  closeTaskDrawer,
-  creatingTask,
-  currentPage,
-  discardingDispatchTaskId,
-  dispatchingTaskId,
-  editingRemoteAgentSetup,
-  editingTask,
-  errorMessage,
-  followingUpTask,
-  followingUpTaskId,
-  isTaskDrawerOpen,
-  loadRemoteAgentSettings,
-  loadRuns,
-  pendingSelectedTaskId,
-  refreshAll,
-  remoteAgentSettings,
-  removeTaskRuns,
-  runnerSetupReady,
-  saving,
-  selectedProjectFilter,
-  selectedTask,
-  selectedTaskCanContinue,
-  selectedTaskDispatchTool,
-  selectedTaskId,
-  selectedTaskLatestDispatch,
-  setFriendlyError,
-  showClosed,
-  taskLifecycleMutation,
-  taskLifecycleMutationTaskId,
-  taskPendingDeletion,
-  taskPendingRunnerSetup,
-  upsertLatestTaskDispatch,
-  upsertRunRecord,
-  upsertSelectedTaskRun,
-})
-
-const {
-  cancelReviewRun,
-  confirmReviewDelete,
-  createReviewFromWeb,
-  submitReviewFollowUp,
-} = useReviewMutations({
-  cancelingReviewId,
-  creatingReview,
-  currentPage,
-  errorMessage,
-  followingUpReview,
-  followingUpReviewId,
-  refreshAll,
-  removeReview,
-  replaceSelectedReviewRuns,
-  reviewPendingDeletion,
-  saving,
-  selectReview,
-  setFriendlyError,
-  upsertLatestReviewRun,
-  upsertReviewSummary,
-  upsertSelectedReviewRun,
-})
-
-const {
   confirmRemoteCleanup,
   confirmRemoteReset,
   importLegacyTrackerData,
@@ -404,48 +342,13 @@ const {
   resetSummary,
   resettingRemoteWorkspace,
   resumeQueuedTaskDispatch(task, preferredTool) {
-    void startRemoteRun(task, preferredTool)
+    // This callback still lives in the shell because runner setup is a
+    // cross-screen flow: task dispatch queues work from Tasks, then Settings
+    // resumes it after the shell prelude has been saved.
+    void resumeQueuedTaskDispatch(task, preferredTool)
   },
   saving,
   setFriendlyError,
-  taskPendingRunnerSetup,
-})
-
-const {
-  clearPendingDeletion,
-  clearPendingRemoteCleanup,
-  clearPendingRemoteReset,
-  clearPendingReviewDeletion,
-  closeFollowUpEditor,
-  closeProjectEditor,
-  closeReviewEditor,
-  closeReviewFollowUpEditor,
-  closeRunnerSetup,
-  closeTaskEditor,
-  openNewReviewEditor,
-  openNewTaskEditor,
-  openProjectEditor,
-  openRemoteCleanupConfirmation,
-  openRemoteResetConfirmation,
-  openReviewFollowUpEditor,
-  openRunnerSetup,
-  openTaskEditor,
-  queueReviewDeletion,
-  queueTaskDeletion,
-} = useShellOverlays({
-  cleanupPendingConfirmation,
-  creatingReview,
-  creatingTask,
-  editingProject,
-  editingRemoteAgentSetup,
-  editingTask,
-  followingUpReview,
-  followingUpTask,
-  resetPendingConfirmation,
-  reviewPendingDeletion,
-  selectedProjectDetails,
-  selectedReview,
-  taskPendingDeletion,
   taskPendingRunnerSetup,
 })
 
@@ -478,6 +381,135 @@ const backgroundSync = useBackgroundSync({
   showClosed,
 })
 syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
+
+// These context bags intentionally group refs by domain so App.vue can hand a
+// whole screen its slice of shell state instead of flattening dozens of props
+// through an overlay hub. The screens still consume refs directly, which keeps
+// this step incremental while making ownership boundaries explicit.
+const tasksScreenContext = {
+  availableProjects,
+  cancelingDispatchTaskId,
+  closeTaskDrawer,
+  creatingTask,
+  currentPage,
+  defaultCreateProject,
+  dispatchingTaskId,
+  discardingDispatchTaskId,
+  editingRemoteAgentSetup,
+  editingTask,
+  errorMessage,
+  followingUpDispatch,
+  followingUpTask,
+  followingUpTaskId,
+  isTaskDrawerOpen,
+  latestTaskDispatchesByTaskId,
+  loadRemoteAgentSettings,
+  loadRuns,
+  openSelectedTaskProjectDetails,
+  pendingSelectedTaskId,
+  refreshAll,
+  remoteAgentSettings,
+  removeTaskRuns,
+  runnerSetupReady,
+  saving,
+  selectedProjectFilter,
+  selectedTask,
+  selectedTaskCanContinue,
+  selectedTaskCanDiscardHistory,
+  selectedTaskCanStartFresh,
+  selectedTaskDispatchDisabledReason,
+  selectedTaskDispatchTool,
+  selectedTaskId,
+  selectedTaskLatestDispatch,
+  selectedTaskLatestReusablePullRequest,
+  selectedTaskLifecycleMessage,
+  selectedTaskLifecycleMutation,
+  selectedTaskPinnedTool,
+  selectedTaskPrimaryActionDisabled,
+  selectedTaskProject,
+  selectedTaskRuns,
+  selectedTaskStartTool,
+  selectTask,
+  setFriendlyError,
+  showClosed,
+  taskGroups,
+  taskLifecycleMutation,
+  taskLifecycleMutationTaskId,
+  taskPendingDeletion,
+  taskPendingRunnerSetup,
+  tasks,
+  upsertLatestTaskDispatch,
+  upsertRunRecord,
+  upsertSelectedTaskRun,
+}
+
+const reviewsScreenContext = {
+  cancelingReviewId,
+  canRequestReview,
+  closeReviewDrawer,
+  creatingReview,
+  currentPage,
+  defaultRemoteAgentPreferredTool,
+  errorMessage,
+  followingUpReview,
+  followingUpReviewId,
+  isReviewDrawerOpen,
+  refreshAll,
+  remoteAgentSettings,
+  removeReview,
+  replaceSelectedReviewRuns,
+  reviewPendingDeletion,
+  reviewRequestDisabledReason,
+  reviews,
+  saving,
+  selectedReview,
+  selectedReviewCanCancel,
+  selectedReviewCanReReview,
+  selectedReviewLatestRun,
+  selectedReviewRuns,
+  selectReview,
+  setFriendlyError,
+  upsertLatestReviewRun,
+  upsertReviewSummary,
+  upsertSelectedReviewRun,
+}
+
+const runsScreenContext = {
+  activeReviewRuns,
+  activeRuns,
+  openTaskFromRun,
+  recentReviewRuns,
+  recentRuns,
+  selectReview,
+}
+
+const projectsScreenContext = {
+  availableProjects,
+  editingProject,
+  saveProjectEdits,
+  saving,
+  selectedProjectDetails,
+  selectedProjectDetailsId,
+}
+
+const settingsScreenContext = {
+  activeRemoteWorkCount,
+  cleaningUpRemoteArtifacts,
+  cleanupPendingConfirmation,
+  cleanupSummary,
+  confirmRemoteCleanup,
+  confirmRemoteReset,
+  editingRemoteAgentSetup,
+  remoteAgentSettings,
+  resetPendingConfirmation,
+  resettingRemoteWorkspace,
+  resetSummary,
+  runnerSetupReady,
+  saveRemoteAgentSetup,
+  saving,
+  shellPreludeHelpText,
+  taskPendingRunnerSetup,
+}
 </script>
 
 <template>
@@ -520,153 +552,38 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
               @request-import-legacy-data="importLegacyTrackerData"
             />
 
-            <TasksPage
-              v-if="!migrationGateActive && currentPage === 'tasks'"
-              :active-task-id="selectedTask?.id ?? null"
-              :drawer-open="isTaskDrawerOpen"
-              :latest-dispatch-by-task-id="latestTaskDispatchesByTaskId"
-              :projects="availableProjects"
-              :selected-project-filter="selectedProjectFilter"
-              :show-closed="showClosed"
-              :task-count="tasks.length"
-              :task-groups="taskGroups"
-              @request-create-task="openNewTaskEditor"
-              @request-select-task="selectTask"
-              @update:selected-project-filter="selectedProjectFilter = $event"
-              @update:show-closed="showClosed = $event"
+            <TasksScreen
+              v-if="!migrationGateActive"
+              :active="currentPage === 'tasks'"
+              :context="tasksScreenContext"
             />
 
-            <ReviewsPage
-              v-else-if="!migrationGateActive && currentPage === 'reviews'"
-              :can-request-review="canRequestReview"
-              :review-request-disabled-reason="reviewRequestDisabledReason"
-              :reviews="reviews"
-              @request-create-review="openNewReviewEditor"
-              @request-open-settings="currentPage = 'settings'"
-              @request-select-review="selectReview"
+            <ReviewsScreen
+              v-if="!migrationGateActive"
+              :active="currentPage === 'reviews'"
+              :context="reviewsScreenContext"
             />
 
-            <RunsPage
-              v-else-if="!migrationGateActive && currentPage === 'runs'"
-              :active-review-runs="activeReviewRuns"
-              :active-runs="activeRuns"
-              :recent-review-runs="recentReviewRuns"
-              :recent-runs="recentRuns"
-              @request-open-review="selectReview"
-              @request-open-task-run="openTaskFromRun"
-              @request-open-url="openExternal"
+            <RunsScreen
+              v-if="!migrationGateActive"
+              :active="currentPage === 'runs'"
+              :context="runsScreenContext"
             />
 
-            <ProjectsPage
-              v-else-if="!migrationGateActive && currentPage === 'projects'"
-              :projects="availableProjects"
-              :selected-project-details="selectedProjectDetails"
-              :selected-project-id="selectedProjectDetailsId"
-              @request-edit-project="openProjectEditor"
-              @request-select-project="selectedProjectDetailsId = $event"
+            <ProjectsScreen
+              v-if="!migrationGateActive"
+              :active="currentPage === 'projects'"
+              :context="projectsScreenContext"
             />
 
-            <SettingsPage
-              v-else-if="!migrationGateActive"
-              :active-remote-work-count="activeRemoteWorkCount"
-              :cleaning-up-remote-artifacts="cleaningUpRemoteArtifacts"
-              :cleanup-summary="cleanupSummary"
-              :remote-agent-settings="remoteAgentSettings"
-              :reset-summary="resetSummary"
-              :resetting-remote-workspace="resettingRemoteWorkspace"
-              :runner-setup-ready="runnerSetupReady"
-              :shell-prelude-help-text="shellPreludeHelpText"
-              @request-open-cleanup="openRemoteCleanupConfirmation"
-              @request-open-reset="openRemoteResetConfirmation"
-              @request-open-runner-setup="openRunnerSetup"
+            <SettingsScreen
+              v-if="!migrationGateActive"
+              :active="currentPage === 'settings'"
+              :context="settingsScreenContext"
             />
           </template>
         </section>
       </div>
     </div>
-
-    <ShellOverlayMount
-      :available-projects="availableProjects"
-      :canceling-dispatch-task-id="cancelingDispatchTaskId"
-      :canceling-review-id="cancelingReviewId"
-      :cleanup-pending-confirmation="cleanupPendingConfirmation"
-      :cleaning-up-remote-artifacts="cleaningUpRemoteArtifacts"
-      :creating-review="creatingReview"
-      :creating-task="creatingTask"
-      :default-create-project="defaultCreateProject"
-      :default-remote-agent-preferred-tool="defaultRemoteAgentPreferredTool"
-      :dispatching-task-id="dispatchingTaskId"
-      :discarding-dispatch-task-id="discardingDispatchTaskId"
-      :editing-project="editingProject"
-      :editing-remote-agent-setup="editingRemoteAgentSetup"
-      :editing-task="editingTask"
-      :following-up-dispatch="followingUpDispatch"
-      :following-up-review="followingUpReview"
-      :following-up-review-id="followingUpReviewId"
-      :following-up-task="followingUpTask"
-      :following-up-task-id="followingUpTaskId"
-      :remote-agent-settings="remoteAgentSettings"
-      :reset-pending-confirmation="resetPendingConfirmation"
-      :resetting-remote-workspace="resettingRemoteWorkspace"
-      :review-pending-deletion="reviewPendingDeletion"
-      :runner-setup-required-for-dispatch="taskPendingRunnerSetup !== null"
-      :saving="saving"
-      :selected-review="selectedReview"
-      :selected-review-can-cancel="selectedReviewCanCancel"
-      :selected-review-can-re-review="selectedReviewCanReReview"
-      :selected-review-latest-run="selectedReviewLatestRun"
-      :selected-review-runs="selectedReviewRuns"
-      :selected-task="selectedTask"
-      :selected-task-can-continue="selectedTaskCanContinue"
-      :selected-task-can-discard-history="selectedTaskCanDiscardHistory"
-      :selected-task-can-start-fresh="selectedTaskCanStartFresh"
-      :selected-task-dispatch-disabled-reason="selectedTaskDispatchDisabledReason"
-      :selected-task-dispatch-tool="selectedTaskDispatchTool"
-      :selected-task-latest-dispatch="selectedTaskLatestDispatch"
-      :selected-task-latest-reusable-pull-request="selectedTaskLatestReusablePullRequest"
-      :selected-task-lifecycle-message="selectedTaskLifecycleMessage"
-      :selected-task-lifecycle-mutation="selectedTaskLifecycleMutation"
-      :selected-task-pinned-tool="selectedTaskPinnedTool"
-      :selected-task-primary-action-disabled="selectedTaskPrimaryActionDisabled"
-      :selected-task-project="selectedTaskProject"
-      :selected-task-runs="selectedTaskRuns"
-      :show-review-drawer="currentPage === 'reviews' && isReviewDrawerOpen && selectedReview !== null"
-      :show-task-drawer="currentPage === 'tasks' && isTaskDrawerOpen && selectedTask !== null"
-      :task-pending-deletion="taskPendingDeletion"
-      @cancel-cleanup="clearPendingRemoteCleanup"
-      @cancel-project-editor="closeProjectEditor"
-      @cancel-reset="clearPendingRemoteReset"
-      @cancel-review-delete="clearPendingReviewDeletion"
-      @cancel-review-drawer="closeReviewDrawer"
-      @cancel-review-editor="closeReviewEditor"
-      @cancel-review-follow-up="closeReviewFollowUpEditor"
-      @cancel-runner-setup="closeRunnerSetup"
-      @cancel-task-delete="clearPendingDeletion"
-      @cancel-task-drawer="closeTaskDrawer"
-      @cancel-task-editor="closeTaskEditor"
-      @cancel-task-follow-up="closeFollowUpEditor"
-      @confirm-cleanup="confirmRemoteCleanup"
-      @confirm-reset="confirmRemoteReset"
-      @confirm-review-delete="confirmReviewDelete"
-      @confirm-task-delete="confirmDelete"
-      @request-cancel-review-run="cancelReviewRun"
-      @request-delete-review="queueReviewDeletion"
-      @request-edit-task="openTaskEditor"
-      @request-open-task-project="openSelectedTaskProjectDetails"
-      @request-open-url="openExternal"
-      @request-review-follow-up="openReviewFollowUpEditor"
-      @request-save-project="saveProjectEdits"
-      @request-save-review="createReviewFromWeb"
-      @request-save-review-follow-up="submitReviewFollowUp"
-      @request-save-runner-setup="saveRemoteAgentSetup"
-      @request-save-task="creatingTask ? createTaskFromWeb($event) : saveTaskEdits($event)"
-      @request-save-task-follow-up="submitFollowUp"
-      @request-selected-task-close="updateTaskStatus($event, 'closed')"
-      @request-selected-task-delete="queueTaskDeletion"
-      @request-selected-task-discard-history="discardRunHistory"
-      @request-selected-task-primary-action="handlePrimaryAction"
-      @request-selected-task-start-fresh="startRemoteRun"
-      @update:task-start-tool="selectedTaskStartTool = $event"
-    />
   </main>
 </template>
