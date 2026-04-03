@@ -3,26 +3,10 @@ import { computed, ref } from 'vue'
 
 import {
   ApiClientError,
-  cancelDispatch,
-  cancelReview,
-  cleanupRemoteAgentArtifacts,
-  createReview,
-  createTask,
-  deleteReview,
-  deleteTask,
-  discardDispatch,
-  dispatchTask,
   fetchMigrationStatus,
   fetchProjects,
-  followUpReview,
   fetchRemoteAgentSettings,
   fetchTasks,
-  followUpTask,
-  importLegacyData,
-  resetRemoteAgentWorkspace,
-  updateProject,
-  updateRemoteAgentSettings,
-  updateTask,
 } from './api/client'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import FollowUpModal from './components/FollowUpModal.vue'
@@ -38,9 +22,12 @@ import TaskDrawer from './components/TaskDrawer.vue'
 import TaskEditorModal from './components/TaskEditorModal.vue'
 import TasksPage from './components/TasksPage.vue'
 import { useBackgroundSync } from './composables/useBackgroundSync'
+import { useReviewMutations } from './composables/useReviewMutations'
 import { useProjectViewState } from './composables/useProjectViewState'
 import { useReviewViewState } from './composables/useReviewViewState'
 import { useRunState } from './composables/useRunState'
+import { useSettingsMutations } from './composables/useSettingsMutations'
+import { useTaskMutations, type PendingRunnerSetupRequest } from './composables/useTaskMutations'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
   dispatchBadgeClass,
@@ -78,10 +65,6 @@ import type {
 
 type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
 type TaskLifecycleMutation = 'closing' | 'reopening' | 'deleting'
-type PendingRunnerSetupRequest = {
-  task: Task
-  preferredTool: RemoteAgentPreferredTool
-}
 
 // =============================================================================
 // App Shell State
@@ -333,16 +316,6 @@ function drawerPrimaryActionClass(task: Task, dispatch?: TaskDispatch | null): s
   }
 }
 
-function beginTaskLifecycleMutation(taskId: string, mutation: TaskLifecycleMutation) {
-  taskLifecycleMutationTaskId.value = taskId
-  taskLifecycleMutation.value = mutation
-}
-
-function clearTaskLifecycleMutation() {
-  taskLifecycleMutationTaskId.value = null
-  taskLifecycleMutation.value = null
-}
-
 function openExternal(url: string) {
   window.open(url, '_blank', 'noreferrer')
 }
@@ -464,385 +437,106 @@ async function refreshAll() {
   }
 }
 
-// =============================================================================
-// Mutations
-// =============================================================================
-//
-// The app stays deliberately conservative after writes: refresh from the API,
-// then let the queue, drawer, and runs page re-derive their state. That keeps
-// the UI aligned with the persisted task and dispatch data.
-async function updateTaskStatus(task: Task, status: Task['status']) {
-  saving.value = true
-  errorMessage.value = ''
-  beginTaskLifecycleMutation(task.id, status === 'closed' ? 'closing' : 'reopening')
+const {
+  cancelRemoteRun,
+  confirmDelete,
+  createTaskFromWeb,
+  discardRunHistory,
+  handlePrimaryAction,
+  saveTaskEdits,
+  startRemoteRun,
+  submitFollowUp,
+  updateTaskStatus,
+} = useTaskMutations({
+  cancelingDispatchTaskId,
+  closeTaskDrawer,
+  creatingTask,
+  currentPage,
+  discardingDispatchTaskId,
+  dispatchingTaskId,
+  editingRemoteAgentSetup,
+  editingTask,
+  errorMessage,
+  followingUpTask,
+  followingUpTaskId,
+  isTaskDrawerOpen,
+  loadRemoteAgentSettings,
+  loadRuns,
+  pendingSelectedTaskId,
+  refreshAll,
+  remoteAgentSettings,
+  removeTaskRuns,
+  runnerSetupReady,
+  saving,
+  selectedProjectFilter,
+  selectedTask,
+  selectedTaskCanContinue,
+  selectedTaskDispatchTool,
+  selectedTaskId,
+  selectedTaskLatestDispatch,
+  setFriendlyError,
+  showClosed,
+  taskLifecycleMutation,
+  taskLifecycleMutationTaskId,
+  taskPendingDeletion,
+  taskPendingRunnerSetup,
+  upsertLatestTaskDispatch,
+  upsertRunRecord,
+  upsertSelectedTaskRun,
+})
 
-  try {
-    await updateTask(task.id, { status })
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-    clearTaskLifecycleMutation()
-  }
-}
+const {
+  cancelReviewRun,
+  confirmReviewDelete,
+  createReviewFromWeb,
+  submitReviewFollowUp,
+} = useReviewMutations({
+  cancelingReviewId,
+  creatingReview,
+  currentPage,
+  errorMessage,
+  followingUpReview,
+  followingUpReviewId,
+  refreshAll,
+  removeReview,
+  replaceSelectedReviewRuns,
+  reviewPendingDeletion,
+  saving,
+  selectReview,
+  setFriendlyError,
+  upsertLatestReviewRun,
+  upsertReviewSummary,
+  upsertSelectedReviewRun,
+})
 
-async function saveTaskEdits(payload: { description: string; priority: Task['priority'] }) {
-  if (!editingTask.value) {
-    return
-  }
-
-  saving.value = true
-  errorMessage.value = ''
-
-  try {
-    await updateTask(editingTask.value.id, payload)
-    editingTask.value = null
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function createTaskFromWeb(payload: TaskCreateInput) {
-  saving.value = true
-  errorMessage.value = ''
-
-  try {
-    const task = await createTask(payload)
-    creatingTask.value = false
-    pendingSelectedTaskId.value = task.id
-    isTaskDrawerOpen.value = true
-    currentPage.value = 'tasks'
-    selectedProjectFilter.value = task.project
-    showClosed.value = false
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function createReviewFromWeb(payload: CreateReviewInput) {
-  saving.value = true
-  errorMessage.value = ''
-
-  try {
-    const created = await createReview(payload)
-    creatingReview.value = false
-    currentPage.value = 'reviews'
-    selectReview(created.review.id)
-    upsertReviewSummary(created.review, created.run)
-    replaceSelectedReviewRuns([created.run])
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function saveProjectEdits(payload: ProjectMetadataUpdateInput) {
-  if (!editingProject.value) {
-    return
-  }
-
-  saving.value = true
-  errorMessage.value = ''
-
-  try {
-    await updateProject(editingProject.value.canonicalName, payload)
-    editingProject.value = null
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function saveRemoteAgentSetup(payload: RemoteAgentSettingsUpdateInput) {
-  saving.value = true
-  errorMessage.value = ''
-
-  try {
-    remoteAgentSettings.value = await updateRemoteAgentSettings(payload)
-    editingRemoteAgentSetup.value = false
-
-    const queuedTask = taskPendingRunnerSetup.value
-    taskPendingRunnerSetup.value = null
-    if (queuedTask) {
-      window.setTimeout(() => {
-        void startRemoteRun(queuedTask.task, queuedTask.preferredTool)
-      }, 0)
-    }
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function confirmRemoteCleanup() {
-  cleaningUpRemoteArtifacts.value = true
-  errorMessage.value = ''
-
-  try {
-    cleanupSummary.value = await cleanupRemoteAgentArtifacts()
-    cleanupPendingConfirmation.value = false
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    cleaningUpRemoteArtifacts.value = false
-  }
-}
-
-async function confirmRemoteReset() {
-  resettingRemoteWorkspace.value = true
-  errorMessage.value = ''
-
-  try {
-    resetSummary.value = await resetRemoteAgentWorkspace()
-    resetPendingConfirmation.value = false
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    resettingRemoteWorkspace.value = false
-  }
-}
-
-async function importLegacyTrackerData() {
-  migrationImportPending.value = true
-  errorMessage.value = ''
-
-  try {
-    migrationImportSummary.value = await importLegacyData()
-    migrationStatus.value = null
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    migrationImportPending.value = false
-  }
-}
-
-async function confirmDelete() {
-  if (!taskPendingDeletion.value) {
-    return
-  }
-
-  saving.value = true
-  errorMessage.value = ''
-  beginTaskLifecycleMutation(taskPendingDeletion.value.id, 'deleting')
-
-  try {
-    const deletedTaskId = taskPendingDeletion.value.id
-    await deleteTask(deletedTaskId)
-    taskPendingDeletion.value = null
-    if (selectedTaskId.value === deletedTaskId) {
-      closeTaskDrawer()
-    }
-    removeTaskRuns(deletedTaskId)
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-    clearTaskLifecycleMutation()
-  }
-}
-
-async function confirmReviewDelete() {
-  if (!reviewPendingDeletion.value) {
-    return
-  }
-
-  saving.value = true
-  errorMessage.value = ''
-
-  try {
-    const deletedReviewId = reviewPendingDeletion.value.id
-    await deleteReview(deletedReviewId)
-    reviewPendingDeletion.value = null
-    removeReview(deletedReviewId)
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function startRemoteRun(
-  task: Task,
-  preferredTool: RemoteAgentPreferredTool = selectedTaskDispatchTool.value,
-) {
-  if (remoteAgentSettings.value === null) {
-    try {
-      await loadRemoteAgentSettings()
-    } catch {
-      // The user-facing error below remains the real fallback if the settings
-      // endpoint is still unavailable after a best-effort sync.
-    }
-  }
-
-  if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
-    errorMessage.value =
-      'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/track_remote_agent` locally first.'
-    currentPage.value = 'settings'
-    return
-  }
-
-  if (remoteAgentSettings.value && !runnerSetupReady.value) {
-    taskPendingRunnerSetup.value = { task, preferredTool }
-    editingRemoteAgentSetup.value = true
-    currentPage.value = 'settings'
-    return
-  }
-
-  dispatchingTaskId.value = task.id
-  errorMessage.value = ''
-
-  try {
-    const dispatch = await dispatchTask(task.id, { preferredTool })
-    upsertRunRecord(task, dispatch)
-    upsertLatestTaskDispatch(dispatch)
-    upsertSelectedTaskRun(task, dispatch)
-  } catch (error) {
-    await loadRuns().catch(() => undefined)
-    setFriendlyError(error)
-  } finally {
-    dispatchingTaskId.value = null
-  }
-}
-
-async function cancelRemoteRun(task: Task) {
-  cancelingDispatchTaskId.value = task.id
-  errorMessage.value = ''
-
-  try {
-    const dispatch = await cancelDispatch(task.id)
-    upsertRunRecord(task, dispatch)
-    upsertLatestTaskDispatch(dispatch)
-    upsertSelectedTaskRun(task, dispatch)
-  } catch (error) {
-    await loadRuns().catch(() => undefined)
-    setFriendlyError(error)
-  } finally {
-    cancelingDispatchTaskId.value = null
-  }
-}
-
-async function cancelReviewRun(review: ReviewRecord) {
-  cancelingReviewId.value = review.id
-  errorMessage.value = ''
-
-  try {
-    const run = await cancelReview(review.id)
-    upsertLatestReviewRun(review.id, run)
-    upsertSelectedReviewRun(run)
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    cancelingReviewId.value = null
-  }
-}
-
-async function submitReviewFollowUp(payload: ReviewFollowUpInput) {
-  if (!followingUpReview.value) {
-    return
-  }
-
-  followingUpReviewId.value = followingUpReview.value.id
-  errorMessage.value = ''
-
-  try {
-    const run = await followUpReview(followingUpReview.value.id, payload)
-    upsertReviewSummary(
-      {
-        ...followingUpReview.value,
-        updatedAt: run.createdAt,
-      },
-      run,
-    )
-    upsertSelectedReviewRun(run)
-    followingUpReview.value = null
-    await refreshAll()
-  } catch (error) {
-    setFriendlyError(error)
-  } finally {
-    followingUpReviewId.value = null
-  }
-}
-
-async function discardRunHistory(task: Task) {
-  discardingDispatchTaskId.value = task.id
-  errorMessage.value = ''
-
-  try {
-    await discardDispatch(task.id)
-    removeTaskRuns(task.id)
-  } catch (error) {
-    await loadRuns().catch(() => undefined)
-    setFriendlyError(error)
-  } finally {
-    discardingDispatchTaskId.value = null
-  }
-}
-
-async function submitFollowUp(payload: TaskFollowUpInput) {
-  if (!followingUpTask.value) {
-    return
-  }
-
-  followingUpTaskId.value = followingUpTask.value.id
-  errorMessage.value = ''
-
-  try {
-    const dispatch = await followUpTask(followingUpTask.value.id, payload)
-    upsertRunRecord(followingUpTask.value, dispatch)
-    upsertLatestTaskDispatch(dispatch)
-    upsertSelectedTaskRun(followingUpTask.value, dispatch)
-    followingUpTask.value = null
-    await refreshAll()
-  } catch (error) {
-    await loadRuns().catch(() => undefined)
-    setFriendlyError(error)
-  } finally {
-    followingUpTaskId.value = null
-  }
-}
-
-async function handlePrimaryAction() {
-  if (!selectedTask.value) {
-    return
-  }
-
-  const task = selectedTask.value
-  const latestDispatch = selectedTaskLatestDispatch.value
-
-  if (task.status === 'closed') {
-    await updateTaskStatus(task, 'open')
-    return
-  }
-
-  if (latestDispatch?.status === 'preparing' || latestDispatch?.status === 'running') {
-    await cancelRemoteRun(task)
-    return
-  }
-
-  if (selectedTaskCanContinue.value) {
-    followingUpTask.value = task
-    return
-  }
-
-  await startRemoteRun(task)
-}
+const {
+  confirmRemoteCleanup,
+  confirmRemoteReset,
+  importLegacyTrackerData,
+  saveProjectEdits,
+  saveRemoteAgentSetup,
+} = useSettingsMutations({
+  cleaningUpRemoteArtifacts,
+  cleanupPendingConfirmation,
+  cleanupSummary,
+  editingProject,
+  editingRemoteAgentSetup,
+  errorMessage,
+  migrationImportPending,
+  migrationImportSummary,
+  migrationStatus,
+  refreshAll,
+  remoteAgentSettings,
+  resetPendingConfirmation,
+  resetSummary,
+  resettingRemoteWorkspace,
+  resumeQueuedTaskDispatch(task, preferredTool) {
+    void startRemoteRun(task, preferredTool)
+  },
+  saving,
+  setFriendlyError,
+  taskPendingRunnerSetup,
+})
 
 function openTaskEditor(task: Task) {
   editingTask.value = task
