@@ -14,7 +14,7 @@ function createContext() {
 
   return {
     active: true,
-    context: {
+    controller: {
       availableProjects: computed(() => [project]),
       editingProject,
       saveProjectEdits,
@@ -39,7 +39,7 @@ describe('ProjectsScreen', () => {
 
   it('saves edits through the shared mutation handler', async () => {
     const props = createContext()
-    props.context.editingProject.value = props.context.selectedProjectDetails.value
+    props.controller.editingProject.value = props.controller.selectedProjectDetails.value
     const wrapper = shallowMount(ProjectsScreen, {
       props,
     })
@@ -51,7 +51,7 @@ describe('ProjectsScreen', () => {
     })
     await nextTick()
 
-    expect(props.context.saveProjectEdits).toHaveBeenCalledWith({
+    expect(props.controller.saveProjectEdits).toHaveBeenCalledWith({
       baseBranch: 'main',
       gitUrl: 'git@github.com:acme/project.git',
       repoUrl: 'https://github.com/acme/project',

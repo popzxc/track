@@ -19,7 +19,7 @@ function createContext() {
 
   return {
     active: true,
-    context: {
+    controller: {
       cancelingReviewId: ref<string | null>(null),
       canRequestReview: computed(() => true),
       closeReviewDrawer: vi.fn(),
@@ -69,7 +69,7 @@ describe('ReviewsScreen', () => {
       props: createContext(),
     })
 
-    wrapper.findComponent({ name: 'ReviewDrawer' }).vm.$emit('request-delete-review', createContext().context.selectedReview.value)
+    wrapper.findComponent({ name: 'ReviewDrawer' }).vm.$emit('request-delete-review', createContext().controller.selectedReview.value)
     await nextTick()
 
     expect(wrapper.findComponent({ name: 'ConfirmDialog' }).props('open')).toBe(true)

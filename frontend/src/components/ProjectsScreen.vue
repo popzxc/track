@@ -1,58 +1,41 @@
 <script setup lang="ts">
-import type { ComputedRef, Ref } from 'vue'
-
 import ProjectMetadataModal from './ProjectMetadataModal.vue'
 import ProjectsPage from './ProjectsPage.vue'
-import type {
-  ProjectInfo,
-  ProjectMetadataUpdateInput,
-} from '../types/task'
-
-interface ProjectsScreenContext {
-  availableProjects: ComputedRef<ProjectInfo[]>
-  editingProject: Ref<ProjectInfo | null>
-  saveProjectEdits: (payload: ProjectMetadataUpdateInput) => Promise<void>
-  saving: Ref<boolean>
-  selectedProjectDetails: ComputedRef<ProjectInfo | null>
-  selectedProjectDetailsId: Ref<string | null>
-}
+import type { ProjectsScreenController } from '../composables/useProjectsScreenController'
 
 const props = defineProps<{
   active: boolean
-  context: ProjectsScreenContext
+  controller: ProjectsScreenController
 }>()
 
-// Project metadata editing is a page-scoped workflow rather than generic shell
-// chrome. Keeping the page and its editor modal together makes that ownership
-// explicit before we tackle the larger controller split.
-function openProjectEditor(project = props.context.selectedProjectDetails.value) {
+function openProjectEditor(project = props.controller.selectedProjectDetails.value) {
   if (!project) {
     return
   }
 
-  props.context.editingProject.value = project
+  props.controller.editingProject.value = project
 }
 
 function closeProjectEditor() {
-  props.context.editingProject.value = null
+  props.controller.editingProject.value = null
 }
 </script>
 
 <template>
   <ProjectsPage
     v-if="active"
-    :projects="context.availableProjects.value"
-    :selected-project-details="context.selectedProjectDetails.value"
-    :selected-project-id="context.selectedProjectDetailsId.value"
+    :projects="controller.availableProjects.value"
+    :selected-project-details="controller.selectedProjectDetails.value"
+    :selected-project-id="controller.selectedProjectDetailsId.value"
     @request-edit-project="openProjectEditor"
-    @request-select-project="context.selectedProjectDetailsId.value = $event"
+    @request-select-project="controller.selectedProjectDetailsId.value = $event"
   />
 
   <ProjectMetadataModal
-    :busy="context.saving.value"
-    :open="context.editingProject.value !== null"
-    :project="context.editingProject.value"
+    :busy="controller.saving.value"
+    :open="controller.editingProject.value !== null"
+    :project="controller.editingProject.value"
     @cancel="closeProjectEditor"
-    @save="context.saveProjectEdits"
+    @save="controller.saveProjectEdits"
   />
 </template>

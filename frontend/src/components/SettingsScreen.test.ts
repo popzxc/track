@@ -11,7 +11,7 @@ import {
 function createContext() {
   return {
     active: true,
-    context: {
+    controller: {
       activeRemoteWorkCount: computed(() => 1),
       cleaningUpRemoteArtifacts: ref(false),
       cleanupPendingConfirmation: ref(false),
@@ -45,7 +45,7 @@ describe('SettingsScreen', () => {
     wrapper.findComponent({ name: 'SettingsPage' }).vm.$emit('request-open-runner-setup')
     await nextTick()
 
-    expect(props.context.taskPendingRunnerSetup.value).toBeNull()
+    expect(props.controller.taskPendingRunnerSetup.value).toBeNull()
     expect(wrapper.findComponent({ name: 'RemoteAgentSetupModal' }).props('open')).toBe(true)
   })
 
@@ -67,7 +67,7 @@ describe('SettingsScreen', () => {
     dialogs[1]?.vm.$emit('confirm')
     await nextTick()
 
-    expect(props.context.confirmRemoteCleanup).toHaveBeenCalledTimes(1)
-    expect(props.context.confirmRemoteReset).toHaveBeenCalledTimes(1)
+    expect(props.controller.confirmRemoteCleanup).toHaveBeenCalledTimes(1)
+    expect(props.controller.confirmRemoteReset).toHaveBeenCalledTimes(1)
   })
 })

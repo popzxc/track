@@ -11,11 +11,16 @@ import SettingsScreen from './components/SettingsScreen.vue'
 import TasksScreen from './components/TasksScreen.vue'
 import { useAppDataLoader } from './composables/useAppDataLoader'
 import { useBackgroundSync } from './composables/useBackgroundSync'
+import { useProjectsScreenController } from './composables/useProjectsScreenController'
 import { useProjectViewState } from './composables/useProjectViewState'
+import { useReviewsScreenController } from './composables/useReviewsScreenController'
 import { useReviewViewState } from './composables/useReviewViewState'
+import { useRunsScreenController } from './composables/useRunsScreenController'
 import { useRunState } from './composables/useRunState'
+import { useSettingsScreenController } from './composables/useSettingsScreenController'
 import { useSettingsMutations } from './composables/useSettingsMutations'
 import type { PendingRunnerSetupRequest } from './composables/useTaskMutations'
+import { useTasksScreenController } from './composables/useTasksScreenController'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
   groupTasksByProject,
@@ -382,134 +387,163 @@ const backgroundSync = useBackgroundSync({
 })
 syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
 
-// These context bags intentionally group refs by domain so App.vue can hand a
-// whole screen its slice of shell state instead of flattening dozens of props
-// through an overlay hub. The screens still consume refs directly, which keeps
-// this step incremental while making ownership boundaries explicit.
-const tasksScreenContext = {
-  availableProjects,
-  cancelingDispatchTaskId,
-  closeTaskDrawer,
-  creatingTask,
-  currentPage,
-  defaultCreateProject,
-  dispatchingTaskId,
-  discardingDispatchTaskId,
-  editingRemoteAgentSetup,
-  editingTask,
-  errorMessage,
-  followingUpDispatch,
-  followingUpTask,
-  followingUpTaskId,
-  isTaskDrawerOpen,
-  latestTaskDispatchesByTaskId,
-  loadRemoteAgentSettings,
-  loadRuns,
-  openSelectedTaskProjectDetails,
-  pendingSelectedTaskId,
-  refreshAll,
-  remoteAgentSettings,
-  removeTaskRuns,
-  runnerSetupReady,
-  saving,
-  selectedProjectFilter,
-  selectedTask,
-  selectedTaskCanContinue,
-  selectedTaskCanDiscardHistory,
-  selectedTaskCanStartFresh,
-  selectedTaskDispatchDisabledReason,
-  selectedTaskDispatchTool,
-  selectedTaskId,
-  selectedTaskLatestDispatch,
-  selectedTaskLatestReusablePullRequest,
-  selectedTaskLifecycleMessage,
-  selectedTaskLifecycleMutation,
-  selectedTaskPinnedTool,
-  selectedTaskPrimaryActionDisabled,
-  selectedTaskProject,
-  selectedTaskRuns,
-  selectedTaskStartTool,
-  selectTask,
-  setFriendlyError,
-  showClosed,
-  taskGroups,
-  taskLifecycleMutation,
-  taskLifecycleMutationTaskId,
-  taskPendingDeletion,
-  taskPendingRunnerSetup,
-  tasks,
-  upsertLatestTaskDispatch,
-  upsertRunRecord,
-  upsertSelectedTaskRun,
-}
+const tasksScreen = useTasksScreenController({
+  data: {
+    availableProjects,
+    defaultCreateProject,
+    followingUpDispatch,
+    latestTaskDispatchesByTaskId,
+    remoteAgentSettings,
+    runnerSetupReady,
+    saving,
+    selectedTaskRuns,
+    taskGroups,
+    tasks,
+  },
+  overlays: {
+    creatingTask,
+    editingTask,
+    followingUpTask,
+    taskPendingDeletion,
+    taskPendingRunnerSetup,
+  },
+  project: {
+    openSelectedTaskProjectDetails,
+  },
+  shell: {
+    currentPage,
+    editingRemoteAgentSetup,
+    errorMessage,
+    setFriendlyError,
+  },
+  taskRunBridge: {
+    loadRemoteAgentSettings,
+    loadRuns,
+    refreshAll,
+    removeTaskRuns,
+    upsertLatestTaskDispatch,
+    upsertRunRecord,
+    upsertSelectedTaskRun,
+  },
+  viewState: {
+    closeTaskDrawer,
+    isTaskDrawerOpen,
+    openTaskFromRun,
+    pendingSelectedTaskId,
+    selectTask,
+    selectedProjectFilter,
+    selectedTask,
+    selectedTaskCanContinue,
+    selectedTaskCanDiscardHistory,
+    selectedTaskCanStartFresh,
+    selectedTaskDispatchDisabledReason,
+    selectedTaskDispatchTool,
+    selectedTaskId,
+    selectedTaskLatestDispatch,
+    selectedTaskLatestReusablePullRequest,
+    selectedTaskLifecycleMessage,
+    selectedTaskLifecycleMutation,
+    selectedTaskPinnedTool,
+    selectedTaskPrimaryActionDisabled,
+    selectedTaskProject,
+    selectedTaskStartTool,
+    showClosed,
+  },
+  workflow: {
+    cancelingDispatchTaskId,
+    discardingDispatchTaskId,
+    dispatchingTaskId,
+    followingUpTaskId,
+    taskLifecycleMutation,
+    taskLifecycleMutationTaskId,
+  },
+})
 
-const reviewsScreenContext = {
-  cancelingReviewId,
-  canRequestReview,
-  closeReviewDrawer,
-  creatingReview,
-  currentPage,
-  defaultRemoteAgentPreferredTool,
-  errorMessage,
-  followingUpReview,
-  followingUpReviewId,
-  isReviewDrawerOpen,
-  refreshAll,
-  remoteAgentSettings,
-  removeReview,
-  replaceSelectedReviewRuns,
-  reviewPendingDeletion,
-  reviewRequestDisabledReason,
-  reviews,
-  saving,
-  selectedReview,
-  selectedReviewCanCancel,
-  selectedReviewCanReReview,
-  selectedReviewLatestRun,
-  selectedReviewRuns,
-  selectReview,
-  setFriendlyError,
-  upsertLatestReviewRun,
-  upsertReviewSummary,
-  upsertSelectedReviewRun,
-}
+const reviewsScreen = useReviewsScreenController({
+  data: {
+    canRequestReview,
+    defaultRemoteAgentPreferredTool,
+    remoteAgentSettings,
+    reviewRequestDisabledReason,
+    reviews,
+    saving,
+    selectedReviewRuns,
+  },
+  overlays: {
+    creatingReview,
+    followingUpReview,
+    reviewPendingDeletion,
+  },
+  reviewRunBridge: {
+    refreshAll,
+    removeReview,
+    replaceSelectedReviewRuns,
+    upsertLatestReviewRun,
+    upsertReviewSummary,
+    upsertSelectedReviewRun,
+  },
+  shell: {
+    currentPage,
+    errorMessage,
+    setFriendlyError,
+  },
+  viewState: {
+    closeReviewDrawer,
+    isReviewDrawerOpen,
+    selectReview,
+    selectedReview,
+    selectedReviewCanCancel,
+    selectedReviewCanReReview,
+    selectedReviewLatestRun,
+  },
+  workflow: {
+    cancelingReviewId,
+    followingUpReviewId,
+  },
+})
 
-const runsScreenContext = {
+const runsScreen = useRunsScreenController({
   activeReviewRuns,
   activeRuns,
   openTaskFromRun,
   recentReviewRuns,
   recentRuns,
   selectReview,
-}
+})
 
-const projectsScreenContext = {
+const projectsScreen = useProjectsScreenController({
   availableProjects,
   editingProject,
   saveProjectEdits,
   saving,
   selectedProjectDetails,
   selectedProjectDetailsId,
-}
+})
 
-const settingsScreenContext = {
-  activeRemoteWorkCount,
-  cleaningUpRemoteArtifacts,
-  cleanupPendingConfirmation,
-  cleanupSummary,
-  confirmRemoteCleanup,
-  confirmRemoteReset,
-  editingRemoteAgentSetup,
-  remoteAgentSettings,
-  resetPendingConfirmation,
-  resettingRemoteWorkspace,
-  resetSummary,
-  runnerSetupReady,
-  saveRemoteAgentSetup,
-  saving,
-  shellPreludeHelpText,
-  taskPendingRunnerSetup,
-}
+const settingsScreen = useSettingsScreenController({
+  actions: {
+    confirmRemoteCleanup,
+    confirmRemoteReset,
+    saveRemoteAgentSetup,
+  },
+  data: {
+    activeRemoteWorkCount,
+    remoteAgentSettings,
+    runnerSetupReady,
+    shellPreludeHelpText,
+  },
+  state: {
+    cleaningUpRemoteArtifacts,
+    cleanupPendingConfirmation,
+    cleanupSummary,
+    editingRemoteAgentSetup,
+    resetPendingConfirmation,
+    resettingRemoteWorkspace,
+    resetSummary,
+    saving,
+    taskPendingRunnerSetup,
+  },
+})
 </script>
 
 <template>
@@ -555,31 +589,31 @@ const settingsScreenContext = {
             <TasksScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'tasks'"
-              :context="tasksScreenContext"
+              :controller="tasksScreen"
             />
 
             <ReviewsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'reviews'"
-              :context="reviewsScreenContext"
+              :controller="reviewsScreen"
             />
 
             <RunsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'runs'"
-              :context="runsScreenContext"
+              :controller="runsScreen"
             />
 
             <ProjectsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'projects'"
-              :context="projectsScreenContext"
+              :controller="projectsScreen"
             />
 
             <SettingsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'settings'"
-              :context="settingsScreenContext"
+              :controller="settingsScreen"
             />
           </template>
         </section>

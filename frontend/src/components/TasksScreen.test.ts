@@ -26,7 +26,7 @@ function createContext() {
 
   return {
     active: true,
-    context: {
+    controller: {
       availableProjects: computed(() => [project]),
       cancelingDispatchTaskId: ref<string | null>(null),
       closeTaskDrawer: vi.fn(),

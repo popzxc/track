@@ -1,86 +1,18 @@
 <script setup lang="ts">
-import type { ComputedRef, Ref } from 'vue'
-
 import ConfirmDialog from './ConfirmDialog.vue'
 import FollowUpModal from './FollowUpModal.vue'
 import TaskDrawer from './TaskDrawer.vue'
 import TaskEditorModal from './TaskEditorModal.vue'
 import TasksPage from './TasksPage.vue'
-import { useTaskMutations, type PendingRunnerSetupRequest } from '../composables/useTaskMutations'
-import { drawerPrimaryAction, type TaskGroup } from '../features/tasks/presentation'
+import { useTaskMutations } from '../composables/useTaskMutations'
+import type { TasksScreenController } from '../composables/useTasksScreenController'
+import { drawerPrimaryAction } from '../features/tasks/presentation'
 import { taskTitle } from '../features/tasks/description'
-import type {
-  ProjectInfo,
-  RemoteAgentPreferredTool,
-  RemoteAgentSettings,
-  RunRecord,
-  Task,
-  TaskDispatch,
-} from '../types/task'
-
-type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
-type TaskLifecycleMutation = 'closing' | 'reopening' | 'deleting'
-
-interface TasksScreenContext {
-  availableProjects: ComputedRef<ProjectInfo[]>
-  cancelingDispatchTaskId: Ref<string | null>
-  closeTaskDrawer: () => void
-  creatingTask: Ref<boolean>
-  currentPage: Ref<AppPage>
-  defaultCreateProject: ComputedRef<string>
-  dispatchingTaskId: Ref<string | null>
-  discardingDispatchTaskId: Ref<string | null>
-  editingRemoteAgentSetup: Ref<boolean>
-  editingTask: Ref<Task | null>
-  followingUpTask: Ref<Task | null>
-  followingUpTaskId: Ref<string | null>
-  isTaskDrawerOpen: Ref<boolean>
-  latestTaskDispatchesByTaskId: Ref<Record<string, TaskDispatch>>
-  loadRemoteAgentSettings: () => Promise<void>
-  loadRuns: () => Promise<void>
-  openSelectedTaskProjectDetails: () => void
-  pendingSelectedTaskId: Ref<string | null>
-  refreshAll: () => Promise<void>
-  remoteAgentSettings: Ref<RemoteAgentSettings | null>
-  removeTaskRuns: (taskId: string) => void
-  runnerSetupReady: ComputedRef<boolean>
-  saving: Ref<boolean>
-  selectedProjectFilter: Ref<string>
-  selectedTask: ComputedRef<Task | null>
-  selectedTaskCanContinue: ComputedRef<boolean>
-  selectedTaskCanDiscardHistory: ComputedRef<boolean>
-  selectedTaskCanStartFresh: ComputedRef<boolean>
-  selectedTaskDispatchDisabledReason: ComputedRef<string | undefined>
-  selectedTaskDispatchTool: ComputedRef<RemoteAgentPreferredTool>
-  selectedTaskId: Ref<string | null>
-  selectedTaskLatestDispatch: ComputedRef<TaskDispatch | null>
-  selectedTaskLatestReusablePullRequest: ComputedRef<string | null>
-  selectedTaskLifecycleMessage: ComputedRef<string>
-  selectedTaskLifecycleMutation: ComputedRef<TaskLifecycleMutation | null>
-  selectedTaskPinnedTool: ComputedRef<RemoteAgentPreferredTool | null>
-  selectedTaskPrimaryActionDisabled: ComputedRef<boolean>
-  selectedTaskProject: ComputedRef<ProjectInfo | null>
-  selectedTaskRuns: Ref<RunRecord[]>
-  selectedTaskStartTool: Ref<RemoteAgentPreferredTool>
-  selectTask: (taskId: string) => void
-  setFriendlyError: (error: unknown) => void
-  showClosed: Ref<boolean>
-  taskGroups: ComputedRef<TaskGroup[]>
-  taskLifecycleMutation: Ref<TaskLifecycleMutation | null>
-  taskLifecycleMutationTaskId: Ref<string | null>
-  taskPendingDeletion: Ref<Task | null>
-  taskPendingRunnerSetup: Ref<PendingRunnerSetupRequest | null>
-  tasks: Ref<Task[]>
-  upsertLatestTaskDispatch: (dispatch: TaskDispatch) => void
-  upsertRunRecord: (task: Task, dispatch: TaskDispatch) => void
-  upsertSelectedTaskRun: (task: Task, dispatch: TaskDispatch) => void
-  errorMessage: Ref<string>
-  followingUpDispatch: ComputedRef<TaskDispatch | undefined>
-}
+import type { Task, TaskDispatch } from '../types/task'
 
 const props = defineProps<{
   active: boolean
-  context: TasksScreenContext
+  controller: TasksScreenController
 }>()
 
 // This container is the next ownership boundary after the earlier template
@@ -98,53 +30,53 @@ const {
   submitFollowUp,
   updateTaskStatus,
 } = useTaskMutations({
-  cancelingDispatchTaskId: props.context.cancelingDispatchTaskId,
-  closeTaskDrawer: props.context.closeTaskDrawer,
-  creatingTask: props.context.creatingTask,
-  currentPage: props.context.currentPage,
-  discardingDispatchTaskId: props.context.discardingDispatchTaskId,
-  dispatchingTaskId: props.context.dispatchingTaskId,
-  editingRemoteAgentSetup: props.context.editingRemoteAgentSetup,
-  editingTask: props.context.editingTask,
-  errorMessage: props.context.errorMessage,
-  followingUpTask: props.context.followingUpTask,
-  followingUpTaskId: props.context.followingUpTaskId,
-  isTaskDrawerOpen: props.context.isTaskDrawerOpen,
-  loadRemoteAgentSettings: props.context.loadRemoteAgentSettings,
-  loadRuns: props.context.loadRuns,
-  pendingSelectedTaskId: props.context.pendingSelectedTaskId,
-  refreshAll: props.context.refreshAll,
-  remoteAgentSettings: props.context.remoteAgentSettings,
-  removeTaskRuns: props.context.removeTaskRuns,
-  runnerSetupReady: props.context.runnerSetupReady,
-  saving: props.context.saving,
-  selectedProjectFilter: props.context.selectedProjectFilter,
-  selectedTask: props.context.selectedTask,
-  selectedTaskCanContinue: props.context.selectedTaskCanContinue,
-  selectedTaskDispatchTool: props.context.selectedTaskDispatchTool,
-  selectedTaskId: props.context.selectedTaskId,
-  selectedTaskLatestDispatch: props.context.selectedTaskLatestDispatch,
-  setFriendlyError: props.context.setFriendlyError,
-  showClosed: props.context.showClosed,
-  taskLifecycleMutation: props.context.taskLifecycleMutation,
-  taskLifecycleMutationTaskId: props.context.taskLifecycleMutationTaskId,
-  taskPendingDeletion: props.context.taskPendingDeletion,
-  taskPendingRunnerSetup: props.context.taskPendingRunnerSetup,
-  upsertLatestTaskDispatch: props.context.upsertLatestTaskDispatch,
-  upsertRunRecord: props.context.upsertRunRecord,
-  upsertSelectedTaskRun: props.context.upsertSelectedTaskRun,
+  cancelingDispatchTaskId: props.controller.cancelingDispatchTaskId,
+  closeTaskDrawer: props.controller.closeTaskDrawer,
+  creatingTask: props.controller.creatingTask,
+  currentPage: props.controller.currentPage,
+  discardingDispatchTaskId: props.controller.discardingDispatchTaskId,
+  dispatchingTaskId: props.controller.dispatchingTaskId,
+  editingRemoteAgentSetup: props.controller.editingRemoteAgentSetup,
+  editingTask: props.controller.editingTask,
+  errorMessage: props.controller.errorMessage,
+  followingUpTask: props.controller.followingUpTask,
+  followingUpTaskId: props.controller.followingUpTaskId,
+  isTaskDrawerOpen: props.controller.isTaskDrawerOpen,
+  loadRemoteAgentSettings: props.controller.loadRemoteAgentSettings,
+  loadRuns: props.controller.loadRuns,
+  pendingSelectedTaskId: props.controller.pendingSelectedTaskId,
+  refreshAll: props.controller.refreshAll,
+  remoteAgentSettings: props.controller.remoteAgentSettings,
+  removeTaskRuns: props.controller.removeTaskRuns,
+  runnerSetupReady: props.controller.runnerSetupReady,
+  saving: props.controller.saving,
+  selectedProjectFilter: props.controller.selectedProjectFilter,
+  selectedTask: props.controller.selectedTask,
+  selectedTaskCanContinue: props.controller.selectedTaskCanContinue,
+  selectedTaskDispatchTool: props.controller.selectedTaskDispatchTool,
+  selectedTaskId: props.controller.selectedTaskId,
+  selectedTaskLatestDispatch: props.controller.selectedTaskLatestDispatch,
+  setFriendlyError: props.controller.setFriendlyError,
+  showClosed: props.controller.showClosed,
+  taskLifecycleMutation: props.controller.taskLifecycleMutation,
+  taskLifecycleMutationTaskId: props.controller.taskLifecycleMutationTaskId,
+  taskPendingDeletion: props.controller.taskPendingDeletion,
+  taskPendingRunnerSetup: props.controller.taskPendingRunnerSetup,
+  upsertLatestTaskDispatch: props.controller.upsertLatestTaskDispatch,
+  upsertRunRecord: props.controller.upsertRunRecord,
+  upsertSelectedTaskRun: props.controller.upsertSelectedTaskRun,
 })
 
 function drawerPrimaryActionLabel(task: Task, dispatch?: TaskDispatch | null): string {
   switch (drawerPrimaryAction(task, dispatch)) {
     case 'reopen':
-      return props.context.selectedTaskLifecycleMutation.value === 'reopening' ? 'Reopening...' : 'Reopen task'
+      return props.controller.selectedTaskLifecycleMutation.value === 'reopening' ? 'Reopening...' : 'Reopen task'
     case 'cancel':
-      return props.context.cancelingDispatchTaskId.value === task.id ? 'Canceling...' : 'Cancel run'
+      return props.controller.cancelingDispatchTaskId.value === task.id ? 'Canceling...' : 'Cancel run'
     case 'continue':
-      return props.context.followingUpTaskId.value === task.id ? 'Continuing...' : 'Continue run'
+      return props.controller.followingUpTaskId.value === task.id ? 'Continuing...' : 'Continue run'
     case 'start':
-      return props.context.dispatchingTaskId.value === task.id ? 'Starting...' : 'Start agent'
+      return props.controller.dispatchingTaskId.value === task.id ? 'Starting...' : 'Start agent'
   }
 }
 
@@ -162,28 +94,28 @@ function drawerPrimaryActionClass(task: Task, dispatch?: TaskDispatch | null): s
 }
 
 function openTaskEditor(task: Task) {
-  props.context.editingTask.value = task
+  props.controller.editingTask.value = task
 }
 
 function openNewTaskEditor() {
-  props.context.creatingTask.value = true
+  props.controller.creatingTask.value = true
 }
 
 function closeTaskEditor() {
-  props.context.editingTask.value = null
-  props.context.creatingTask.value = false
+  props.controller.editingTask.value = null
+  props.controller.creatingTask.value = false
 }
 
 function closeFollowUpEditor() {
-  props.context.followingUpTask.value = null
+  props.controller.followingUpTask.value = null
 }
 
 function queueTaskDeletion(task: Task) {
-  props.context.taskPendingDeletion.value = task
+  props.controller.taskPendingDeletion.value = task
 }
 
 function clearPendingDeletion() {
-  props.context.taskPendingDeletion.value = null
+  props.controller.taskPendingDeletion.value = null
 }
 
 function openExternal(url: string) {
@@ -194,80 +126,80 @@ function openExternal(url: string) {
 <template>
   <TasksPage
     v-if="active"
-    :active-task-id="context.selectedTask.value?.id ?? null"
-    :drawer-open="context.isTaskDrawerOpen.value"
-    :latest-dispatch-by-task-id="context.latestTaskDispatchesByTaskId.value"
-    :projects="context.availableProjects.value"
-    :selected-project-filter="context.selectedProjectFilter.value"
-    :show-closed="context.showClosed.value"
-    :task-count="context.tasks.value.length"
-    :task-groups="context.taskGroups.value"
+    :active-task-id="controller.selectedTask.value?.id ?? null"
+    :drawer-open="controller.isTaskDrawerOpen.value"
+    :latest-dispatch-by-task-id="controller.latestTaskDispatchesByTaskId.value"
+    :projects="controller.availableProjects.value"
+    :selected-project-filter="controller.selectedProjectFilter.value"
+    :show-closed="controller.showClosed.value"
+    :task-count="controller.tasks.value.length"
+    :task-groups="controller.taskGroups.value"
     @request-create-task="openNewTaskEditor"
-    @request-select-task="context.selectTask"
-    @update:selected-project-filter="context.selectedProjectFilter.value = $event"
-    @update:show-closed="context.showClosed.value = $event"
+    @request-select-task="controller.selectTask"
+    @update:selected-project-filter="controller.selectedProjectFilter.value = $event"
+    @update:show-closed="controller.showClosed.value = $event"
   />
 
   <TaskDrawer
-    v-if="active && context.isTaskDrawerOpen.value && context.selectedTask.value"
-    :can-continue="context.selectedTaskCanContinue.value"
-    :can-discard-history="context.selectedTaskCanDiscardHistory.value"
-    :can-start-fresh="context.selectedTaskCanStartFresh.value"
-    :dispatch-disabled-reason="context.selectedTaskDispatchDisabledReason.value"
-    :is-discarding-history="context.discardingDispatchTaskId.value === context.selectedTask.value.id"
-    :is-dispatching="context.dispatchingTaskId.value === context.selectedTask.value.id"
-    :latest-dispatch="context.selectedTaskLatestDispatch.value"
-    :latest-reusable-pull-request="context.selectedTaskLatestReusablePullRequest.value"
-    :lifecycle-mutation="context.selectedTaskLifecycleMutation.value"
-    :lifecycle-progress-message="context.selectedTaskLifecycleMessage.value"
-    :pinned-tool="context.selectedTaskPinnedTool.value"
-    :primary-action-class="drawerPrimaryActionClass(context.selectedTask.value, context.selectedTaskLatestDispatch.value)"
-    :primary-action-disabled="context.selectedTaskPrimaryActionDisabled.value"
-    :primary-action-label="drawerPrimaryActionLabel(context.selectedTask.value, context.selectedTaskLatestDispatch.value)"
-    :start-tool="context.selectedTaskDispatchTool.value"
-    :task="context.selectedTask.value"
-    :task-project="context.selectedTaskProject.value"
-    :task-runs="context.selectedTaskRuns.value"
-    @close="context.closeTaskDrawer"
-    @request-close-task="updateTaskStatus(context.selectedTask.value, 'closed')"
-    @request-delete-task="queueTaskDeletion(context.selectedTask.value)"
-    @request-discard-history="discardRunHistory(context.selectedTask.value)"
-    @request-edit-task="openTaskEditor(context.selectedTask.value)"
-    @request-open-project="context.openSelectedTaskProjectDetails"
+    v-if="active && controller.isTaskDrawerOpen.value && controller.selectedTask.value"
+    :can-continue="controller.selectedTaskCanContinue.value"
+    :can-discard-history="controller.selectedTaskCanDiscardHistory.value"
+    :can-start-fresh="controller.selectedTaskCanStartFresh.value"
+    :dispatch-disabled-reason="controller.selectedTaskDispatchDisabledReason.value"
+    :is-discarding-history="controller.discardingDispatchTaskId.value === controller.selectedTask.value.id"
+    :is-dispatching="controller.dispatchingTaskId.value === controller.selectedTask.value.id"
+    :latest-dispatch="controller.selectedTaskLatestDispatch.value"
+    :latest-reusable-pull-request="controller.selectedTaskLatestReusablePullRequest.value"
+    :lifecycle-mutation="controller.selectedTaskLifecycleMutation.value"
+    :lifecycle-progress-message="controller.selectedTaskLifecycleMessage.value"
+    :pinned-tool="controller.selectedTaskPinnedTool.value"
+    :primary-action-class="drawerPrimaryActionClass(controller.selectedTask.value, controller.selectedTaskLatestDispatch.value)"
+    :primary-action-disabled="controller.selectedTaskPrimaryActionDisabled.value"
+    :primary-action-label="drawerPrimaryActionLabel(controller.selectedTask.value, controller.selectedTaskLatestDispatch.value)"
+    :start-tool="controller.selectedTaskDispatchTool.value"
+    :task="controller.selectedTask.value"
+    :task-project="controller.selectedTaskProject.value"
+    :task-runs="controller.selectedTaskRuns.value"
+    @close="controller.closeTaskDrawer"
+    @request-close-task="updateTaskStatus(controller.selectedTask.value, 'closed')"
+    @request-delete-task="queueTaskDeletion(controller.selectedTask.value)"
+    @request-discard-history="discardRunHistory(controller.selectedTask.value)"
+    @request-edit-task="openTaskEditor(controller.selectedTask.value)"
+    @request-open-project="controller.openSelectedTaskProjectDetails"
     @request-open-url="openExternal"
     @request-primary-action="handlePrimaryAction"
-    @request-start-fresh="startRemoteRun(context.selectedTask.value)"
-    @update:start-tool="context.selectedTaskStartTool.value = $event"
+    @request-start-fresh="startRemoteRun(controller.selectedTask.value)"
+    @update:start-tool="controller.selectedTaskStartTool.value = $event"
   />
 
   <TaskEditorModal
-    :busy="context.saving.value"
-    :default-project="context.defaultCreateProject.value"
-    :mode="context.creatingTask.value ? 'create' : 'edit'"
-    :open="context.creatingTask.value || context.editingTask.value !== null"
-    :projects="context.availableProjects.value"
-    :task="context.editingTask.value"
+    :busy="controller.saving.value"
+    :default-project="controller.defaultCreateProject.value"
+    :mode="controller.creatingTask.value ? 'create' : 'edit'"
+    :open="controller.creatingTask.value || controller.editingTask.value !== null"
+    :projects="controller.availableProjects.value"
+    :task="controller.editingTask.value"
     @cancel="closeTaskEditor"
-    @save="context.creatingTask.value ? createTaskFromWeb($event) : saveTaskEdits($event)"
+    @save="controller.creatingTask.value ? createTaskFromWeb($event) : saveTaskEdits($event)"
   />
 
   <FollowUpModal
-    :busy="context.followingUpTaskId.value !== null"
-    :dispatch="context.followingUpDispatch?.value"
-    :open="context.followingUpTask.value !== null"
-    :task="context.followingUpTask.value"
+    :busy="controller.followingUpTaskId.value !== null"
+    :dispatch="controller.followingUpDispatch?.value"
+    :open="controller.followingUpTask.value !== null"
+    :task="controller.followingUpTask.value"
     @cancel="closeFollowUpEditor"
     @save="submitFollowUp"
   />
 
   <ConfirmDialog
-    :busy="context.saving.value"
+    :busy="controller.saving.value"
     confirm-busy-label="Deleting..."
     confirm-label="Delete forever"
     confirm-variant="danger"
-    :description="context.taskPendingDeletion.value ? `Delete ${taskTitle(context.taskPendingDeletion.value)} permanently? This cannot be undone.` : ''"
+    :description="controller.taskPendingDeletion.value ? `Delete ${taskTitle(controller.taskPendingDeletion.value)} permanently? This cannot be undone.` : ''"
     eyebrow="Destructive action"
-    :open="context.taskPendingDeletion.value !== null"
+    :open="controller.taskPendingDeletion.value !== null"
     title="Delete task"
     @cancel="clearPendingDeletion"
     @confirm="confirmDelete"

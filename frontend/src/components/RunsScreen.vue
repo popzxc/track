@@ -1,24 +1,10 @@
 <script setup lang="ts">
-import type { ComputedRef } from 'vue'
-
 import RunsPage from './RunsPage.vue'
-import type {
-  ReviewSummary,
-  RunRecord,
-} from '../types/task'
-
-interface RunsScreenContext {
-  activeReviewRuns: ComputedRef<ReviewSummary[]>
-  activeRuns: ComputedRef<RunRecord[]>
-  openTaskFromRun: (run: RunRecord) => void
-  recentReviewRuns: ComputedRef<ReviewSummary[]>
-  recentRuns: ComputedRef<RunRecord[]>
-  selectReview: (reviewId: string) => void
-}
+import type { RunsScreenController } from '../composables/useRunsScreenController'
 
 const props = defineProps<{
   active: boolean
-  context: RunsScreenContext
+  controller: RunsScreenController
 }>()
 
 function openExternal(url: string) {
@@ -29,12 +15,12 @@ function openExternal(url: string) {
 <template>
   <RunsPage
     v-if="active"
-    :active-review-runs="context.activeReviewRuns.value"
-    :active-runs="context.activeRuns.value"
-    :recent-review-runs="context.recentReviewRuns.value"
-    :recent-runs="context.recentRuns.value"
-    @request-open-review="context.selectReview"
-    @request-open-task-run="context.openTaskFromRun"
+    :active-review-runs="controller.activeReviewRuns.value"
+    :active-runs="controller.activeRuns.value"
+    :recent-review-runs="controller.recentReviewRuns.value"
+    :recent-runs="controller.recentRuns.value"
+    @request-open-review="controller.selectReview"
+    @request-open-task-run="controller.openTaskFromRun"
     @request-open-url="openExternal"
   />
 </template>

@@ -1,56 +1,18 @@
 <script setup lang="ts">
-import type { ComputedRef, Ref } from 'vue'
-
 import ConfirmDialog from './ConfirmDialog.vue'
 import ReviewDrawer from './ReviewDrawer.vue'
 import ReviewFollowUpModal from './ReviewFollowUpModal.vue'
 import ReviewRequestModal from './ReviewRequestModal.vue'
 import ReviewsPage from './ReviewsPage.vue'
 import { useReviewMutations } from '../composables/useReviewMutations'
+import type { ReviewsScreenController } from '../composables/useReviewsScreenController'
 import type {
-  RemoteAgentPreferredTool,
-  RemoteAgentSettings,
   ReviewRecord,
-  ReviewRunRecord,
-  ReviewSummary,
 } from '../types/task'
-
-type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
-
-interface ReviewsScreenContext {
-  cancelingReviewId: Ref<string | null>
-  canRequestReview: ComputedRef<boolean>
-  closeReviewDrawer: () => void
-  creatingReview: Ref<boolean>
-  currentPage: Ref<AppPage>
-  defaultRemoteAgentPreferredTool: ComputedRef<RemoteAgentPreferredTool>
-  errorMessage: Ref<string>
-  followingUpReview: Ref<ReviewRecord | null>
-  followingUpReviewId: Ref<string | null>
-  isReviewDrawerOpen: Ref<boolean>
-  refreshAll: () => Promise<void>
-  remoteAgentSettings: Ref<RemoteAgentSettings | null>
-  removeReview: (reviewId: string) => void
-  replaceSelectedReviewRuns: (reviewRuns: ReviewRunRecord[]) => void
-  reviewPendingDeletion: Ref<ReviewRecord | null>
-  reviewRequestDisabledReason: ComputedRef<string | undefined>
-  reviews: Ref<ReviewSummary[]>
-  saving: Ref<boolean>
-  selectedReview: ComputedRef<ReviewRecord | null>
-  selectedReviewCanCancel: ComputedRef<boolean>
-  selectedReviewCanReReview: ComputedRef<boolean>
-  selectedReviewLatestRun: ComputedRef<ReviewRunRecord | null>
-  selectedReviewRuns: Ref<ReviewRunRecord[]>
-  selectReview: (reviewId: string) => void
-  setFriendlyError: (error: unknown) => void
-  upsertLatestReviewRun: (reviewId: string, latestRun: ReviewRunRecord) => void
-  upsertReviewSummary: (review: ReviewRecord, latestRun?: ReviewRunRecord | null) => void
-  upsertSelectedReviewRun: (run: ReviewRunRecord) => void
-}
 
 const props = defineProps<{
   active: boolean
-  context: ReviewsScreenContext
+  controller: ReviewsScreenController
 }>()
 
 // Reviews are a separate user workflow from task dispatches even though they
@@ -63,50 +25,50 @@ const {
   createReviewFromWeb,
   submitReviewFollowUp,
 } = useReviewMutations({
-  cancelingReviewId: props.context.cancelingReviewId,
-  creatingReview: props.context.creatingReview,
-  currentPage: props.context.currentPage,
-  errorMessage: props.context.errorMessage,
-  followingUpReview: props.context.followingUpReview,
-  followingUpReviewId: props.context.followingUpReviewId,
-  refreshAll: props.context.refreshAll,
-  removeReview: props.context.removeReview,
-  replaceSelectedReviewRuns: props.context.replaceSelectedReviewRuns,
-  reviewPendingDeletion: props.context.reviewPendingDeletion,
-  saving: props.context.saving,
-  selectReview: props.context.selectReview,
-  setFriendlyError: props.context.setFriendlyError,
-  upsertLatestReviewRun: props.context.upsertLatestReviewRun,
-  upsertReviewSummary: props.context.upsertReviewSummary,
-  upsertSelectedReviewRun: props.context.upsertSelectedReviewRun,
+  cancelingReviewId: props.controller.cancelingReviewId,
+  creatingReview: props.controller.creatingReview,
+  currentPage: props.controller.currentPage,
+  errorMessage: props.controller.errorMessage,
+  followingUpReview: props.controller.followingUpReview,
+  followingUpReviewId: props.controller.followingUpReviewId,
+  refreshAll: props.controller.refreshAll,
+  removeReview: props.controller.removeReview,
+  replaceSelectedReviewRuns: props.controller.replaceSelectedReviewRuns,
+  reviewPendingDeletion: props.controller.reviewPendingDeletion,
+  saving: props.controller.saving,
+  selectReview: props.controller.selectReview,
+  setFriendlyError: props.controller.setFriendlyError,
+  upsertLatestReviewRun: props.controller.upsertLatestReviewRun,
+  upsertReviewSummary: props.controller.upsertReviewSummary,
+  upsertSelectedReviewRun: props.controller.upsertSelectedReviewRun,
 })
 
 function openNewReviewEditor() {
-  props.context.creatingReview.value = true
+  props.controller.creatingReview.value = true
 }
 
 function closeReviewEditor() {
-  props.context.creatingReview.value = false
+  props.controller.creatingReview.value = false
 }
 
-function openReviewFollowUpEditor(review = props.context.selectedReview.value) {
+function openReviewFollowUpEditor(review = props.controller.selectedReview.value) {
   if (!review) {
     return
   }
 
-  props.context.followingUpReview.value = review
+  props.controller.followingUpReview.value = review
 }
 
 function closeReviewFollowUpEditor() {
-  props.context.followingUpReview.value = null
+  props.controller.followingUpReview.value = null
 }
 
 function queueReviewDeletion(review: ReviewRecord) {
-  props.context.reviewPendingDeletion.value = review
+  props.controller.reviewPendingDeletion.value = review
 }
 
 function clearPendingReviewDeletion() {
-  props.context.reviewPendingDeletion.value = null
+  props.controller.reviewPendingDeletion.value = null
 }
 
 function openExternal(url: string) {
@@ -114,32 +76,32 @@ function openExternal(url: string) {
 }
 
 function openSettingsPage() {
-  props.context.currentPage.value = 'settings'
+  props.controller.currentPage.value = 'settings'
 }
 </script>
 
 <template>
   <ReviewsPage
     v-if="active"
-    :can-request-review="context.canRequestReview.value"
-    :review-request-disabled-reason="context.reviewRequestDisabledReason.value"
-    :reviews="context.reviews.value"
+    :can-request-review="controller.canRequestReview.value"
+    :review-request-disabled-reason="controller.reviewRequestDisabledReason.value"
+    :reviews="controller.reviews.value"
     @request-create-review="openNewReviewEditor"
     @request-open-settings="openSettingsPage"
-    @request-select-review="context.selectReview"
+    @request-select-review="controller.selectReview"
   />
 
   <ReviewDrawer
-    v-if="active && context.isReviewDrawerOpen.value && context.selectedReview.value"
-    :can-cancel="context.selectedReviewCanCancel.value"
-    :can-re-review="context.selectedReviewCanReReview.value"
-    :canceling-review-id="context.cancelingReviewId.value"
-    :following-up-review-id="context.followingUpReviewId.value"
-    :latest-run="context.selectedReviewLatestRun.value"
-    :review="context.selectedReview.value"
-    :review-runs="context.selectedReviewRuns.value"
-    :saving="context.saving.value"
-    @close="context.closeReviewDrawer"
+    v-if="active && controller.isReviewDrawerOpen.value && controller.selectedReview.value"
+    :can-cancel="controller.selectedReviewCanCancel.value"
+    :can-re-review="controller.selectedReviewCanReReview.value"
+    :canceling-review-id="controller.cancelingReviewId.value"
+    :following-up-review-id="controller.followingUpReviewId.value"
+    :latest-run="controller.selectedReviewLatestRun.value"
+    :review="controller.selectedReview.value"
+    :review-runs="controller.selectedReviewRuns.value"
+    :saving="controller.saving.value"
+    @close="controller.closeReviewDrawer"
     @request-cancel-review-run="cancelReviewRun"
     @request-delete-review="queueReviewDeletion"
     @request-open-url="openExternal"
@@ -147,30 +109,30 @@ function openSettingsPage() {
   />
 
   <ReviewRequestModal
-    :busy="context.saving.value"
-    :default-preferred-tool="context.defaultRemoteAgentPreferredTool.value"
-    :main-user="context.remoteAgentSettings.value?.reviewFollowUp?.mainUser"
-    :open="context.creatingReview.value"
+    :busy="controller.saving.value"
+    :default-preferred-tool="controller.defaultRemoteAgentPreferredTool.value"
+    :main-user="controller.remoteAgentSettings.value?.reviewFollowUp?.mainUser"
+    :open="controller.creatingReview.value"
     @cancel="closeReviewEditor"
     @save="createReviewFromWeb"
   />
 
   <ReviewFollowUpModal
-    :busy="context.followingUpReviewId.value !== null"
-    :open="context.followingUpReview.value !== null"
-    :review="context.followingUpReview.value"
+    :busy="controller.followingUpReviewId.value !== null"
+    :open="controller.followingUpReview.value !== null"
+    :review="controller.followingUpReview.value"
     @cancel="closeReviewFollowUpEditor"
     @save="submitReviewFollowUp"
   />
 
   <ConfirmDialog
-    :busy="context.saving.value"
+    :busy="controller.saving.value"
     confirm-busy-label="Deleting..."
     confirm-label="Delete review"
     confirm-variant="danger"
-    :description="context.reviewPendingDeletion.value ? `Delete the saved review for ${context.reviewPendingDeletion.value.repositoryFullName} PR #${context.reviewPendingDeletion.value.pullRequestNumber}? This removes local history and remote review artifacts.` : ''"
+    :description="controller.reviewPendingDeletion.value ? `Delete the saved review for ${controller.reviewPendingDeletion.value.repositoryFullName} PR #${controller.reviewPendingDeletion.value.pullRequestNumber}? This removes local history and remote review artifacts.` : ''"
     eyebrow="Destructive action"
-    :open="context.reviewPendingDeletion.value !== null"
+    :open="controller.reviewPendingDeletion.value !== null"
     title="Delete PR review"
     @cancel="clearPendingReviewDeletion"
     @confirm="confirmReviewDelete"

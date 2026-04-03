@@ -23,7 +23,7 @@ function createContext() {
 
   return {
     active: true,
-    context: {
+    controller: {
       activeReviewRuns: computed(() => [{ review, latestRun }]),
       activeRuns: computed(() => [{ task, dispatch }]),
       openTaskFromRun: vi.fn(),
@@ -42,10 +42,10 @@ describe('RunsScreen', () => {
     })
 
     wrapper.findComponent({ name: 'RunsPage' }).vm.$emit('request-open-review', 'review-123')
-    wrapper.findComponent({ name: 'RunsPage' }).vm.$emit('request-open-task-run', props.context.activeRuns.value[0])
+    wrapper.findComponent({ name: 'RunsPage' }).vm.$emit('request-open-task-run', props.controller.activeRuns.value[0])
 
-    expect(props.context.selectReview).toHaveBeenCalledWith('review-123')
-    expect(props.context.openTaskFromRun).toHaveBeenCalledWith(props.context.activeRuns.value[0])
+    expect(props.controller.selectReview).toHaveBeenCalledWith('review-123')
+    expect(props.controller.openTaskFromRun).toHaveBeenCalledWith(props.controller.activeRuns.value[0])
   })
 
   it('opens external URLs from the runs surface', () => {
