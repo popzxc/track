@@ -199,6 +199,22 @@ When adding comments:
 Concentrate comments where future readers would otherwise have to reconstruct
 intent.
 
+## Module Layout
+
+When a Rust module has child modules, the parent module should live at
+`mod.rs` inside its directory rather than as a sibling `<module>.rs` file next
+to a `<module>/` directory.
+
+Prefer:
+
+- `src/foo/mod.rs`
+- `src/foo/bar.rs`
+
+Avoid:
+
+- `src/foo.rs`
+- `src/foo/bar.rs`
+
 ## Build Artifacts And Workspace Hygiene
 
 Do not commit local build leftovers or generated files in source directories.
