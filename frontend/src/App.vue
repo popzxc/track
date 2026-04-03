@@ -43,13 +43,15 @@ import SettingsPage from './components/SettingsPage.vue'
 import TaskDrawer from './components/TaskDrawer.vue'
 import TaskEditorModal from './components/TaskEditorModal.vue'
 import TasksPage from './components/TasksPage.vue'
+import { useProjectViewState } from './composables/useProjectViewState'
+import { useReviewViewState } from './composables/useReviewViewState'
+import { useTaskViewState } from './composables/useTaskViewState'
 import {
   dispatchBadgeClass,
   dispatchStatusLabel,
   dispatchSummary,
   drawerPrimaryAction,
   formatDateTime,
-  getRunStartDisabledReason,
   groupTasksByProject,
   mergeProjects,
 } from './features/tasks/presentation'
@@ -112,15 +114,6 @@ const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
 const selectedTaskRuns = ref<RunRecord[]>([])
 const selectedReviewRuns = ref<ReviewRunRecord[]>([])
 const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
-const selectedTaskStartTool = ref<RemoteAgentPreferredTool>('codex')
-const showClosed = ref(false)
-const selectedProjectFilter = ref('')
-const selectedTaskId = ref<string | null>(null)
-const selectedReviewId = ref<string | null>(null)
-const pendingSelectedTaskId = ref<string | null>(null)
-const selectedProjectDetailsId = ref<string | null>(null)
-const isTaskDrawerOpen = ref(false)
-const isReviewDrawerOpen = ref(false)
 const taskChangeVersion = ref<number | null>(null)
 const loading = ref(true)
 const refreshing = ref(false)
@@ -180,6 +173,9 @@ const defaultRemoteAgentPreferredTool = computed<RemoteAgentPreferredTool>(
 )
 
 const availableProjects = computed(() => mergeProjects(projects.value, taskProjectOptions.value))
+const latestDispatchByTaskId = computed<Record<string, TaskDispatch>>(
+  () => latestTaskDispatchesByTaskId.value,
+)
 const reviewRequestDisabledReason = computed(() => {
   if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
     return 'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/track_remote_agent` locally first.'
@@ -198,6 +194,76 @@ const reviewRequestDisabledReason = computed(() => {
 const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
 const migrationRequired = computed(() => Boolean(migrationStatus.value?.requiresMigration))
 
+const {
+  closeTaskDrawer,
+  isTaskDrawerOpen,
+  openTaskFromRun,
+  pendingSelectedTaskId,
+  selectTask,
+  selectedProjectFilter,
+  selectedTask,
+  selectedTaskCanContinue,
+  selectedTaskCanDiscardHistory,
+  selectedTaskCanStartFresh,
+  selectedTaskDispatchDisabledReason,
+  selectedTaskDispatchTool,
+  selectedTaskId,
+  selectedTaskLatestDispatch,
+  selectedTaskLatestReusablePullRequest,
+  selectedTaskLifecycleMessage,
+  selectedTaskLifecycleMutation,
+  selectedTaskPinnedTool,
+  selectedTaskPrimaryActionDisabled,
+  selectedTaskProject,
+  selectedTaskStartTool,
+  showClosed,
+} = useTaskViewState({
+  availableProjects,
+  cancelingDispatchTaskId,
+  currentPage,
+  defaultRemoteAgentPreferredTool,
+  dispatchingTaskId,
+  followingUpTaskId,
+  latestDispatchByTaskId,
+  loadSelectedTaskRunHistory,
+  remoteAgentSettings,
+  selectedTaskRuns,
+  setFriendlyError,
+  taskLifecycleMutation,
+  taskLifecycleMutationTaskId,
+  tasks,
+})
+
+const {
+  defaultCreateProject,
+  selectProjectDetails,
+  selectedProjectDetails,
+  selectedProjectDetailsId,
+} = useProjectViewState({
+  availableProjects,
+  closeTaskDrawer,
+  currentPage,
+  selectedProjectFilter,
+})
+
+const {
+  closeReviewDrawer,
+  isReviewDrawerOpen,
+  selectReview,
+  selectedReview,
+  selectedReviewCanCancel,
+  selectedReviewCanReReview,
+  selectedReviewId,
+  selectedReviewLatestRun,
+} = useReviewViewState({
+  currentPage,
+  followingUpReview,
+  loadSelectedReviewRunHistory,
+  reviews,
+  selectedReviewRuns,
+  setFriendlyError,
+})
+
 // =============================================================================
 // Task Grouping
 // =============================================================================
@@ -209,123 +275,6 @@ const migrationRequired = computed(() => Boolean(migrationStatus.value?.requires
 const taskGroups = computed(() => {
   return groupTasksByProject(tasks.value)
 })
-
-const latestDispatchByTaskId = computed<Record<string, TaskDispatch>>(
-  () => latestTaskDispatchesByTaskId.value,
-)
-
-const selectedTask = computed(() =>
-  tasks.value.find((task) => task.id === selectedTaskId.value) ?? null,
-)
-
-const selectedTaskProject = computed(() =>
-  selectedTask.value
-    ? availableProjects.value.find((project) => project.canonicalName === selectedTask.value?.project) ?? null
-    : null,
-)
-
-const selectedTaskLatestDispatch = computed(() =>
-  selectedTask.value ? latestDispatchByTaskId.value[selectedTask.value.id] ?? null : null,
-)
-
-const selectedTaskPinnedTool = computed<RemoteAgentPreferredTool | null>(
-  () => selectedTaskLatestDispatch.value?.preferredTool ?? null,
-)
-
-const selectedTaskDispatchTool = computed<RemoteAgentPreferredTool>(
-  () => selectedTaskPinnedTool.value ?? selectedTaskStartTool.value,
-)
-
-const selectedTaskLatestReusablePullRequest = computed(() =>
-  selectedTaskRuns.value.find((run) => Boolean(run.dispatch.pullRequestUrl))?.dispatch.pullRequestUrl
-    ?? selectedTaskLatestDispatch.value?.pullRequestUrl
-    ?? null,
-)
-
-const selectedTaskLifecycleMutation = computed(() =>
-  selectedTask.value && taskLifecycleMutationTaskId.value === selectedTask.value.id
-    ? taskLifecycleMutation.value
-    : null,
-)
-
-const selectedTaskDispatchDisabledReason = computed(() =>
-  selectedTask.value
-    ? getRunStartDisabledReason(selectedTask.value, availableProjects.value, remoteAgentSettings.value)
-    : undefined,
-)
-
-const selectedTaskCanContinue = computed(() =>
-  Boolean(
-    selectedTask.value &&
-      selectedTaskLatestDispatch.value &&
-      !selectedTaskDispatchDisabledReason.value &&
-      selectedTaskLatestDispatch.value.status !== 'preparing' &&
-      selectedTaskLatestDispatch.value.status !== 'running' &&
-      selectedTaskLatestDispatch.value.branchName &&
-      selectedTaskLatestDispatch.value.worktreePath,
-  ),
-)
-
-const selectedTaskCanStartFresh = computed(() =>
-  Boolean(
-    selectedTask.value &&
-      selectedTask.value.status === 'open' &&
-      !selectedTaskDispatchDisabledReason.value &&
-      selectedTaskLatestDispatch.value &&
-      selectedTaskLatestDispatch.value.status !== 'preparing' &&
-      selectedTaskLatestDispatch.value.status !== 'running',
-  ),
-)
-
-const selectedTaskCanDiscardHistory = computed(() =>
-  Boolean(
-    selectedTask.value &&
-      selectedTaskLatestDispatch.value &&
-      selectedTaskLatestDispatch.value.status !== 'preparing' &&
-      selectedTaskLatestDispatch.value.status !== 'running',
-  ),
-)
-
-const selectedTaskLifecycleMessage = computed(() =>
-  taskLifecycleProgressMessage(selectedTaskLifecycleMutation.value),
-)
-
-const selectedTaskPrimaryActionDisabled = computed(() =>
-  Boolean(
-    !selectedTask.value ||
-      selectedTaskLifecycleMutation.value !== null ||
-      dispatchingTaskId.value === selectedTask.value.id ||
-      cancelingDispatchTaskId.value === selectedTask.value.id ||
-      followingUpTaskId.value === selectedTask.value.id ||
-      (
-        selectedTask.value.status === 'open' &&
-        selectedTaskLatestDispatch.value?.status !== 'preparing' &&
-        selectedTaskLatestDispatch.value?.status !== 'running' &&
-        !selectedTaskCanContinue.value &&
-        Boolean(selectedTaskDispatchDisabledReason.value)
-      ),
-  ),
-)
-
-const selectedReviewSummary = computed(() =>
-  reviews.value.find((summary) => summary.review.id === selectedReviewId.value) ?? null,
-)
-
-const selectedReview = computed(() => selectedReviewSummary.value?.review ?? null)
-
-const selectedReviewLatestRun = computed(() => selectedReviewSummary.value?.latestRun ?? null)
-
-const selectedReviewCanCancel = computed(() =>
-  Boolean(
-    selectedReview.value &&
-      selectedReviewLatestRun.value &&
-      (selectedReviewLatestRun.value.status === 'preparing' || selectedReviewLatestRun.value.status === 'running'),
-  ),
-)
-
-const selectedReviewCanReReview = computed(() =>
-  Boolean(selectedReview.value && !selectedReviewCanCancel.value),
-)
 
 const activeRuns = computed(() =>
   runs.value
@@ -365,21 +314,6 @@ const recentReviewRuns = computed(() =>
       return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
     })
     .slice(0, 40),
-)
-
-const selectedProjectRecord = computed(() =>
-  availableProjects.value.find((project) => project.canonicalName === selectedProjectFilter.value) ?? null,
-)
-
-const selectedProjectDetails = computed(() =>
-  availableProjects.value.find((project) => project.canonicalName === selectedProjectDetailsId.value) ?? null,
-)
-
-const defaultCreateProject = computed(
-  () =>
-    selectedProjectRecord.value?.canonicalName ??
-    availableProjects.value[0]?.canonicalName ??
-    '',
 )
 
 const followingUpDispatch = computed(() =>
@@ -433,19 +367,6 @@ function beginTaskLifecycleMutation(taskId: string, mutation: TaskLifecycleMutat
 function clearTaskLifecycleMutation() {
   taskLifecycleMutationTaskId.value = null
   taskLifecycleMutation.value = null
-}
-
-function taskLifecycleProgressMessage(mutation: TaskLifecycleMutation | null): string {
-  switch (mutation) {
-    case 'closing':
-      return 'Closing the task and cleaning up its remote worktree...'
-    case 'reopening':
-      return 'Reopening the task so you can continue work...'
-    case 'deleting':
-      return 'Deleting the task and removing its remote artifacts...'
-    case null:
-      return ''
-  }
 }
 
 function openExternal(url: string) {
@@ -560,61 +481,6 @@ function removeReview(reviewId: string) {
   if (selectedReviewId.value === reviewId) {
     closeReviewDrawer()
   }
-}
-
-function selectTask(taskId: string) {
-  selectedTaskId.value = taskId
-  isTaskDrawerOpen.value = true
-
-  if (currentPage.value !== 'tasks') {
-    currentPage.value = 'tasks'
-  }
-}
-
-function closeTaskDrawer() {
-  isTaskDrawerOpen.value = false
-  selectedTaskId.value = null
-}
-
-function selectReview(reviewId: string) {
-  selectedReviewId.value = reviewId
-  isReviewDrawerOpen.value = true
-
-  if (currentPage.value !== 'reviews') {
-    currentPage.value = 'reviews'
-  }
-}
-
-function closeReviewDrawer() {
-  isReviewDrawerOpen.value = false
-  selectedReviewId.value = null
-  selectedReviewRuns.value = []
-  followingUpReview.value = null
-}
-
-function openTaskFromRun(run: RunRecord) {
-  currentPage.value = 'tasks'
-  pendingSelectedTaskId.value = run.task.id
-  isTaskDrawerOpen.value = true
-
-  const needsProjectFilterChange = selectedProjectFilter.value !== run.task.project
-  const needsClosedTasks = run.task.status === 'closed' && !showClosed.value
-
-  selectedProjectFilter.value = run.task.project
-  if (run.task.status === 'closed') {
-    showClosed.value = true
-  }
-
-  if (!needsProjectFilterChange && !needsClosedTasks) {
-    selectedTaskId.value = run.task.id
-    pendingSelectedTaskId.value = null
-  }
-}
-
-function selectProjectDetails(project: ProjectInfo) {
-  selectedProjectDetailsId.value = project.canonicalName
-  currentPage.value = 'projects'
-  isTaskDrawerOpen.value = false
 }
 
 function openSelectedTaskProjectDetails() {
@@ -1366,116 +1232,6 @@ watch([showClosed, selectedProjectFilter], () => {
       setFriendlyError(error)
     }
   })()
-})
-
-watch(
-  tasks,
-  (nextTasks) => {
-    if (pendingSelectedTaskId.value) {
-      const pendingTask = nextTasks.find((task) => task.id === pendingSelectedTaskId.value)
-      if (pendingTask) {
-        selectedTaskId.value = pendingTask.id
-        pendingSelectedTaskId.value = null
-        isTaskDrawerOpen.value = true
-        return
-      }
-    }
-
-    if (selectedTaskId.value && !nextTasks.some((task) => task.id === selectedTaskId.value)) {
-      closeTaskDrawer()
-    }
-  },
-  { immediate: true },
-)
-
-watch(
-  reviews,
-  (nextReviews) => {
-    if (
-      selectedReviewId.value &&
-      !nextReviews.some((summary) => summary.review.id === selectedReviewId.value)
-    ) {
-      closeReviewDrawer()
-    }
-  },
-  { immediate: true },
-)
-
-watch(
-  availableProjects,
-  (nextProjects) => {
-    if (
-      !selectedProjectDetailsId.value ||
-      !nextProjects.some((project) => project.canonicalName === selectedProjectDetailsId.value)
-    ) {
-      selectedProjectDetailsId.value = nextProjects[0]?.canonicalName ?? null
-    }
-
-    if (
-      selectedProjectFilter.value &&
-      !nextProjects.some((project) => project.canonicalName === selectedProjectFilter.value)
-    ) {
-      selectedProjectFilter.value = ''
-    }
-  },
-  { immediate: true },
-)
-
-watch(currentPage, (nextPage) => {
-  if (nextPage !== 'tasks') {
-    isTaskDrawerOpen.value = false
-    selectedTaskRuns.value = []
-  }
-
-  if (nextPage !== 'reviews') {
-    isReviewDrawerOpen.value = false
-    selectedReviewRuns.value = []
-    followingUpReview.value = null
-  }
-})
-
-watch(
-  selectedTaskId,
-  () => {
-    selectedTaskStartTool.value = defaultRemoteAgentPreferredTool.value
-  },
-  { immediate: true },
-)
-
-watch(defaultRemoteAgentPreferredTool, (nextTool, previousTool) => {
-  if (selectedTaskStartTool.value === previousTool) {
-    selectedTaskStartTool.value = nextTool
-  }
-})
-
-watch([isTaskDrawerOpen, selectedTask], ([drawerOpen, task]) => {
-  if (!task) {
-    isTaskDrawerOpen.value = false
-    selectedTaskRuns.value = []
-    return
-  }
-
-  if (!drawerOpen) {
-    selectedTaskRuns.value = []
-    return
-  }
-
-  void loadSelectedTaskRunHistory().catch(setFriendlyError)
-})
-
-watch([isReviewDrawerOpen, selectedReview], ([drawerOpen, review]) => {
-  if (!review) {
-    isReviewDrawerOpen.value = false
-    selectedReviewRuns.value = []
-    return
-  }
-
-  if (!drawerOpen) {
-    selectedReviewRuns.value = []
-    return
-  }
-
-  void loadSelectedReviewRunHistory().catch(setFriendlyError)
 })
 
 onMounted(() => {
