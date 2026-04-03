@@ -24,7 +24,7 @@ use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_metadata::{
     ProjectMetadataUpdateInput, ProjectRecord, ProjectUpsertInput,
 };
-use track_remote_agent::{RemoteDispatchService, RemoteReviewService};
+use track_remote_agent::RemoteAgentServices;
 use track_types::build_info::BuildInfo;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::migration::{MigrationImportSummary, MigrationStatus};
@@ -50,6 +50,19 @@ pub struct AppState {
     pub review_repository: Arc<ReviewRepository>,
     pub task_repository: Arc<FileTaskRepository>,
     pub task_change_version: Arc<AtomicU64>,
+}
+
+impl AppState {
+    fn remote_agent_services(&self) -> RemoteAgentServices<'_> {
+        RemoteAgentServices::new(
+            &self.config_service,
+            &self.dispatch_repository,
+            &self.project_repository,
+            &self.task_repository,
+            &self.review_repository,
+            &self.review_dispatch_repository,
+        )
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -498,16 +511,9 @@ async fn cleanup_remote_agent_artifacts(
 ) -> Result<Json<RemoteCleanupResponse>, ApiError> {
     let cleanup_state = state.clone();
     let summary = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &cleanup_state.config_service,
-            dispatch_repository: &cleanup_state.dispatch_repository,
-            project_repository: &cleanup_state.project_repository,
-            task_repository: &cleanup_state.task_repository,
-            review_repository: &cleanup_state.review_repository,
-            review_dispatch_repository: &cleanup_state.review_dispatch_repository,
-        };
-
-        dispatch_service.cleanup_unused_remote_artifacts()
+        cleanup_state
+            .remote_agent_services()
+            .cleanup_unused_remote_artifacts()
     })
     .await
     .map_err(|error| ApiError::internal(format!("Remote cleanup task failed to join: {error}")))?
@@ -521,16 +527,7 @@ async fn reset_remote_agent_workspace(
 ) -> Result<Json<RemoteResetResponse>, ApiError> {
     let reset_state = state.clone();
     let summary = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &reset_state.config_service,
-            dispatch_repository: &reset_state.dispatch_repository,
-            project_repository: &reset_state.project_repository,
-            task_repository: &reset_state.task_repository,
-            review_repository: &reset_state.review_repository,
-            review_dispatch_repository: &reset_state.review_dispatch_repository,
-        };
-
-        dispatch_service.reset_remote_workspace()
+        reset_state.remote_agent_services().reset_remote_workspace()
     })
     .await
     .map_err(|error| ApiError::internal(format!("Remote reset task failed to join: {error}")))?
@@ -602,16 +599,10 @@ async fn list_dispatches(
     let state = state.clone();
     let task_ids = parse_dispatch_task_ids(uri.query());
     let dispatches = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &state.config_service,
-            dispatch_repository: &state.dispatch_repository,
-            project_repository: &state.project_repository,
-            task_repository: &state.task_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
-        dispatch_service.latest_dispatches_for_tasks(&task_ids)
+        state
+            .remote_agent_services()
+            .dispatch()
+            .latest_dispatches_for_tasks(&task_ids)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Dispatch refresh task failed to join: {error}")))?
@@ -627,16 +618,10 @@ async fn list_runs(
     let state = state.clone();
     let limit = query.limit;
     let runs = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &state.config_service,
-            dispatch_repository: &state.dispatch_repository,
-            project_repository: &state.project_repository,
-            task_repository: &state.task_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
-        let dispatches = dispatch_service.list_dispatches(limit)?;
+        let dispatches = state
+            .remote_agent_services()
+            .dispatch()
+            .list_dispatches(limit)?;
         let mut runs = Vec::new();
         for dispatch in dispatches {
             let task = match state.task_repository.get_task(&dispatch.task_id) {
@@ -666,17 +651,11 @@ async fn list_task_runs(
     let state = state.clone();
     let task_id = id.clone();
     let runs = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &state.config_service,
-            dispatch_repository: &state.dispatch_repository,
-            project_repository: &state.project_repository,
-            task_repository: &state.task_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
         let task = state.task_repository.get_task(&task_id)?;
-        let dispatches = dispatch_service.dispatch_history_for_task(&task_id)?;
+        let dispatches = state
+            .remote_agent_services()
+            .dispatch()
+            .dispatch_history_for_task(&task_id)?;
 
         Ok::<Vec<RunRecordResponse>, TrackError>(
             dispatches
@@ -698,19 +677,15 @@ async fn list_task_runs(
 async fn list_reviews(State(state): State<AppState>) -> Result<Json<ReviewsResponse>, ApiError> {
     let state = state.clone();
     let reviews = tokio::task::spawn_blocking(move || {
-        let review_service = RemoteReviewService {
-            config_service: &state.config_service,
-            project_repository: &state.project_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
         let reviews = state.review_repository.list_reviews()?;
         let review_ids = reviews
             .iter()
             .map(|review| review.id.clone())
             .collect::<Vec<_>>();
-        let latest_runs = review_service.latest_dispatches_for_reviews(&review_ids)?;
+        let latest_runs = state
+            .remote_agent_services()
+            .review()
+            .latest_dispatches_for_reviews(&review_ids)?;
         let latest_runs_by_review_id = latest_runs
             .into_iter()
             .map(|run| (run.review_id.clone(), run))
@@ -740,14 +715,10 @@ async fn list_review_runs(
     let state = state.clone();
     let review_id = id.clone();
     let runs = tokio::task::spawn_blocking(move || {
-        let review_service = RemoteReviewService {
-            config_service: &state.config_service,
-            project_repository: &state.project_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
-        review_service.dispatch_history_for_review(&review_id)
+        state
+            .remote_agent_services()
+            .review()
+            .dispatch_history_for_review(&review_id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Review runs refresh failed to join: {error}")))?
@@ -815,16 +786,10 @@ async fn patch_task(
     let patch_state = state.clone();
     let task_id = id.clone();
     let updated_task = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &patch_state.config_service,
-            dispatch_repository: &patch_state.dispatch_repository,
-            project_repository: &patch_state.project_repository,
-            task_repository: &patch_state.task_repository,
-            review_repository: &patch_state.review_repository,
-            review_dispatch_repository: &patch_state.review_dispatch_repository,
-        };
-
-        dispatch_service.update_task(&task_id, validated_input)
+        patch_state
+            .remote_agent_services()
+            .dispatch()
+            .update_task(&task_id, validated_input)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Patch task failed to join: {error}")))?
@@ -868,16 +833,10 @@ async fn delete_task(
     let delete_state = state.clone();
     let task_id = id.clone();
     tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &delete_state.config_service,
-            dispatch_repository: &delete_state.dispatch_repository,
-            project_repository: &delete_state.project_repository,
-            task_repository: &delete_state.task_repository,
-            review_repository: &delete_state.review_repository,
-            review_dispatch_repository: &delete_state.review_dispatch_repository,
-        };
-
-        dispatch_service.delete_task(&task_id)
+        delete_state
+            .remote_agent_services()
+            .dispatch()
+            .delete_task(&task_id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Delete task failed to join: {error}")))?
@@ -896,14 +855,10 @@ async fn create_review(
 
     let queue_state = state.clone();
     let (review, run) = tokio::task::spawn_blocking(move || {
-        let review_service = RemoteReviewService {
-            config_service: &queue_state.config_service,
-            project_repository: &queue_state.project_repository,
-            review_repository: &queue_state.review_repository,
-            review_dispatch_repository: &queue_state.review_dispatch_repository,
-        };
-
-        review_service.create_review(input)
+        queue_state
+            .remote_agent_services()
+            .review()
+            .create_review(input)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Create review failed to join: {error}")))?
@@ -926,14 +881,10 @@ async fn follow_up_review(
     let queue_state = state.clone();
     let review_id = id.clone();
     let run = tokio::task::spawn_blocking(move || {
-        let review_service = RemoteReviewService {
-            config_service: &queue_state.config_service,
-            project_repository: &queue_state.project_repository,
-            review_repository: &queue_state.review_repository,
-            review_dispatch_repository: &queue_state.review_dispatch_repository,
-        };
-
-        review_service.queue_follow_up_review_dispatch(&review_id, &input.request)
+        queue_state
+            .remote_agent_services()
+            .review()
+            .queue_follow_up_review_dispatch(&review_id, &input.request)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Follow-up review failed to join: {error}")))?
@@ -952,14 +903,10 @@ async fn delete_review(
     let delete_state = state.clone();
     let review_id = id.clone();
     tokio::task::spawn_blocking(move || {
-        let review_service = RemoteReviewService {
-            config_service: &delete_state.config_service,
-            project_repository: &delete_state.project_repository,
-            review_repository: &delete_state.review_repository,
-            review_dispatch_repository: &delete_state.review_dispatch_repository,
-        };
-
-        review_service.delete_review(&review_id)
+        delete_state
+            .remote_agent_services()
+            .review()
+            .delete_review(&review_id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Delete review failed to join: {error}")))?
@@ -974,16 +921,10 @@ fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
         let launch_state = state.clone();
         let launch_dispatch = queued_dispatch.clone();
         let join_result = tokio::task::spawn_blocking(move || {
-            let dispatch_service = RemoteDispatchService {
-                config_service: &launch_state.config_service,
-                dispatch_repository: &launch_state.dispatch_repository,
-                project_repository: &launch_state.project_repository,
-                task_repository: &launch_state.task_repository,
-                review_repository: &launch_state.review_repository,
-                review_dispatch_repository: &launch_state.review_dispatch_repository,
-            };
-
-            dispatch_service.launch_prepared_dispatch(launch_dispatch)
+            launch_state
+                .remote_agent_services()
+                .dispatch()
+                .launch_prepared_dispatch(launch_dispatch)
         })
         .await;
 
@@ -1013,14 +954,10 @@ fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRecord) {
         let launch_state = state.clone();
         let launch_dispatch = queued_dispatch.clone();
         let join_result = tokio::task::spawn_blocking(move || {
-            let review_service = RemoteReviewService {
-                config_service: &launch_state.config_service,
-                project_repository: &launch_state.project_repository,
-                review_repository: &launch_state.review_repository,
-                review_dispatch_repository: &launch_state.review_dispatch_repository,
-            };
-
-            review_service.launch_prepared_review(launch_dispatch)
+            launch_state
+                .remote_agent_services()
+                .review()
+                .launch_prepared_review(launch_dispatch)
         })
         .await;
 
@@ -1059,16 +996,9 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
 
             let reconcile_state = state.clone();
             let join_result = tokio::task::spawn_blocking(move || {
-                let dispatch_service = RemoteDispatchService {
-                    config_service: &reconcile_state.config_service,
-                    dispatch_repository: &reconcile_state.dispatch_repository,
-                    project_repository: &reconcile_state.project_repository,
-                    task_repository: &reconcile_state.task_repository,
-                    review_repository: &reconcile_state.review_repository,
-                    review_dispatch_repository: &reconcile_state.review_dispatch_repository,
-                };
-
-                dispatch_service.reconcile_review_follow_up()
+                reconcile_state
+                    .remote_agent_services()
+                    .reconcile_review_follow_up()
             })
             .await;
 
@@ -1163,16 +1093,10 @@ async fn dispatch_task(
     let queue_state = state.clone();
     let task_id = id.clone();
     let dispatch = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &queue_state.config_service,
-            dispatch_repository: &queue_state.dispatch_repository,
-            project_repository: &queue_state.project_repository,
-            task_repository: &queue_state.task_repository,
-            review_repository: &queue_state.review_repository,
-            review_dispatch_repository: &queue_state.review_dispatch_repository,
-        };
-
-        dispatch_service.queue_dispatch(&task_id, input.preferred_tool)
+        queue_state
+            .remote_agent_services()
+            .dispatch()
+            .queue_dispatch(&task_id, input.preferred_tool)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Dispatch task failed to join: {error}")))?
@@ -1194,16 +1118,10 @@ async fn follow_up_task(
     let queue_state = state.clone();
     let task_id = id.clone();
     let dispatch = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &queue_state.config_service,
-            dispatch_repository: &queue_state.dispatch_repository,
-            project_repository: &queue_state.project_repository,
-            task_repository: &queue_state.task_repository,
-            review_repository: &queue_state.review_repository,
-            review_dispatch_repository: &queue_state.review_dispatch_repository,
-        };
-
-        dispatch_service.queue_follow_up_dispatch(&task_id, &input.request)
+        queue_state
+            .remote_agent_services()
+            .dispatch()
+            .queue_follow_up_dispatch(&task_id, &input.request)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Follow-up task failed to join: {error}")))?
@@ -1221,16 +1139,10 @@ async fn cancel_task_dispatch(
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
     let state = state.clone();
     let canceled_dispatch = tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &state.config_service,
-            dispatch_repository: &state.dispatch_repository,
-            project_repository: &state.project_repository,
-            task_repository: &state.task_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
-        dispatch_service.cancel_dispatch(&id)
+        state
+            .remote_agent_services()
+            .dispatch()
+            .cancel_dispatch(&id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Cancel dispatch task failed to join: {error}")))?
@@ -1245,14 +1157,7 @@ async fn cancel_review_dispatch(
 ) -> Result<Json<ReviewRunRecord>, ApiError> {
     let state = state.clone();
     let canceled_dispatch = tokio::task::spawn_blocking(move || {
-        let review_service = RemoteReviewService {
-            config_service: &state.config_service,
-            project_repository: &state.project_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
-        review_service.cancel_dispatch(&id)
+        state.remote_agent_services().review().cancel_dispatch(&id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Cancel review task failed to join: {error}")))?
@@ -1267,16 +1172,10 @@ async fn discard_task_dispatch(
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
-        let dispatch_service = RemoteDispatchService {
-            config_service: &state.config_service,
-            dispatch_repository: &state.dispatch_repository,
-            project_repository: &state.project_repository,
-            task_repository: &state.task_repository,
-            review_repository: &state.review_repository,
-            review_dispatch_repository: &state.review_dispatch_repository,
-        };
-
-        dispatch_service.discard_dispatch_history(&id)
+        state
+            .remote_agent_services()
+            .dispatch()
+            .discard_dispatch_history(&id)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Discard dispatch task failed to join: {error}")))?

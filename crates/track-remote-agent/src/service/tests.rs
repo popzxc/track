@@ -29,12 +29,14 @@ use track_types::types::{
 
 use crate::types::RemoteDispatchSnapshot;
 
-use super::follow_up::{
-    latest_pull_request_for_branch, select_follow_up_base_dispatch,
-    select_previous_submitted_review_run,
+use super::dispatch::{
+    latest_pull_request_for_branch, refresh_dispatch_record_from_snapshot,
+    select_follow_up_base_dispatch,
 };
-use super::refresh::refresh_dispatch_record_from_snapshot;
-use super::{RemoteDispatchService, RemoteReviewService, StaticRemoteAgentConfigService};
+use super::review::select_previous_submitted_review_run;
+use super::{
+    RemoteAgentServices, RemoteDispatchService, RemoteReviewService, StaticRemoteAgentConfigService,
+};
 
 struct TestContext {
     _directory: TempDir,
@@ -102,24 +104,23 @@ impl TestContext {
         }
     }
 
+    fn remote_agent_services(&self) -> RemoteAgentServices<'_> {
+        RemoteAgentServices::new(
+            &self.config_service,
+            &self.dispatch_repository,
+            &self.project_repository,
+            &self.task_repository,
+            &self.review_repository,
+            &self.review_dispatch_repository,
+        )
+    }
+
     fn service(&self) -> RemoteDispatchService<'_> {
-        RemoteDispatchService {
-            config_service: &self.config_service,
-            dispatch_repository: &self.dispatch_repository,
-            project_repository: &self.project_repository,
-            task_repository: &self.task_repository,
-            review_repository: &self.review_repository,
-            review_dispatch_repository: &self.review_dispatch_repository,
-        }
+        self.remote_agent_services().dispatch()
     }
 
     fn review_service(&self) -> RemoteReviewService<'_> {
-        RemoteReviewService {
-            config_service: &self.config_service,
-            project_repository: &self.project_repository,
-            review_repository: &self.review_repository,
-            review_dispatch_repository: &self.review_dispatch_repository,
-        }
+        self.remote_agent_services().review()
     }
 
     fn create_task(&self, project: &str, description: &str) -> Task {
@@ -779,12 +780,12 @@ fn follow_up_dispatch_keeps_the_original_runner_tool() {
 #[test]
 fn task_dispatch_start_guard_serializes_same_task() {
     let acquired_in_second_thread = Arc::new(AtomicBool::new(false));
-    let guard = super::start_gate::TaskDispatchStartGuard::acquire("task-1");
+    let guard = super::dispatch::TaskDispatchStartGuard::acquire("task-1");
 
     std::thread::scope(|scope| {
         let acquired_in_second_thread_for_join = Arc::clone(&acquired_in_second_thread);
         let join_handle = scope.spawn(move || {
-            let _guard = super::start_gate::TaskDispatchStartGuard::acquire("task-1");
+            let _guard = super::dispatch::TaskDispatchStartGuard::acquire("task-1");
             acquired_in_second_thread_for_join.store(true, Ordering::SeqCst);
         });
 
@@ -809,12 +810,12 @@ fn task_dispatch_start_guard_serializes_same_task() {
 #[test]
 fn review_dispatch_start_guard_serializes_same_review() {
     let acquired_in_second_thread = Arc::new(AtomicBool::new(false));
-    let guard = super::start_gate::ReviewDispatchStartGuard::acquire("review-1");
+    let guard = super::review::ReviewDispatchStartGuard::acquire("review-1");
 
     std::thread::scope(|scope| {
         let acquired_in_second_thread_for_join = Arc::clone(&acquired_in_second_thread);
         let join_handle = scope.spawn(move || {
-            let _guard = super::start_gate::ReviewDispatchStartGuard::acquire("review-1");
+            let _guard = super::review::ReviewDispatchStartGuard::acquire("review-1");
             acquired_in_second_thread_for_join.store(true, Ordering::SeqCst);
         });
 
