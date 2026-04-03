@@ -49,7 +49,10 @@ impl DispatchRepository {
             review_request_user: None,
         };
 
-        self.save_dispatch(&record)?;
+        // Queue flows fill in branch/worktree context immediately after
+        // creating the record. Persisting the half-populated row here makes it
+        // visible to concurrent reconciliation before that launch context
+        // exists, which can incorrectly release a brand-new dispatch.
         Ok(record)
     }
 
@@ -403,4 +406,74 @@ fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackEr
             format!("Remote agent preferred tool `{value}` is not valid."),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+    use track_types::time_utils::now_utc;
+    use track_types::types::{Priority, Status, Task, TaskSource};
+
+    use super::DispatchRepository;
+    use crate::database::DatabaseContext;
+
+    #[test]
+    fn create_dispatch_keeps_new_record_in_memory_until_callers_save_launch_context() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let database_path = temp_dir.path().join("track.sqlite");
+        let repository =
+            DispatchRepository::new(Some(database_path.clone())).expect("repository should open");
+
+        // The repository initializes its own schema, but we still need the
+        // tasks table available so the test mirrors the real persisted shape.
+        DatabaseContext::new(Some(database_path))
+            .and_then(|database| database.initialize())
+            .expect("database schema should initialize");
+
+        let timestamp = now_utc();
+        let task = Task {
+            id: "20260403-111700-dispatch-race".to_owned(),
+            project: "project-a".to_owned(),
+            priority: Priority::High,
+            status: Status::Open,
+            description: "Dispatch race regression test".to_owned(),
+            created_at: timestamp,
+            updated_at: timestamp,
+            source: Some(TaskSource::Web),
+        };
+
+        let mut record = repository
+            .create_dispatch(
+                &task,
+                "198.51.100.10",
+                track_types::types::RemoteAgentPreferredTool::Codex,
+            )
+            .expect("dispatch record should build");
+
+        assert!(
+            repository
+                .latest_dispatch_for_task(&task.id)
+                .expect("dispatch lookup should succeed")
+                .is_none(),
+            "a newly created dispatch should stay invisible until its launch context is saved",
+        );
+
+        record.branch_name = Some(format!("track/{}", record.dispatch_id));
+        record.worktree_path = Some(format!(
+            "/home/track/workspace/{}/worktrees/{}",
+            task.project, record.dispatch_id
+        ));
+        repository
+            .save_dispatch(&record)
+            .expect("dispatch should save with launch context");
+
+        let saved = repository
+            .latest_dispatch_for_task(&task.id)
+            .expect("dispatch lookup should succeed")
+            .expect("saved dispatch should be visible");
+
+        assert_eq!(saved.dispatch_id, record.dispatch_id);
+        assert_eq!(saved.branch_name, record.branch_name);
+        assert_eq!(saved.worktree_path, record.worktree_path);
+    }
 }

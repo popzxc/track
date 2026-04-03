@@ -8,10 +8,9 @@ use track_types::types::{
 };
 
 use crate::constants::{
-    REMOTE_CODEX_PID_FILE_NAME, REMOTE_FINISHED_AT_FILE_NAME,
-    REMOTE_LAUNCHER_PID_FILE_NAME, REMOTE_PROMPT_FILE_NAME, REMOTE_RESULT_FILE_NAME,
-    REMOTE_SCHEMA_FILE_NAME, REMOTE_STATUS_FILE_NAME, REMOTE_STDERR_FILE_NAME,
-    REVIEW_WORKTREE_DIRECTORY_NAME,
+    REMOTE_CODEX_PID_FILE_NAME, REMOTE_FINISHED_AT_FILE_NAME, REMOTE_LAUNCHER_PID_FILE_NAME,
+    REMOTE_PROMPT_FILE_NAME, REMOTE_RESULT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME,
+    REMOTE_STATUS_FILE_NAME, REMOTE_STDERR_FILE_NAME, REVIEW_WORKTREE_DIRECTORY_NAME,
 };
 use crate::types::{
     GithubPullRequestMetadata, GithubPullRequestReference, GithubPullRequestReviewState,
@@ -50,7 +49,8 @@ pub(crate) fn unique_review_run_directories(
                 }
             }
 
-            if record.workspace_key.trim().is_empty() || remote_agent.workspace_root.trim().is_empty()
+            if record.workspace_key.trim().is_empty()
+                || remote_agent.workspace_root.trim().is_empty()
             {
                 return None;
             }
@@ -564,10 +564,7 @@ expand_remote_path() {
 "#
 }
 
-pub(crate) fn render_remote_script_with_shell_prelude(
-    script: &str,
-    shell_prelude: &str,
-) -> String {
+pub(crate) fn render_remote_script_with_shell_prelude(script: &str, shell_prelude: &str) -> String {
     let mut rendered = String::from("set -e\n");
 
     if !shell_prelude.trim().is_empty() {

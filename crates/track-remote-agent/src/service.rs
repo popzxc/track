@@ -8,9 +8,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use track_config::paths::{collapse_home_path, path_to_string};
-use track_config::runtime::{
-    RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig,
-};
+use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::dispatch_repository::DispatchRepository;
 use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
@@ -34,32 +32,35 @@ use crate::constants::{
     REVIEW_RUN_DIRECTORY_NAME, REVIEW_WORKTREE_DIRECTORY_NAME,
 };
 use crate::types::{
-    ClaudeStructuredOutputEnvelope, GithubPullRequestApiResponse,
-    GithubPullRequestMetadata, GithubPullRequestReference, GithubPullRequestReviewState,
-    GithubReviewApiResponse, GithubSubmittedReview, RemoteArtifactCleanupCounts,
-    RemoteArtifactCleanupReport, RemoteDispatchSnapshot, RemoteProjectRegistryEntry,
-    RemoteProjectRegistryFile, RemoteReviewFollowUpReconciliation, RemoteTaskCleanupMode,
-    RemoteWorkspaceResetReport,
+    ClaudeStructuredOutputEnvelope, GithubPullRequestApiResponse, GithubPullRequestMetadata,
+    GithubPullRequestReference, GithubPullRequestReviewState, GithubReviewApiResponse,
+    GithubSubmittedReview, RemoteArtifactCleanupCounts, RemoteArtifactCleanupReport,
+    RemoteDispatchSnapshot, RemoteProjectRegistryEntry, RemoteProjectRegistryFile,
+    RemoteReviewFollowUpReconciliation, RemoteTaskCleanupMode, RemoteWorkspaceResetReport,
 };
 use crate::utils::{
-    build_create_review_worktree_script, build_remote_agent_launcher,
-    build_remote_dispatch_prompt, build_remote_dispatch_schema, build_remote_review_prompt,
-    build_remote_review_schema, build_review_follow_up_notification_comment,
-    build_review_follow_up_request, build_review_workspace_key, contextualize_track_error,
-    describe_remote_reset_blockers, parse_dispatch_snapshot_report,
-    parse_github_pull_request_reference, parse_github_repository_name,
-    remote_path_helpers_shell, render_remote_script_with_shell_prelude,
-    review_follow_up_event, unique_review_run_directories, unique_review_worktree_paths,
+    build_create_review_worktree_script, build_remote_agent_launcher, build_remote_dispatch_prompt,
+    build_remote_dispatch_schema, build_remote_review_prompt, build_remote_review_schema,
+    build_review_follow_up_notification_comment, build_review_follow_up_request,
+    build_review_workspace_key, contextualize_track_error, describe_remote_reset_blockers,
+    parse_dispatch_snapshot_report, parse_github_pull_request_reference,
+    parse_github_repository_name, remote_path_helpers_shell,
+    render_remote_script_with_shell_prelude, review_follow_up_event, unique_review_run_directories,
+    unique_review_worktree_paths,
 };
 
 pub trait RemoteAgentConfigProvider {
-    fn load_remote_agent_runtime_config(&self) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError>;
+    fn load_remote_agent_runtime_config(
+        &self,
+    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError>;
 }
 
 type RemoteAgentConfigService = dyn RemoteAgentConfigProvider;
 
 impl<T: RemoteAgentConfigProvider + ?Sized> RemoteAgentConfigProvider for std::sync::Arc<T> {
-    fn load_remote_agent_runtime_config(&self) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
+    fn load_remote_agent_runtime_config(
+        &self,
+    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
         (**self).load_remote_agent_runtime_config()
     }
 }
@@ -79,7 +80,9 @@ impl StaticRemoteAgentConfigService {
 
 #[cfg(test)]
 impl RemoteAgentConfigProvider for StaticRemoteAgentConfigService {
-    fn load_remote_agent_runtime_config(&self) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
+    fn load_remote_agent_runtime_config(
+        &self,
+    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
         Ok(self.remote_agent.clone())
     }
 }
@@ -622,11 +625,7 @@ impl<'a> RemoteDispatchService<'a> {
     // place. The heavy cost is in per-task worktrees and their build outputs,
     // while branches and the reusable checkout are comparatively cheap and
     // valuable for follow-up work.
-    pub fn update_task(
-        &self,
-        task_id: &str,
-        input: TaskUpdateInput,
-    ) -> Result<Task, TrackError> {
+    pub fn update_task(&self, task_id: &str, input: TaskUpdateInput) -> Result<Task, TrackError> {
         let validated_input = input.validate()?;
 
         if validated_input.status == Some(Status::Closed) {
@@ -1529,9 +1528,7 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(remote_agent)
     }
 
-    fn load_remote_agent_for_global_cleanup(
-        &self,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
+    fn load_remote_agent_for_global_cleanup(&self) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
             .load_remote_agent_runtime_config()?
@@ -1629,14 +1626,7 @@ impl<'a> RemoteDispatchService<'a> {
     fn load_dispatch_prerequisites(
         &self,
         task_id: &str,
-    ) -> Result<
-        (
-            RemoteAgentRuntimeConfig,
-            Task,
-            ProjectMetadata,
-        ),
-        TrackError,
-    > {
+    ) -> Result<(RemoteAgentRuntimeConfig, Task, ProjectMetadata), TrackError> {
         let remote_agent = self
             .config_service
             .load_remote_agent_runtime_config()?
@@ -2576,9 +2566,7 @@ impl<'a> RemoteReviewService<'a> {
     // later follow-up runs should only depend on the remote runner itself still
     // being usable, not on the mutable global review-follow-up block still
     // existing in the current config.
-    fn load_review_runner_prerequisites(
-        &self,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
+    fn load_review_runner_prerequisites(&self) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
             .load_remote_agent_runtime_config()?
@@ -2858,29 +2846,6 @@ fn derive_review_run_directory(
                 "Could not derive the remote review run directory from the worktree path.",
             )
         })
-}
-
-fn derive_review_run_directory_for_record(
-    record: &ReviewRunRecord,
-    remote_agent: &RemoteAgentRuntimeConfig,
-) -> Option<String> {
-    if let Some(worktree_path) = record.worktree_path.as_deref() {
-        if let Ok(run_directory) = derive_review_run_directory(worktree_path, &record.dispatch_id) {
-            return Some(run_directory);
-        }
-    }
-
-    if record.workspace_key.trim().is_empty() || remote_agent.workspace_root.trim().is_empty() {
-        return None;
-    }
-
-    Some(format!(
-        "{}/{}/{}/{}",
-        remote_agent.workspace_root.trim_end_matches('/'),
-        record.workspace_key,
-        REVIEW_RUN_DIRECTORY_NAME,
-        record.dispatch_id
-    ))
 }
 
 fn refresh_dispatch_record_from_snapshot(

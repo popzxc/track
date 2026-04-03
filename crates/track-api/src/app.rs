@@ -1787,12 +1787,23 @@ mod tests {
             .expect("second task should be created")
             .task;
 
-        dispatch_repository
+        let mut first_dispatch = dispatch_repository
             .create_dispatch(&first_task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("first dispatch should be created");
+        first_dispatch.status = DispatchStatus::Succeeded;
+        first_dispatch.finished_at = Some(first_dispatch.updated_at);
         dispatch_repository
+            .save_dispatch(&first_dispatch)
+            .expect("first dispatch should save");
+
+        let mut second_dispatch = dispatch_repository
             .create_dispatch(&second_task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("second dispatch should be created");
+        second_dispatch.status = DispatchStatus::Succeeded;
+        second_dispatch.finished_at = Some(second_dispatch.updated_at);
+        dispatch_repository
+            .save_dispatch(&second_dispatch)
+            .expect("second dispatch should save");
 
         let app = build_app(
             app_state(
@@ -1868,9 +1879,14 @@ mod tests {
             })
             .expect("task should be created")
             .task;
-        let dispatch = dispatch_repository
+        let mut dispatch = dispatch_repository
             .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("dispatch should be created");
+        dispatch.status = DispatchStatus::Succeeded;
+        dispatch.finished_at = Some(dispatch.updated_at);
+        dispatch_repository
+            .save_dispatch(&dispatch)
+            .expect("dispatch should save");
 
         let app = build_app(
             app_state(
@@ -1929,12 +1945,23 @@ mod tests {
             .expect("task should be created")
             .task;
 
-        dispatch_repository
+        let mut first_dispatch = dispatch_repository
             .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("first dispatch should be created");
+        first_dispatch.status = DispatchStatus::Succeeded;
+        first_dispatch.finished_at = Some(first_dispatch.updated_at);
         dispatch_repository
+            .save_dispatch(&first_dispatch)
+            .expect("first dispatch should save");
+
+        let mut second_dispatch = dispatch_repository
             .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
             .expect("second dispatch should be created");
+        second_dispatch.status = DispatchStatus::Succeeded;
+        second_dispatch.finished_at = Some(second_dispatch.updated_at);
+        dispatch_repository
+            .save_dispatch(&second_dispatch)
+            .expect("second dispatch should save");
 
         let app = build_app(
             app_state(

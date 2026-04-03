@@ -52,7 +52,10 @@ impl ReviewDispatchRepository {
             error_message: None,
         };
 
-        self.save_dispatch(&record)?;
+        // Review runs share the same queue-then-launch shape as task dispatches:
+        // the caller computes branch/worktree context next. Keeping the row
+        // in-memory until that context is populated avoids exposing an active
+        // run that reconciliation would mistake for a broken launch.
         Ok(record)
     }
 
@@ -402,4 +405,77 @@ fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackEr
             format!("Remote agent preferred tool `{value}` is not valid."),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+    use track_types::time_utils::now_utc;
+    use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
+
+    use super::ReviewDispatchRepository;
+    use crate::review_repository::ReviewRepository;
+
+    #[test]
+    fn create_dispatch_keeps_new_review_run_in_memory_until_callers_save_launch_context() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let database_path = temp_dir.path().join("track.sqlite");
+        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .expect("repository should open");
+        let review_repository =
+            ReviewRepository::new(Some(database_path)).expect("review repository should open");
+
+        let timestamp = now_utc();
+        let review = ReviewRecord {
+            id: "20260403-111900-review-race".to_owned(),
+            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
+            pull_request_number: 42,
+            pull_request_title: "Review fixture".to_owned(),
+            repository_full_name: "acme/project-a".to_owned(),
+            repo_url: "https://github.com/acme/project-a".to_owned(),
+            git_url: "git@github.com:acme/project-a.git".to_owned(),
+            base_branch: "main".to_owned(),
+            workspace_key: "project-a".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
+            project: Some("project-a".to_owned()),
+            main_user: "octocat".to_owned(),
+            default_review_prompt: Some("Focus on regressions.".to_owned()),
+            extra_instructions: None,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        review_repository
+            .save_review(&review)
+            .expect("review should save");
+
+        let mut record = repository
+            .create_dispatch(&review, "198.51.100.10", RemoteAgentPreferredTool::Codex)
+            .expect("review run should build");
+
+        assert!(
+            repository
+                .latest_dispatch_for_review(&review.id)
+                .expect("review dispatch lookup should succeed")
+                .is_none(),
+            "a newly created review run should stay invisible until its launch context is saved",
+        );
+
+        record.branch_name = Some(format!("track-review/{}", record.dispatch_id));
+        record.worktree_path = Some(format!(
+            "/home/track/workspace/{}/review-worktrees/{}",
+            review.workspace_key, record.dispatch_id
+        ));
+        repository
+            .save_dispatch(&record)
+            .expect("review run should save with launch context");
+
+        let saved = repository
+            .latest_dispatch_for_review(&review.id)
+            .expect("review dispatch lookup should succeed")
+            .expect("saved review run should be visible");
+
+        assert_eq!(saved.dispatch_id, record.dispatch_id);
+        assert_eq!(saved.branch_name, record.branch_name);
+        assert_eq!(saved.worktree_path, record.worktree_path);
+    }
 }
