@@ -4,8 +4,10 @@ import { computed, ref } from 'vue'
 import { ApiClientError } from './api/client'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import FollowUpModal from './components/FollowUpModal.vue'
+import MigrationStatePanel from './components/MigrationStatePanel.vue'
 import ProjectsPage from './components/ProjectsPage.vue'
 import ProjectMetadataModal from './components/ProjectMetadataModal.vue'
+import ReviewDrawer from './components/ReviewDrawer.vue'
 import ReviewsPage from './components/ReviewsPage.vue'
 import ReviewFollowUpModal from './components/ReviewFollowUpModal.vue'
 import ReviewRequestModal from './components/ReviewRequestModal.vue'
@@ -26,11 +28,7 @@ import { useShellOverlays } from './composables/useShellOverlays'
 import { useTaskMutations, type PendingRunnerSetupRequest } from './composables/useTaskMutations'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
-  dispatchBadgeClass,
-  dispatchStatusLabel,
-  dispatchSummary,
   drawerPrimaryAction,
-  formatDateTime,
   groupTasksByProject,
   mergeProjects,
 } from './features/tasks/presentation'
@@ -147,6 +145,7 @@ const reviewRequestDisabledReason = computed(() => {
 })
 const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
 const migrationRequired = computed(() => Boolean(migrationStatus.value?.requiresMigration))
+const migrationGateActive = computed(() => Boolean(migrationRequired.value && migrationStatus.value))
 
 const {
   closeTaskDrawer,
@@ -269,10 +268,6 @@ const followingUpDispatch = computed(() =>
 
 const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
-function remoteAgentToolLabel(tool: RemoteAgentPreferredTool | null | undefined): string {
-  return tool === 'claude' ? 'Claude' : 'Codex'
-}
-
 // =============================================================================
 // Presentation Helpers
 // =============================================================================
@@ -308,10 +303,6 @@ function drawerPrimaryActionClass(task: Task, dispatch?: TaskDispatch | null): s
 
 function openExternal(url: string) {
   window.open(url, '_blank', 'noreferrer')
-}
-
-function migrationCleanupCommand(path: string) {
-  return path.endsWith('.json') ? `rm -f ${path}` : `rm -rf ${path}`
 }
 
 function setFriendlyError(error: unknown) {
@@ -668,99 +659,16 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
           </div>
 
           <template v-else>
-            <section v-if="migrationImportSummary" class="space-y-4">
-              <div class="border border-green/25 bg-green/8 p-4 text-sm leading-7 text-green shadow-panel">
-                Imported {{ migrationImportSummary.importedTasks }} tasks, {{ migrationImportSummary.importedProjects }} projects, and {{ migrationImportSummary.importedReviews }} reviews into the SQLite backend.
-              </div>
-
-              <div
-                v-if="migrationImportSummary.cleanupCandidates.length > 0"
-                class="border border-fg2/15 bg-bg1/95 p-4 shadow-panel"
-              >
-                <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Optional legacy cleanup
-                </p>
-                <p class="mt-3 text-sm leading-7 text-fg2">
-                  After you confirm the imported data looks correct, run these commands on the host. Start with <code class="font-mono text-fg1">track configure</code> so the CLI materializes <code class="font-mono text-fg1">~/.config/track/cli.json</code>, then reinstall <code class="font-mono text-fg1">cargo-airbender</code> from your <code class="font-mono text-fg1">airbender-platform</code> checkout.
-                </p>
-                <div class="mt-4 overflow-x-auto border border-fg2/10 bg-bg0/60 px-4 py-4 font-mono text-xs leading-7 text-fg1">
-                  <p>track configure</p>
-                  <p>cargo install --path crates/cargo-airbender --force</p>
-                  <p
-                    v-for="candidate in migrationImportSummary.cleanupCandidates"
-                    :key="candidate.path"
-                  >
-                    {{ migrationCleanupCommand(candidate.path) }}
-                  </p>
-                </div>
-                <p class="mt-3 text-sm leading-7 text-fg3">
-                  Keep <code class="font-mono text-fg1">~/.track/models</code> if you use local capture.
-                </p>
-              </div>
-            </section>
-
-            <section v-if="migrationRequired && migrationStatus" class="space-y-4">
-              <div class="border border-yellow/25 bg-yellow/8 p-5 shadow-panel">
-                <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-yellow">
-                  Migration required
-                </p>
-                <h1 class="mt-3 font-display text-3xl text-fg0 sm:text-4xl">
-                  Import legacy track data before using the app
-                </h1>
-                <p class="mt-4 max-w-3xl text-sm leading-7 text-fg2">
-                  This backend uses SQLite-backed state. Legacy Markdown and JSON data were detected, so normal API routes stay gated until that data is imported.
-                </p>
-
-                <div class="mt-6 grid gap-4 md:grid-cols-3">
-                  <div class="border border-fg2/15 bg-bg0/60 p-4">
-                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">Projects</p>
-                    <p class="mt-2 text-2xl text-fg0">{{ migrationStatus.summary.projectsFound }}</p>
-                  </div>
-                  <div class="border border-fg2/15 bg-bg0/60 p-4">
-                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">Tasks</p>
-                    <p class="mt-2 text-2xl text-fg0">{{ migrationStatus.summary.tasksFound }}</p>
-                  </div>
-                  <div class="border border-fg2/15 bg-bg0/60 p-4">
-                    <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">Reviews</p>
-                    <p class="mt-2 text-2xl text-fg0">{{ migrationStatus.summary.reviewsFound }}</p>
-                  </div>
-                </div>
-
-                <div class="mt-6 flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    class="border border-aqua/35 bg-aqua/10 px-4 py-3 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:cursor-not-allowed disabled:opacity-60"
-                    :disabled="migrationImportPending || !migrationStatus.canImport"
-                    @click="importLegacyTrackerData"
-                  >
-                    {{ migrationImportPending ? 'Importing...' : 'Import legacy data' }}
-                  </button>
-                </div>
-              </div>
-
-              <div
-                v-if="migrationStatus.skippedRecords.length > 0"
-                class="border border-fg2/15 bg-bg1/95 p-4 shadow-panel"
-              >
-                <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Skipped legacy records
-                </p>
-                <ul class="mt-4 space-y-3 text-sm leading-6 text-fg2">
-                  <li
-                    v-for="record in migrationStatus.skippedRecords.slice(0, 5)"
-                    :key="`${record.kind}:${record.path}`"
-                    class="border border-fg2/10 bg-bg0/50 px-3 py-3"
-                  >
-                    <p class="font-semibold text-fg1">{{ record.kind }}</p>
-                    <p class="mt-1 break-all">{{ record.path }}</p>
-                    <p class="mt-2 text-fg3">{{ record.error }}</p>
-                  </li>
-                </ul>
-              </div>
-            </section>
+            <MigrationStatePanel
+              :migration-import-pending="migrationImportPending"
+              :migration-import-summary="migrationImportSummary"
+              :migration-required="migrationRequired"
+              :migration-status="migrationStatus"
+              @request-import-legacy-data="importLegacyTrackerData"
+            />
 
             <TasksPage
-              v-else-if="currentPage === 'tasks'"
+              v-if="!migrationGateActive && currentPage === 'tasks'"
               :active-task-id="selectedTask?.id ?? null"
               :drawer-open="isTaskDrawerOpen"
               :latest-dispatch-by-task-id="latestTaskDispatchesByTaskId"
@@ -776,7 +684,7 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
             />
 
             <ReviewsPage
-              v-else-if="currentPage === 'reviews'"
+              v-else-if="!migrationGateActive && currentPage === 'reviews'"
               :can-request-review="canRequestReview"
               :review-request-disabled-reason="reviewRequestDisabledReason"
               :reviews="reviews"
@@ -786,7 +694,7 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
             />
 
             <RunsPage
-              v-else-if="currentPage === 'runs'"
+              v-else-if="!migrationGateActive && currentPage === 'runs'"
               :active-review-runs="activeReviewRuns"
               :active-runs="activeRuns"
               :recent-review-runs="recentReviewRuns"
@@ -797,7 +705,7 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
             />
 
             <ProjectsPage
-              v-else-if="currentPage === 'projects'"
+              v-else-if="!migrationGateActive && currentPage === 'projects'"
               :projects="availableProjects"
               :selected-project-details="selectedProjectDetails"
               :selected-project-id="selectedProjectDetailsId"
@@ -806,7 +714,7 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
             />
 
             <SettingsPage
-              v-else
+              v-else-if="!migrationGateActive"
               :active-remote-work-count="activeRemoteWorkCount"
               :cleaning-up-remote-artifacts="cleaningUpRemoteArtifacts"
               :cleanup-summary="cleanupSummary"
@@ -856,323 +764,22 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
       @update:start-tool="selectedTaskStartTool = $event"
     />
 
-    <div
+    <ReviewDrawer
       v-if="currentPage === 'reviews' && isReviewDrawerOpen && selectedReview"
-      class="fixed inset-0 z-40 flex justify-end bg-bg0/70 backdrop-blur-[2px]"
-      @click.self="closeReviewDrawer"
-    >
-      <aside
-        data-testid="review-drawer"
-        class="h-full w-full max-w-[980px] overflow-y-auto border-l border-fg2/20 bg-bg1 shadow-panel"
-      >
-        <div class="space-y-5 p-5 sm:p-6">
-          <div class="flex items-start justify-between gap-4 border-b border-fg2/10 pb-5">
-            <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-fg3">
-                <span>{{ selectedReview.repositoryFullName }}</span>
-                <span class="text-fg3/40">/</span>
-                <span>PR #{{ selectedReview.pullRequestNumber }}</span>
-              </div>
-
-              <h2 class="mt-3 whitespace-pre-wrap font-display text-3xl leading-tight text-fg0 sm:text-4xl">
-                {{ selectedReview.pullRequestTitle }}
-              </h2>
-
-              <div class="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold tracking-[0.08em]">
-                <span class="border px-2 py-1" :class="dispatchBadgeClass(selectedReviewLatestRun)">
-                  {{ dispatchStatusLabel(selectedReviewLatestRun) }}
-                </span>
-                <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
-                  via {{ remoteAgentToolLabel(selectedReview.preferredTool) }}
-                </span>
-                <span class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2">
-                  @{{ selectedReview.mainUser }}
-                </span>
-                <span
-                  class="border px-2 py-1"
-                  :class="selectedReviewLatestRun?.reviewSubmitted ? 'border-green/30 bg-green/10 text-green' : 'border-fg2/15 bg-bg0 text-fg2'"
-                >
-                  {{ selectedReviewLatestRun?.reviewSubmitted ? 'Review submitted' : 'Submission not confirmed' }}
-                </span>
-              </div>
-
-              <p class="mt-4 text-sm leading-7 text-fg2">
-                Created {{ formatDateTime(selectedReview.createdAt) }}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              class="border border-fg2/20 bg-bg0 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-fg2 transition hover:border-fg1/35 hover:text-fg0"
-              @click="closeReviewDrawer"
-            >
-              Close
-            </button>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2">
-            <button
-              v-if="selectedReviewCanCancel"
-              type="button"
-              class="border border-orange/30 bg-orange/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-orange transition hover:bg-orange/15 disabled:opacity-60"
-              :disabled="cancelingReviewId === selectedReview.id"
-              @click="cancelReviewRun(selectedReview)"
-            >
-              {{ cancelingReviewId === selectedReview.id ? 'Canceling...' : 'Cancel review run' }}
-            </button>
-
-            <button
-              v-if="selectedReviewCanReReview"
-              type="button"
-              class="border border-aqua/30 bg-aqua/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15 disabled:opacity-60"
-              :disabled="followingUpReviewId === selectedReview.id"
-              @click="openReviewFollowUpEditor(selectedReview)"
-            >
-              {{ followingUpReviewId === selectedReview.id ? 'Requesting...' : 'Request re-review' }}
-            </button>
-
-            <button
-              type="button"
-              class="border border-aqua/30 bg-aqua/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-aqua transition hover:bg-aqua/15"
-              @click="openExternal(selectedReview.pullRequestUrl)"
-            >
-              View PR
-            </button>
-
-            <button
-              v-if="selectedReviewLatestRun?.githubReviewUrl"
-              type="button"
-              class="border border-green/30 bg-green/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-green transition hover:bg-green/15"
-              @click="openExternal(selectedReviewLatestRun.githubReviewUrl)"
-            >
-              View submitted review
-            </button>
-
-            <button
-              type="button"
-              class="border border-red/30 bg-red/10 px-4 py-2.5 text-sm font-semibold tracking-[0.08em] text-red transition hover:bg-red/15 disabled:opacity-60"
-              :disabled="saving"
-              @click="queueReviewDeletion(selectedReview)"
-            >
-              Delete review
-            </button>
-          </div>
-
-          <section class="border border-fg2/15 bg-bg0/60 p-4">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-              Latest status
-            </p>
-            <p class="mt-4 text-sm leading-7 text-fg1">
-              {{ dispatchSummary(selectedReviewLatestRun, 'review') }}
-            </p>
-            <p class="mt-4 text-xs leading-6 text-fg3">
-              The actual review discussion lives on GitHub, including any inline comments the agent submitted.
-            </p>
-            <dl class="mt-4 grid gap-4 text-sm md:grid-cols-2 xl:grid-cols-3">
-              <div>
-                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Pull request
-                </dt>
-                <dd class="mt-1 break-all text-fg1">
-                  {{ selectedReview.pullRequestUrl }}
-                </dd>
-              </div>
-              <div>
-                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Base branch
-                </dt>
-                <dd class="mt-1 text-fg1">
-                  {{ selectedReview.baseBranch }}
-                </dd>
-              </div>
-              <div>
-                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Workspace key
-                </dt>
-                <dd class="mt-1 break-all text-fg1">
-                  {{ selectedReview.workspaceKey }}
-                </dd>
-              </div>
-              <div>
-                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Review tool
-                </dt>
-                <dd class="mt-1 text-fg1">
-                  {{ remoteAgentToolLabel(selectedReview.preferredTool) }}
-                </dd>
-              </div>
-              <div v-if="selectedReviewLatestRun?.targetHeadOid">
-                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Pinned commit
-                </dt>
-                <dd class="mt-1 break-all text-fg1">
-                  {{ selectedReviewLatestRun.targetHeadOid }}
-                </dd>
-              </div>
-              <div v-if="selectedReviewLatestRun?.githubReviewUrl">
-                <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                  Submitted review
-                </dt>
-                <dd class="mt-1 break-all text-fg1">
-                  {{ selectedReviewLatestRun.githubReviewUrl }}
-                </dd>
-              </div>
-            </dl>
-          </section>
-
-          <section class="grid gap-4 xl:grid-cols-2">
-            <section class="border border-fg2/15 bg-bg0/60 p-4">
-              <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                Default review prompt
-              </p>
-              <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
-                {{ selectedReview.defaultReviewPrompt || 'No default review prompt was saved for this review.' }}
-              </div>
-            </section>
-
-            <section class="border border-fg2/15 bg-bg0/60 p-4">
-              <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                Extra instructions
-              </p>
-              <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
-                {{ selectedReview.extraInstructions || 'No extra instructions were provided for this review.' }}
-              </div>
-            </section>
-          </section>
-
-          <section class="border border-fg2/15 bg-bg0/60 p-4">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="text-[11px] font-semibold uppercase tracking-[0.28em] text-fg3">
-                  Review run history
-                </p>
-                <p class="mt-2 text-sm text-fg2">
-                  Each re-review adds another run here so you can compare requests, commits, and outcomes over time.
-                </p>
-              </div>
-              <span class="text-xs text-fg3">{{ selectedReviewRuns.length }}</span>
-            </div>
-
-            <div
-              v-if="selectedReviewRuns.length === 0"
-              class="mt-4 border border-dashed border-fg2/15 px-4 py-6 text-sm text-fg3"
-            >
-              This review has no run history yet.
-            </div>
-
-            <div v-else class="mt-4 space-y-3">
-              <article
-                v-for="(run, index) in selectedReviewRuns"
-                :key="run.dispatchId"
-                class="border border-fg2/15 bg-bg1/70 p-4"
-              >
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold tracking-[0.08em]">
-                      <span
-                        v-if="index === 0"
-                        class="border border-fg2/15 bg-bg0 px-2 py-1 text-fg2"
-                      >
-                        Latest
-                      </span>
-                      <span class="border px-2 py-1" :class="dispatchBadgeClass(run)">
-                        {{ dispatchStatusLabel(run) }}
-                      </span>
-                      <span class="text-fg3">Started {{ formatDateTime(run.createdAt) }}</span>
-                      <span v-if="run.followUpRequest" class="text-fg3">• Re-review</span>
-                    </div>
-                  </div>
-
-                  <button
-                    v-if="run.githubReviewUrl"
-                    type="button"
-                    class="border border-green/30 bg-green/10 px-3 py-2 text-xs font-semibold tracking-[0.08em] text-green transition hover:bg-green/15"
-                    @click="openExternal(run.githubReviewUrl)"
-                  >
-                    View review
-                  </button>
-                </div>
-
-                <p class="mt-4 text-sm leading-7 text-fg1">
-                  {{ dispatchSummary(run, 'review') }}
-                </p>
-
-                <dl class="mt-4 grid gap-4 text-sm md:grid-cols-2 xl:grid-cols-3">
-                  <div v-if="run.finishedAt">
-                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                      Finished
-                    </dt>
-                    <dd class="mt-1 text-fg1">
-                      {{ formatDateTime(run.finishedAt) }}
-                    </dd>
-                  </div>
-                  <div v-if="run.branchName">
-                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                      Branch
-                    </dt>
-                    <dd class="mt-1 break-all text-fg1">
-                      {{ run.branchName }}
-                    </dd>
-                  </div>
-                  <div v-if="run.worktreePath">
-                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                      Worktree
-                    </dt>
-                    <dd class="mt-1 break-all text-fg1">
-                      {{ run.worktreePath }}
-                    </dd>
-                  </div>
-                  <div v-if="run.targetHeadOid">
-                    <dt class="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                      Pinned commit
-                    </dt>
-                    <dd class="mt-1 break-all text-fg1">
-                      {{ run.targetHeadOid }}
-                    </dd>
-                  </div>
-                </dl>
-
-                <details
-                  v-if="run.followUpRequest"
-                  class="mt-4 border border-aqua/20 bg-aqua/6 p-4"
-                >
-                  <summary class="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-aqua">
-                    Re-review request
-                  </summary>
-                  <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
-                    {{ run.followUpRequest }}
-                  </div>
-                </details>
-
-                <details
-                  v-if="run.notes"
-                  class="mt-4 border border-fg2/15 bg-bg0/70 p-4"
-                >
-                  <summary class="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-fg3">
-                    Run notes
-                  </summary>
-                  <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-fg1">
-                    {{ run.notes }}
-                  </div>
-                </details>
-
-                <details
-                  v-if="run.errorMessage"
-                  class="mt-4 border border-red/20 bg-red/5 p-4"
-                >
-                  <summary class="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-red">
-                    Error details
-                  </summary>
-                  <div class="mt-4 whitespace-pre-wrap text-sm leading-7 text-red">
-                    {{ run.errorMessage }}
-                  </div>
-                </details>
-              </article>
-            </div>
-          </section>
-        </div>
-      </aside>
-    </div>
+      :can-cancel="selectedReviewCanCancel"
+      :can-re-review="selectedReviewCanReReview"
+      :canceling-review-id="cancelingReviewId"
+      :following-up-review-id="followingUpReviewId"
+      :latest-run="selectedReviewLatestRun"
+      :review="selectedReview"
+      :review-runs="selectedReviewRuns"
+      :saving="saving"
+      @close="closeReviewDrawer"
+      @request-cancel-review-run="cancelReviewRun"
+      @request-delete-review="queueReviewDeletion"
+      @request-open-url="openExternal"
+      @request-rereview="openReviewFollowUpEditor"
+    />
 
     <TaskEditorModal
       :busy="saving"
