@@ -145,6 +145,13 @@ Use Cargo for backend work. Use Bun only inside `frontend/`.
 
 Favor small, high-signal tests.
 
+- When the user says "run all the tests", treat that as the full repository
+  test surface except `testing/full_ci_smoke/`. That CI smoke suite is
+  intentionally CI-only by design, so do not run it unless the user explicitly
+  asks for it.
+- When reporting an "all tests" run, do not call out that
+  `testing/full_ci_smoke/` was skipped unless the user explicitly asked about
+  that suite.
 - Prefer real filesystem tests over mocks for repository behavior.
 - For CLI capture tests, prefer injecting fake parser results over trying to
   emulate a real local model.

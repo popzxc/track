@@ -5,24 +5,24 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use track_capture::{build_task_create_input_from_text, LocalTaskParserFactory, TaskParserFactory};
-use track_core::config::{
+use track_config::config::{
     DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
     DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::migration::{MigrationImportSummary, MigrationState, MigrationStatus};
-use track_core::path_component::validate_single_normal_path_component;
-use track_core::paths::collapse_home_path;
-use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
-use track_core::project_repository::{infer_project_metadata, ProjectRecord};
-use track_core::terminal_ui::{format_note, format_summary, SummaryTone, ValueTone};
-use track_core::types::{Task, TaskSource};
+use track_config::paths::collapse_home_path;
+use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+use track_projects::project_metadata::{infer_project_metadata, ProjectRecord};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::migration::{MigrationImportSummary, MigrationState, MigrationStatus};
+use track_types::path_component::validate_single_normal_path_component;
+use track_types::types::{Task, TaskSource};
 
 use crate::backend_client::{
     ConfigureRemoteAgentRequest, ConfigureRemoteAgentReviewFollowUpRequest, HttpTrackBackend,
     TrackBackend,
 };
 use crate::cli_config::{CliConfigFile, CliConfigService, ConfigureOptions, LoadedCliConfig};
+use crate::terminal_ui::{format_note, format_summary, SummaryTone, ValueTone};
 
 #[derive(Debug)]
 enum CliInvocation {
@@ -779,12 +779,12 @@ mod tests {
     use std::sync::Mutex;
 
     use track_capture::{TaskParser, TaskParserFactory};
-    use track_core::errors::{ErrorCode, TrackError};
-    use track_core::migration::{MigrationImportSummary, MigrationStatus};
-    use track_core::project_catalog::ProjectCatalog;
-    use track_core::project_repository::{ProjectMetadata, ProjectRecord};
-    use track_core::time_utils::now_utc;
-    use track_core::types::{
+    use track_projects::project_catalog::ProjectCatalog;
+    use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
+    use track_types::errors::{ErrorCode, TrackError};
+    use track_types::migration::{MigrationImportSummary, MigrationStatus};
+    use track_types::time_utils::now_utc;
+    use track_types::types::{
         Confidence, ParsedTaskCandidate, Priority, Status, Task, TaskCreateInput, TaskSource,
     };
 
@@ -819,7 +819,7 @@ mod tests {
     impl TaskParserFactory for StaticTaskParserFactory {
         fn create_parser(
             &self,
-            _config: &track_core::types::TrackRuntimeConfig,
+            _config: &track_config::runtime::TrackRuntimeConfig,
         ) -> Result<Box<dyn TaskParser + 'static>, TrackError> {
             Ok(Box::new(StaticTaskParser {
                 candidate: self.candidate.clone(),

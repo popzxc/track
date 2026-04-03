@@ -2,11 +2,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use track_core::build_info::BuildInfo;
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::migration::{MigrationImportSummary, MigrationStatus};
-use track_core::project_repository::{ProjectMetadata, ProjectRecord};
-use track_core::types::{Task, TaskCreateInput};
+use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
+use track_types::build_info::BuildInfo;
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::migration::{MigrationImportSummary, MigrationStatus};
+use track_types::types::{Task, TaskCreateInput};
 
 use crate::build_info::cli_build_info;
 

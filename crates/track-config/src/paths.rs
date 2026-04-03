@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::errors::{ErrorCode, TrackError};
+use track_types::errors::{ErrorCode, TrackError};
 
 pub const DEFAULT_BACKEND_STATE_DIR: &str = "~/.track/backend";
 pub const DEFAULT_CLI_CONFIG_PATH: &str = "~/.config/track/cli.json";

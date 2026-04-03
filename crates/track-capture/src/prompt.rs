@@ -1,5 +1,5 @@
 use serde_json::json;
-use track_core::project_catalog::ProjectCatalog;
+use track_projects::project_catalog::ProjectCatalog;
 
 pub struct LlamaCppPrompt {
     pub system_prompt: String,

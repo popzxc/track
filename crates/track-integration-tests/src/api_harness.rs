@@ -10,15 +10,14 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use track_api::{build_app, AppState};
-use track_core::backend_config::RemoteAgentConfigService;
-use track_core::dispatch_repository::DispatchRepository;
-use track_core::migration_service::MigrationService;
-use track_core::project_repository::{ProjectMetadata, ProjectRepository};
-use track_core::review_dispatch_repository::ReviewDispatchRepository;
-use track_core::review_repository::ReviewRepository;
-use track_core::task_repository::FileTaskRepository;
-use track_core::types::{
+use track_api::{build_app, AppState, MigrationService, RemoteAgentConfigService};
+use track_dal::dispatch_repository::DispatchRepository;
+use track_dal::project_repository::ProjectRepository;
+use track_dal::review_dispatch_repository::ReviewDispatchRepository;
+use track_dal::review_repository::ReviewRepository;
+use track_dal::task_repository::FileTaskRepository;
+use track_projects::project_metadata::ProjectMetadata;
+use track_types::types::{
     Priority, ReviewRunRecord, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
 };
 

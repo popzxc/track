@@ -1,18 +1,18 @@
 use std::fs;
 
-use crate::config::{
+use track_config::config::{
     canonicalize_remote_agent_config, RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile,
 };
-use crate::errors::{ErrorCode, TrackError};
-use crate::migration::{MigrationStatus, MIGRATION_STATUS_SETTING_KEY};
-use crate::paths::{
+use track_config::paths::{
     collapse_home_path, get_backend_managed_remote_agent_key_path,
     get_backend_managed_remote_agent_known_hosts_path,
 };
-use crate::settings_repository::SettingsRepository;
-use crate::types::{
-    RemoteAgentPreferredTool, RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig,
-};
+use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
+use track_dal::settings_repository::SettingsRepository;
+use track_remote_agent::RemoteAgentConfigProvider;
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::migration::{MigrationStatus, MIGRATION_STATUS_SETTING_KEY};
+use track_types::types::RemoteAgentPreferredTool;
 
 pub(crate) const REMOTE_AGENT_SETTING_KEY: &str = "remote_agent_config";
 
@@ -161,6 +161,14 @@ impl RemoteAgentConfigService {
     }
 }
 
+impl RemoteAgentConfigProvider for RemoteAgentConfigService {
+    fn load_remote_agent_runtime_config(
+        &self,
+    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
+        RemoteAgentConfigService::load_remote_agent_runtime_config(self)
+    }
+}
+
 fn build_remote_agent_runtime_config(
     config: RemoteAgentConfigFile,
 ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
@@ -278,9 +286,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::BackendConfigRepository;
-    use crate::database::DatabaseContext;
-    use crate::migration::{LegacyScanSummary, MigrationState, MigrationStatus};
-    use crate::settings_repository::SettingsRepository;
+    use track_dal::database::DatabaseContext;
+    use track_dal::settings_repository::SettingsRepository;
+    use track_types::migration::{LegacyScanSummary, MigrationState, MigrationStatus};
 
     fn repository() -> (TempDir, BackendConfigRepository) {
         let directory = TempDir::new().expect("tempdir should be created");

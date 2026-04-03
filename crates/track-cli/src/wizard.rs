@@ -3,22 +3,22 @@ use std::fs;
 use std::io::{self, IsTerminal};
 
 use dialoguer::{theme::ColorfulTheme, Input};
-
-use crate::config::{
+use track_config::config::{
     ApiConfigFile, ConfigService, LlamaCppConfigFile, RemoteAgentConfigFile,
     RemoteAgentReviewFollowUpConfigFile, TrackConfigFile, DEFAULT_LLAMACPP_MODEL_HF_FILE,
     DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
     DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
-use crate::errors::{ErrorCode, TrackError};
-use crate::paths::{
+use track_config::paths::{
     collapse_home_path, collapse_path_value, get_managed_remote_agent_key_path,
     get_managed_remote_agent_known_hosts_path, resolve_path_from_invocation_dir,
 };
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::types::RemoteAgentPreferredTool;
+
 use crate::terminal_ui::{
     format_note, format_prompt_label, format_summary, SummaryTone, ValueTone,
 };
-use crate::types::RemoteAgentPreferredTool;
 
 pub const NONE_SENTINEL: &str = "none";
 
@@ -631,11 +631,12 @@ mod tests {
         parse_project_aliases_input, parse_project_roots_input,
         run_configure_command_with_prompter, ConfigureReason, Prompter,
     };
-    use crate::config::{
+    use crate::test_support::{set_env_var, track_data_env_lock};
+    use track_config::config::{
         ConfigService, LlamaCppConfigFile, RemoteAgentReviewFollowUpConfigFile, TrackConfigFile,
         DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
     };
-    use crate::test_support::{set_env_var, track_data_env_lock};
+    use track_types::errors::TrackError;
 
     struct ScriptedPrompter {
         answers: VecDeque<String>,
@@ -652,7 +653,7 @@ mod tests {
     }
 
     impl Prompter for ScriptedPrompter {
-        fn ask(&mut self, _prompt: &str) -> Result<String, crate::errors::TrackError> {
+        fn ask(&mut self, _prompt: &str) -> Result<String, TrackError> {
             Ok(self
                 .answers
                 .pop_front()
@@ -712,7 +713,7 @@ mod tests {
             .save_config_file(&TrackConfigFile {
                 project_roots: vec!["~/work".to_owned()],
                 project_aliases: BTreeMap::new(),
-                api: crate::config::ApiConfigFile::default(),
+                api: track_config::config::ApiConfigFile::default(),
                 llama_cpp: LlamaCppConfigFile {
                     model_path: Some("~/.models/custom.gguf".to_owned()),
                     model_hf_repo: None,
@@ -737,7 +738,7 @@ mod tests {
             .save_config_file(&TrackConfigFile {
                 project_roots: vec!["~/work".to_owned()],
                 project_aliases: BTreeMap::new(),
-                api: crate::config::ApiConfigFile::default(),
+                api: track_config::config::ApiConfigFile::default(),
                 llama_cpp: LlamaCppConfigFile {
                     model_path: None,
                     model_hf_repo: Some(DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned()),

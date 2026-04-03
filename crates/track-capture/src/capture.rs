@@ -1,13 +1,8 @@
-use track_core::config::ConfigService;
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
-use track_core::project_discovery::discover_projects;
-use track_core::project_repository::ProjectRepository;
-use track_core::task_description::render_task_description;
-use track_core::task_repository::FileTaskRepository;
-use track_core::types::{
-    Confidence, ParsedTaskCandidate, Priority, StoredTask, TaskCreateInput, TaskSource,
-};
+use track_config::runtime::TrackRuntimeConfig;
+use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::task_description::render_task_description;
+use track_types::types::{Confidence, ParsedTaskCandidate, Priority, TaskCreateInput, TaskSource};
 
 use crate::task_parser::TaskParserFactory;
 
@@ -201,17 +196,10 @@ fn strip_markdown_heading(line: &str) -> &str {
         .trim()
 }
 
-pub struct TaskCaptureService<'a> {
-    pub config_service: &'a ConfigService,
-    pub project_repository: &'a ProjectRepository,
-    pub task_repository: &'a FileTaskRepository,
-    pub task_parser_factory: &'a dyn TaskParserFactory,
-}
-
 pub fn build_task_create_input_from_text(
     raw_text: &str,
     project_catalog: &ProjectCatalog,
-    runtime_config: &track_core::types::TrackRuntimeConfig,
+    runtime_config: &TrackRuntimeConfig,
     source: Option<TaskSource>,
     task_parser_factory: &dyn TaskParserFactory,
 ) -> Result<TaskCreateInput, TrackError> {
@@ -249,64 +237,12 @@ pub fn build_task_create_input_from_text(
         source,
     })
 }
-
-impl<'a> TaskCaptureService<'a> {
-    pub fn create_task_from_text(
-        &self,
-        raw_text: &str,
-        source: Option<TaskSource>,
-    ) -> Result<StoredTask, TrackError> {
-        if raw_text.trim().is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::EmptyInput,
-                "Please provide a task description.",
-            ));
-        }
-
-        let config = self.config_service.load_runtime_config()?;
-        if config.project_roots.is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::NoProjectRoots,
-                "No project roots configured.",
-            ));
-        }
-
-        let project_catalog = discover_projects(&config)?;
-        if project_catalog.is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::NoProjectsDiscovered,
-                "No git repositories found under configured roots.",
-            ));
-        }
-
-        let task_input = build_task_create_input_from_text(
-            raw_text,
-            &project_catalog,
-            &config,
-            source,
-            self.task_parser_factory,
-        )?;
-
-        // The CLI is the only component that can reliably inspect host
-        // repositories, so task capture seeds `PROJECT.md` before the task hits
-        // disk. The API can then work entirely from the persisted `.track`
-        // directory, including inside Docker where source checkouts are not
-        // mounted.
-        let project = project_catalog
-            .resolve(&task_input.project)
-            .expect("validated task input should point at a known project")
-            .clone();
-        self.project_repository.ensure_project(&project)?;
-        self.task_repository.create_task(task_input)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
-    use track_core::types::{Confidence, ParsedTaskCandidate, Priority};
+    use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+    use track_types::types::{Confidence, ParsedTaskCandidate, Priority};
 
     use super::{build_task_body, validate_parsed_task_candidate};
 

@@ -5,30 +5,32 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use time::OffsetDateTime;
-
-use crate::backend_config::{RemoteAgentConfigService, REMOTE_AGENT_SETTING_KEY};
-use crate::config::{ConfigService, RemoteAgentConfigFile, TrackConfigFile};
-use crate::database::DatabaseContext;
-use crate::dispatch_repository::DispatchRepository;
-use crate::errors::{ErrorCode, TrackError};
-use crate::migration::{
-    CleanupCandidate, LegacyScanSummary, MigrationImportSummary, MigrationState, MigrationStatus,
-    SkippedLegacyRecord,
-};
-use crate::paths::{
+use track_config::config::{ConfigService, RemoteAgentConfigFile, TrackConfigFile};
+use track_config::paths::{
     collapse_home_path, get_backend_managed_remote_agent_key_path,
     get_backend_managed_remote_agent_known_hosts_path, get_legacy_config_path, get_legacy_root_dir,
     path_to_string,
 };
-use crate::project_discovery::discover_projects_from_roots;
-use crate::project_repository::{infer_project_metadata, ProjectMetadata, ProjectRepository};
-use crate::review_dispatch_repository::ReviewDispatchRepository;
-use crate::review_repository::ReviewRepository;
-use crate::task_repository::FileTaskRepository;
-use crate::time_utils::parse_iso_8601_millis;
-use crate::types::{
+use track_dal::database::DatabaseContext;
+use track_dal::dispatch_repository::DispatchRepository;
+use track_dal::project_repository::ProjectRepository;
+use track_dal::review_dispatch_repository::ReviewDispatchRepository;
+use track_dal::review_repository::ReviewRepository;
+use track_dal::task_repository::FileTaskRepository;
+use track_projects::project_discovery::discover_projects_from_roots;
+use track_projects::project_metadata::{infer_project_metadata, ProjectMetadata};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::migration::{
+    CleanupCandidate, LegacyScanSummary, MigrationImportSummary, MigrationState, MigrationStatus,
+    SkippedLegacyRecord, MIGRATION_STATUS_SETTING_KEY,
+};
+use track_types::path_component::validate_single_normal_path_component;
+use track_types::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
+use track_types::types::{
     Priority, ReviewRecord, ReviewRunRecord, Status, Task, TaskDispatchRecord, TaskSource,
 };
+
+use crate::backend_config::{RemoteAgentConfigService, REMOTE_AGENT_SETTING_KEY};
 
 const LEGACY_ISSUES_DIR_NAME: &str = "issues";
 const LEGACY_REVIEWS_DIR_NAME: &str = "reviews";
@@ -182,7 +184,7 @@ impl MigrationService {
 
                     save_backend_setting_json(
                         connection,
-                        crate::migration::MIGRATION_STATUS_SETTING_KEY,
+                        MIGRATION_STATUS_SETTING_KEY,
                         &MigrationStatus {
                             state: MigrationState::Imported,
                             requires_migration: false,
@@ -284,22 +286,21 @@ impl MigrationService {
                     continue;
                 }
 
-                let canonical_name =
-                    match crate::path_component::validate_single_normal_path_component(
-                        project_name,
-                        "Legacy project name",
-                        ErrorCode::InvalidPathComponent,
-                    ) {
-                        Ok(project_name) => project_name,
-                        Err(error) => {
-                            snapshot.skipped_records.push(SkippedLegacyRecord {
-                                kind: "project".to_owned(),
-                                path: path_to_string(&path),
-                                error: error.to_string(),
-                            });
-                            continue;
-                        }
-                    };
+                let canonical_name = match validate_single_normal_path_component(
+                    project_name,
+                    "Legacy project name",
+                    ErrorCode::InvalidPathComponent,
+                ) {
+                    Ok(project_name) => project_name,
+                    Err(error) => {
+                        snapshot.skipped_records.push(SkippedLegacyRecord {
+                            kind: "project".to_owned(),
+                            path: path_to_string(&path),
+                            error: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
 
                 let metadata = read_legacy_project_metadata(&path).unwrap_or_else(|error| {
                     snapshot.skipped_records.push(SkippedLegacyRecord {
@@ -710,7 +711,7 @@ async fn import_project(
     project: &LegacyProjectImport,
     aliases: Vec<String>,
 ) -> Result<(), TrackError> {
-    let canonical_name = crate::path_component::validate_single_normal_path_component(
+    let canonical_name = validate_single_normal_path_component(
         &project.canonical_name,
         "Project canonical name",
         ErrorCode::InvalidPathComponent,
@@ -794,8 +795,8 @@ async fn import_task(connection: &mut SqliteConnection, task: &Task) -> Result<(
     .bind(task.priority.as_str())
     .bind(task.status.as_str())
     .bind(&task.description)
-    .bind(crate::time_utils::format_iso_8601_millis(task.created_at))
-    .bind(crate::time_utils::format_iso_8601_millis(task.updated_at))
+    .bind(format_iso_8601_millis(task.created_at))
+    .bind(format_iso_8601_millis(task.updated_at))
     .bind(task.source.map(task_source_as_str))
     .execute(&mut *connection)
     .await
@@ -852,8 +853,8 @@ async fn import_review(
     .bind(&review.main_user)
     .bind(review.default_review_prompt.as_deref())
     .bind(review.extra_instructions.as_deref())
-    .bind(crate::time_utils::format_iso_8601_millis(review.created_at))
-    .bind(crate::time_utils::format_iso_8601_millis(review.updated_at))
+    .bind(format_iso_8601_millis(review.created_at))
+    .bind(format_iso_8601_millis(review.updated_at))
     .execute(&mut *connection)
     .await
     .map_err(|error| {
@@ -870,12 +871,12 @@ async fn import_task_dispatch(
     connection: &mut SqliteConnection,
     dispatch: &TaskDispatchRecord,
 ) -> Result<(), TrackError> {
-    crate::path_component::validate_single_normal_path_component(
+    validate_single_normal_path_component(
         &dispatch.dispatch_id,
         "Dispatch id",
         ErrorCode::InvalidPathComponent,
     )?;
-    crate::path_component::validate_single_normal_path_component(
+    validate_single_normal_path_component(
         &dispatch.task_id,
         "Task id",
         ErrorCode::InvalidPathComponent,
@@ -912,17 +913,9 @@ async fn import_task_dispatch(
     .bind(&dispatch.task_id)
     .bind(&dispatch.project)
     .bind(dispatch.status.as_str())
-    .bind(crate::time_utils::format_iso_8601_millis(
-        dispatch.created_at,
-    ))
-    .bind(crate::time_utils::format_iso_8601_millis(
-        dispatch.updated_at,
-    ))
-    .bind(
-        dispatch
-            .finished_at
-            .map(crate::time_utils::format_iso_8601_millis),
-    )
+    .bind(format_iso_8601_millis(dispatch.created_at))
+    .bind(format_iso_8601_millis(dispatch.updated_at))
+    .bind(dispatch.finished_at.map(format_iso_8601_millis))
     .bind(&dispatch.remote_host)
     .bind(dispatch.branch_name.as_deref())
     .bind(dispatch.worktree_path.as_deref())
@@ -952,12 +945,12 @@ async fn import_review_run(
     connection: &mut SqliteConnection,
     review_run: &ReviewRunRecord,
 ) -> Result<(), TrackError> {
-    crate::path_component::validate_single_normal_path_component(
+    validate_single_normal_path_component(
         &review_run.review_id,
         "Review id",
         ErrorCode::InvalidPathComponent,
     )?;
-    crate::path_component::validate_single_normal_path_component(
+    validate_single_normal_path_component(
         &review_run.dispatch_id,
         "Dispatch id",
         ErrorCode::InvalidPathComponent,
@@ -1001,9 +994,9 @@ async fn import_review_run(
     .bind(&review_run.repository_full_name)
     .bind(&review_run.workspace_key)
     .bind(review_run.status.as_str())
-    .bind(crate::time_utils::format_iso_8601_millis(review_run.created_at))
-    .bind(crate::time_utils::format_iso_8601_millis(review_run.updated_at))
-    .bind(review_run.finished_at.map(crate::time_utils::format_iso_8601_millis))
+    .bind(format_iso_8601_millis(review_run.created_at))
+    .bind(format_iso_8601_millis(review_run.updated_at))
+    .bind(review_run.finished_at.map(format_iso_8601_millis))
     .bind(&review_run.remote_host)
     .bind(review_run.branch_name.as_deref())
     .bind(review_run.worktree_path.as_deref())
@@ -1524,18 +1517,19 @@ mod tests {
 
     use super::{display_cleanup_candidate_path, MigrationService};
     use crate::backend_config::RemoteAgentConfigService;
-    use crate::config::{ConfigService, TrackConfigFile};
-    use crate::dispatch_repository::DispatchRepository;
-    use crate::migration::MigrationState;
-    use crate::paths::get_backend_database_path;
-    use crate::project_repository::ProjectRepository;
-    use crate::review_dispatch_repository::ReviewDispatchRepository;
-    use crate::review_repository::ReviewRepository;
-    use crate::task_repository::FileTaskRepository;
     use crate::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
+    use track_config::config::{ConfigService, TrackConfigFile};
+    use track_config::paths::get_backend_database_path;
+    use track_dal::dispatch_repository::DispatchRepository;
+    use track_dal::project_repository::ProjectRepository;
+    use track_dal::review_dispatch_repository::ReviewDispatchRepository;
+    use track_dal::review_repository::ReviewRepository;
+    use track_dal::task_repository::FileTaskRepository;
+    use track_types::migration::MigrationState;
 
     struct TestEnvironment {
         _env_lock: std::sync::MutexGuard<'static, ()>,
+        _track_data_dir_guard: EnvVarGuard,
         _track_state_dir_guard: EnvVarGuard,
         _track_legacy_root_guard: EnvVarGuard,
         _track_legacy_config_guard: EnvVarGuard,
@@ -1547,11 +1541,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let backend_state_dir = directory.path().join("backend");
+            let backend_data_dir = backend_state_dir.join("issues");
             let legacy_root = directory.path().join("legacy-root");
             let legacy_config_path = directory.path().join("legacy-config/config.json");
 
             Self {
                 _env_lock: env_lock,
+                _track_data_dir_guard: set_env_var("TRACK_DATA_DIR", &backend_data_dir),
                 _track_state_dir_guard: set_env_var("TRACK_STATE_DIR", &backend_state_dir),
                 _track_legacy_root_guard: set_env_var("TRACK_LEGACY_ROOT", &legacy_root),
                 _track_legacy_config_guard: set_env_var(

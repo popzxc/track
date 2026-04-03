@@ -15,11 +15,11 @@ use llama_cpp_2::token::LlamaToken;
 use llama_cpp_2::TokenToStringError;
 use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use serde_json::json;
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::paths::path_to_string;
-use track_core::project_catalog::ProjectCatalog;
-use track_core::time_utils::format_iso_8601_millis;
-use track_core::types::ParsedTaskCandidate;
+use track_config::paths::path_to_string;
+use track_projects::project_catalog::ProjectCatalog;
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::time_utils::{format_iso_8601_millis, now_utc};
+use track_types::types::ParsedTaskCandidate;
 
 use crate::prompt::{build_llama_cpp_prompt, build_task_parser_json_schema};
 use crate::task_parser::TaskParser;
@@ -42,7 +42,7 @@ impl TaskParser for LlamaCpp2TaskParser {
         raw_text: &str,
         project_catalog: &ProjectCatalog,
     ) -> Result<ParsedTaskCandidate, TrackError> {
-        let request_timestamp = format_iso_8601_millis(track_core::time_utils::now_utc());
+        let request_timestamp = format_iso_8601_millis(now_utc());
         let prompt = build_llama_cpp_prompt(raw_text, project_catalog);
         let schema = serde_json::to_string(&build_task_parser_json_schema(project_catalog))
             .expect("task parser schema serialization should succeed");
@@ -508,7 +508,7 @@ fn log_parse_event(timestamp: &str, model_path: &Path, ok: bool, error: Option<S
 
 #[cfg(test)]
 mod tests {
-    use track_core::types::{Confidence, Priority};
+    use track_types::types::{Confidence, Priority};
 
     use super::parse_candidate_from_generated_json;
 

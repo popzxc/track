@@ -1,0 +1,17 @@
+[package]
+name = "track-projects"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Project discovery and metadata inference for track."
+readme = "../../README.md"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+track-config = { workspace = true }
+track-types = { workspace = true }
+walkdir = { workspace = true }
+

@@ -1,35 +1,23 @@
 [package]
-name = "track-cli"
+name = "track-remote-agent"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-description = "CLI for capturing tasks in the track issue tracker."
+description = "Remote dispatch and review orchestration for track."
 readme = "../../README.md"
 
-[features]
-default = []
-cuda = ["track-capture/cuda"]
-
-[[bin]]
-name = "track"
-path = "src/main.rs"
-
 [dependencies]
-clap = { workspace = true, features = ["derive"] }
-dialoguer = { workspace = true }
-owo-colors = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-track-capture = { workspace = true }
+slug = { workspace = true }
+time = { workspace = true }
 track-config = { workspace = true }
+track-dal = { workspace = true }
 track-projects = { workspace = true }
 track-types = { workspace = true }
-ureq = { workspace = true }
-url = { workspace = true }
 
 [dev-dependencies]
-assert_cmd = { workspace = true }
 tempfile = { workspace = true }

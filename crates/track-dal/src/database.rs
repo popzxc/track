@@ -5,9 +5,8 @@ use std::pin::Pin;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{Connection, Row, SqliteConnection};
-
-use crate::errors::{ErrorCode, TrackError};
-use crate::paths::{get_backend_database_path, path_to_string};
+use track_config::paths::{get_backend_database_path, path_to_string, DATABASE_FILE_NAME};
+use track_types::errors::{ErrorCode, TrackError};
 
 type BoxDbFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, TrackError>> + Send + 'a>>;
 
@@ -154,7 +153,7 @@ impl DatabaseContext {
             {
                 database_path
             }
-            Some(database_path) => database_path.join(crate::paths::DATABASE_FILE_NAME),
+            Some(database_path) => database_path.join(DATABASE_FILE_NAME),
             None => get_backend_database_path()?,
         };
 

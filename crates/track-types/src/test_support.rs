@@ -5,12 +5,12 @@ use std::sync::{Mutex, OnceLock};
 // Tests that redirect `TRACK_DATA_DIR` share a single process-global lock so
 // unrelated cases do not race on the same environment variable when Rust runs
 // unit tests in parallel.
-pub(crate) fn track_data_env_lock() -> &'static Mutex<()> {
+pub fn track_data_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub(crate) struct EnvVarGuard {
+pub struct EnvVarGuard {
     key: &'static str,
     previous_value: Option<OsString>,
 }
@@ -24,7 +24,7 @@ impl Drop for EnvVarGuard {
     }
 }
 
-pub(crate) fn set_env_var(key: &'static str, value: &Path) -> EnvVarGuard {
+pub fn set_env_var(key: &'static str, value: &Path) -> EnvVarGuard {
     let previous_value = std::env::var_os(key);
     std::env::set_var(key, value);
 

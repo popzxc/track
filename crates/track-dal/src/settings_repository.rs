@@ -1,8 +1,8 @@
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::Row;
+use track_types::errors::{ErrorCode, TrackError};
 
 use crate::database::DatabaseContext;
-use crate::errors::{ErrorCode, TrackError};
 
 #[derive(Debug, Clone)]
 pub struct SettingsRepository {

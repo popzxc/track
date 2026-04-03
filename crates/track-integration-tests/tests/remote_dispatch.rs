@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
-use track_core::project_repository::ProjectMetadata;
 use track_integration_tests::api_harness::ApiHarness;
 use track_integration_tests::fixture::RemoteFixture;
 use track_integration_tests::{
     live_integration_tests_enabled, print_live_test_skip_message, workspace_root,
 };
+use track_projects::project_metadata::ProjectMetadata;
 
 // =============================================================================
 // First Live Remote-Dispatch Test

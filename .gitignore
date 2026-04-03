@@ -11,3 +11,6 @@ testing/full_ci_smoke/.venv/
 frontend/test-results/
 target
 .codex
+
+# For local development notes only
+planning/

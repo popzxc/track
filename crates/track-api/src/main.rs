@@ -6,15 +6,14 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use track_api::{
-    build_app, spawn_remote_review_follow_up_reconciler, AppState, SERVER_VERSION_TEXT,
+    build_app, spawn_remote_review_follow_up_reconciler, AppState, MigrationService,
+    RemoteAgentConfigService, SERVER_VERSION_TEXT,
 };
-use track_core::backend_config::RemoteAgentConfigService;
-use track_core::dispatch_repository::DispatchRepository;
-use track_core::migration_service::MigrationService;
-use track_core::project_repository::ProjectRepository;
-use track_core::review_dispatch_repository::ReviewDispatchRepository;
-use track_core::review_repository::ReviewRepository;
-use track_core::task_repository::FileTaskRepository;
+use track_dal::dispatch_repository::DispatchRepository;
+use track_dal::project_repository::ProjectRepository;
+use track_dal::review_dispatch_repository::ReviewDispatchRepository;
+use track_dal::review_repository::ReviewRepository;
+use track_dal::task_repository::FileTaskRepository;
 
 fn static_root() -> PathBuf {
     if let Ok(path) = env::var("TRACK_STATIC_ROOT") {

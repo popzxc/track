@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::types::ApiRuntimeConfig;
+use track_config::runtime::ApiRuntimeConfig;
 
 const NOTIFY_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -35,7 +35,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::types::ApiRuntimeConfig;
+    use track_config::runtime::ApiRuntimeConfig;
 
     use super::notify_task_changed;
 

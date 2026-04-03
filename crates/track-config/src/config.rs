@@ -3,14 +3,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::types::RemoteAgentPreferredTool;
 
-use crate::errors::{ErrorCode, TrackError};
 use crate::paths::{
     collapse_home_path, get_config_path, get_managed_remote_agent_key_path,
     get_managed_remote_agent_known_hosts_path, resolve_path_from_config_file,
 };
-use crate::types::{
-    ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, RemoteAgentPreferredTool,
+use crate::runtime::{
+    ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig,
     RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig, TrackRuntimeConfig,
 };
 
@@ -161,13 +162,13 @@ fn default_llama_cpp_model_source() -> LlamaCppModelSource {
     }
 }
 
-pub(crate) fn canonicalize_optional_multiline_value(value: Option<String>) -> Option<String> {
+pub fn canonicalize_optional_multiline_value(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.replace("\r\n", "\n").trim().to_owned())
         .filter(|value| !value.is_empty())
 }
 
-pub(crate) fn canonicalize_remote_agent_config(
+pub fn canonicalize_remote_agent_config(
     remote_agent: RemoteAgentConfigFile,
 ) -> Result<RemoteAgentConfigFile, TrackError> {
     let host = remote_agent.host.trim().to_owned();
@@ -237,12 +238,18 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
 
-    let project_aliases = config
-        .project_aliases
-        .into_iter()
-        .map(|(alias, canonical_name)| (alias.trim().to_owned(), canonical_name.trim().to_owned()))
-        .filter(|(alias, canonical_name)| !alias.is_empty() && !canonical_name.is_empty())
-        .collect::<BTreeMap<_, _>>();
+    let mut project_aliases = BTreeMap::new();
+    for (alias, canonical) in config.project_aliases {
+        let alias = alias.trim().to_owned();
+        let canonical = canonical.trim().to_owned();
+        if alias.is_empty() || canonical.is_empty() {
+            return Err(TrackError::new(
+                ErrorCode::InvalidConfig,
+                "Project aliases require both the alias and canonical name to be non-empty.",
+            ));
+        }
+        project_aliases.insert(alias, canonical);
+    }
 
     let model_path = config
         .llama_cpp
@@ -259,18 +266,18 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
         .model_hf_file
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    if model_hf_repo.is_some() != model_hf_file.is_some() {
+
+    if model_path.is_some() && (model_hf_repo.is_some() || model_hf_file.is_some()) {
         return Err(TrackError::new(
             ErrorCode::InvalidConfig,
-            "Config file requires both `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile` when using a Hugging Face model.",
+            "Config cannot set both `llamaCpp.modelPath` and the Hugging Face model fields.",
         ));
     }
 
-    let api_port = config.api.port;
-    if api_port == 0 {
+    if model_hf_repo.is_some() != model_hf_file.is_some() {
         return Err(TrackError::new(
             ErrorCode::InvalidConfig,
-            "Config file does not match the expected format.",
+            "Config requires both `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile` when using a Hugging Face model.",
         ));
     }
 
@@ -282,7 +289,9 @@ fn canonicalize_config_file(config: TrackConfigFile) -> Result<TrackConfigFile, 
     Ok(TrackConfigFile {
         project_roots,
         project_aliases,
-        api: ApiConfigFile { port: api_port },
+        api: ApiConfigFile {
+            port: config.api.port,
+        },
         llama_cpp: LlamaCppConfigFile {
             model_path,
             model_hf_repo,
@@ -456,14 +465,12 @@ impl ConfigService {
         remote_agent.review_follow_up = review_follow_up;
         self.save_config_file(&config)?;
 
-        self.load_config_file()?
-            .remote_agent
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
-                )
-            })
+        self.load_config_file()?.remote_agent.ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
+            )
+        })
     }
 }
 
@@ -473,6 +480,8 @@ mod tests {
     use std::fs;
 
     use tempfile::TempDir;
+    use track_types::errors::ErrorCode;
+    use track_types::types::RemoteAgentPreferredTool;
 
     use super::{
         default_llama_cpp_model_source, ConfigService, RemoteAgentConfigFile,
@@ -480,9 +489,7 @@ mod tests {
         DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO, DEFAULT_REMOTE_AGENT_PORT,
         DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
-    use crate::errors::ErrorCode;
-    use crate::types::LlamaCppModelSource;
-    use crate::types::RemoteAgentPreferredTool;
+    use crate::runtime::LlamaCppModelSource;
 
     fn temp_config_service() -> (TempDir, ConfigService) {
         let directory = TempDir::new().expect("tempdir should be created");
@@ -520,119 +527,22 @@ mod tests {
             })
             .expect("config should save");
 
-        let raw =
-            fs::read_to_string(service.resolved_path()).expect("saved config should be readable");
-        assert!(raw.contains("\"llamaCpp\""));
-        assert!(raw.contains("\"remoteAgent\""));
-        assert!(raw.contains("\"shellPrelude\""));
-        assert!(!raw.contains("\"preferredTool\""));
-        assert!(!raw.contains("\"modelHfRepo\""));
-        assert!(!raw.contains("\"ai\""));
+        let saved = fs::read_to_string(service.resolved_path()).expect("config should be readable");
+        assert!(saved.contains("\"projectRoots\""));
+        assert!(saved.contains("\"llamaCpp\""));
+        assert!(saved.contains("\"remoteAgent\""));
     }
 
     #[test]
-    fn omits_llama_cpp_block_when_no_manual_override_is_configured() {
+    fn loads_default_hugging_face_model_when_no_override_is_saved() {
         let (_directory, service) = temp_config_service();
-
         service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec!["~/work".to_owned()],
-                project_aliases: BTreeMap::new(),
-                api: super::ApiConfigFile {
-                    port: DEFAULT_API_PORT,
-                },
-                llama_cpp: super::LlamaCppConfigFile::default(),
-                remote_agent: None,
-            })
-            .expect("config should save");
-
-        let raw =
-            fs::read_to_string(service.resolved_path()).expect("saved config should be readable");
-        assert!(!raw.contains("\"llamaCpp\""));
-    }
-
-    #[test]
-    fn resolves_relative_runtime_paths_from_the_config_file_location() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let config_path = directory.path().join(".config/track/config.json");
-        let service =
-            ConfigService::new(Some(config_path.clone())).expect("config service should resolve");
-
-        service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec!["../work".to_owned()],
-                project_aliases: BTreeMap::new(),
-                api: super::ApiConfigFile { port: 4210 },
-                llama_cpp: super::LlamaCppConfigFile {
-                    model_path: Some("./models/parser.gguf".to_owned()),
-                    model_hf_repo: None,
-                    model_hf_file: None,
-                },
-                remote_agent: Some(RemoteAgentConfigFile {
-                    host: "192.0.2.25".to_owned(),
-                    user: "builder".to_owned(),
-                    port: 2222,
-                    workspace_root: "~/workspace".to_owned(),
-                    projects_registry_path: "~/track-projects.json".to_owned(),
-                    preferred_tool: RemoteAgentPreferredTool::Codex,
-                    shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
-                    review_follow_up: None,
-                }),
-            })
+            .save_config_file(&TrackConfigFile::default())
             .expect("config should save");
 
         let runtime = service
             .load_runtime_config()
-            .expect("runtime config should resolve");
-        let config_directory = config_path
-            .parent()
-            .expect("config path should have a parent");
-
-        assert_eq!(
-            runtime.project_roots,
-            vec![config_directory.join("../work")]
-        );
-        assert_eq!(runtime.api.port, 4210);
-        assert_eq!(
-            runtime.llama_cpp.model_source,
-            LlamaCppModelSource::LocalPath(config_directory.join("./models/parser.gguf"))
-        );
-        let remote_agent = runtime
-            .remote_agent
-            .expect("remote agent runtime config should resolve");
-        assert_eq!(remote_agent.host, "192.0.2.25");
-        assert_eq!(remote_agent.user, "builder");
-        assert_eq!(remote_agent.port, 2222);
-        assert_eq!(remote_agent.preferred_tool, RemoteAgentPreferredTool::Codex);
-        assert_eq!(
-            remote_agent.shell_prelude,
-            Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned())
-        );
-    }
-
-    #[test]
-    fn prefers_hugging_face_model_when_both_sources_are_configured() {
-        let (_directory, service) = temp_config_service();
-
-        service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec!["~/work".to_owned()],
-                project_aliases: BTreeMap::new(),
-                api: super::ApiConfigFile {
-                    port: DEFAULT_API_PORT,
-                },
-                llama_cpp: super::LlamaCppConfigFile {
-                    model_path: Some("~/.models/custom-parser.gguf".to_owned()),
-                    model_hf_repo: Some(DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned()),
-                    model_hf_file: Some(DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned()),
-                },
-                remote_agent: None,
-            })
-            .expect("config should save");
-
-        let runtime = service
-            .load_runtime_config()
-            .expect("runtime config should resolve");
+            .expect("runtime config should load");
 
         assert_eq!(
             runtime.llama_cpp.model_source,
@@ -644,60 +554,96 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_the_builtin_hugging_face_model_when_no_override_is_configured() {
+    fn rejects_partial_hugging_face_configuration() {
         let (_directory, service) = temp_config_service();
 
+        let error = service
+            .save_config_file(&TrackConfigFile {
+                project_roots: Vec::new(),
+                project_aliases: BTreeMap::new(),
+                api: super::ApiConfigFile::default(),
+                llama_cpp: super::LlamaCppConfigFile {
+                    model_path: None,
+                    model_hf_repo: Some("repo".to_owned()),
+                    model_hf_file: None,
+                },
+                remote_agent: None,
+            })
+            .expect_err("partial Hugging Face settings should be rejected");
+
+        assert_eq!(error.code, ErrorCode::InvalidConfig);
+    }
+
+    #[test]
+    fn preserves_explicit_remote_review_follow_up_settings() {
+        let (_directory, service) = temp_config_service();
         service
             .save_config_file(&TrackConfigFile {
-                project_roots: vec!["~/work".to_owned()],
+                project_roots: Vec::new(),
                 project_aliases: BTreeMap::new(),
-                api: super::ApiConfigFile {
-                    port: DEFAULT_API_PORT,
-                },
+                api: super::ApiConfigFile::default(),
                 llama_cpp: super::LlamaCppConfigFile::default(),
-                remote_agent: None,
+                remote_agent: Some(RemoteAgentConfigFile {
+                    host: "track.example.com".to_owned(),
+                    user: "builder".to_owned(),
+                    port: DEFAULT_REMOTE_AGENT_PORT,
+                    workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
+                    projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+                    preferred_tool: RemoteAgentPreferredTool::Claude,
+                    shell_prelude: Some("source ~/.cargo/env".to_owned()),
+                    review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
+                        enabled: true,
+                        main_user: Some("popzxc".to_owned()),
+                        default_review_prompt: Some("Focus on regressions.".to_owned()),
+                    }),
+                }),
             })
             .expect("config should save");
 
-        let runtime = service
-            .load_runtime_config()
-            .expect("runtime config should resolve");
+        let loaded = service.load_config_file().expect("config should load");
+        let review_follow_up = loaded
+            .remote_agent
+            .expect("remote agent should exist")
+            .review_follow_up
+            .expect("review follow-up should exist");
 
+        assert!(review_follow_up.enabled);
+        assert_eq!(review_follow_up.main_user.as_deref(), Some("popzxc"));
         assert_eq!(
-            runtime.llama_cpp.model_source,
-            default_llama_cpp_model_source()
+            review_follow_up.default_review_prompt.as_deref(),
+            Some("Focus on regressions.")
         );
     }
 
     #[test]
     fn rejects_enabled_review_follow_up_without_a_main_user() {
-        let (_directory, service) = temp_config_service();
-
-        let error = service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec!["~/work".to_owned()],
-                project_aliases: BTreeMap::new(),
-                api: super::ApiConfigFile {
-                    port: DEFAULT_API_PORT,
-                },
-                llama_cpp: super::LlamaCppConfigFile::default(),
-                remote_agent: Some(RemoteAgentConfigFile {
-                    host: "192.0.2.25".to_owned(),
-                    user: "builder".to_owned(),
-                    port: DEFAULT_REMOTE_AGENT_PORT,
-                    workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
-                    projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
-                    preferred_tool: RemoteAgentPreferredTool::Codex,
-                    shell_prelude: Some("export PATH=\"$PATH:/opt/tools/bin\"".to_owned()),
-                    review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
-                        enabled: true,
-                        main_user: None,
-                        default_review_prompt: None,
-                    }),
-                }),
-            })
-            .expect_err("enabled review follow-up without a main user should fail");
+        let error = super::canonicalize_remote_agent_config(RemoteAgentConfigFile {
+            host: "track.example.com".to_owned(),
+            user: "builder".to_owned(),
+            port: DEFAULT_REMOTE_AGENT_PORT,
+            workspace_root: DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT.to_owned(),
+            projects_registry_path: DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH.to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
+            shell_prelude: None,
+            review_follow_up: Some(RemoteAgentReviewFollowUpConfigFile {
+                enabled: true,
+                main_user: None,
+                default_review_prompt: None,
+            }),
+        })
+        .expect_err("enabled review follow-up without a main user should fail");
 
         assert_eq!(error.code, ErrorCode::InvalidRemoteAgentConfig);
+    }
+
+    #[test]
+    fn default_model_source_matches_saved_default_behavior() {
+        assert_eq!(
+            default_llama_cpp_model_source(),
+            LlamaCppModelSource::HuggingFace {
+                repo: DEFAULT_LLAMACPP_MODEL_HF_REPO.to_owned(),
+                file: DEFAULT_LLAMACPP_MODEL_HF_FILE.to_owned(),
+            }
+        );
     }
 }

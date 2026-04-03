@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use track_config::runtime::TrackRuntimeConfig;
+use track_types::errors::{ErrorCode, TrackError};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::errors::{ErrorCode, TrackError};
 use crate::project_catalog::{ProjectCatalog, ProjectInfo};
-use crate::types::TrackRuntimeConfig;
 
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",

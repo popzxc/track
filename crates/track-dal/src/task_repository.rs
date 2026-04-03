@@ -1,14 +1,15 @@
 use std::path::PathBuf;
 
 use sqlx::Row;
-
-use crate::database::DatabaseContext;
-use crate::errors::{ErrorCode, TrackError};
-use crate::task_id::build_unique_task_id;
-use crate::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
-use crate::types::{
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::path_component::validate_single_normal_path_component;
+use track_types::task_id::build_unique_task_id;
+use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
+use track_types::types::{
     Priority, Status, StoredTask, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
 };
+
+use crate::database::DatabaseContext;
 
 #[derive(Debug, Clone)]
 pub struct FileTaskRepository {
@@ -127,7 +128,7 @@ impl FileTaskRepository {
     ) -> Result<Vec<Task>, TrackError> {
         let project = project
             .map(|project| {
-                crate::path_component::validate_single_normal_path_component(
+                validate_single_normal_path_component(
                     project,
                     "Task project",
                     ErrorCode::InvalidPathComponent,
@@ -250,7 +251,7 @@ impl FileTaskRepository {
     }
 
     fn ensure_project_exists(&self, project: &str) -> Result<(), TrackError> {
-        let project = crate::path_component::validate_single_normal_path_component(
+        let project = validate_single_normal_path_component(
             project,
             "Task project",
             ErrorCode::InvalidPathComponent,
@@ -285,11 +286,8 @@ impl FileTaskRepository {
     }
 
     fn task_exists(&self, id: &str) -> Result<bool, TrackError> {
-        let task_id = crate::path_component::validate_single_normal_path_component(
-            id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
+        let task_id =
+            validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
         self.database.run(move |connection| {
             Box::pin(async move {
                 let row = sqlx::query("SELECT 1 AS found FROM tasks WHERE id = ?1")
@@ -309,11 +307,8 @@ impl FileTaskRepository {
     }
 
     fn find_task_by_id(&self, id: &str) -> Result<StoredTask, TrackError> {
-        let task_id = crate::path_component::validate_single_normal_path_component(
-            id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
+        let task_id =
+            validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
         let storage_path = self.database.database_path().to_path_buf();
 
         self.database.run(move |connection| {

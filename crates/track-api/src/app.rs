@@ -12,32 +12,33 @@ use axum::{extract::Request, response::Response as AxumResponse};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
-use track_core::backend_config::RemoteAgentConfigService;
-use track_core::build_info::BuildInfo;
-use track_core::config::{
+use track_config::config::{
     RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile, DEFAULT_REMOTE_AGENT_PORT,
     DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
-use track_core::dispatch_repository::DispatchRepository;
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::migration::{MigrationImportSummary, MigrationStatus};
-use track_core::migration_service::MigrationService;
-use track_core::project_repository::{
-    ProjectMetadataUpdateInput, ProjectRecord, ProjectRepository, ProjectUpsertInput,
+use track_dal::dispatch_repository::DispatchRepository;
+use track_dal::project_repository::ProjectRepository;
+use track_dal::review_dispatch_repository::ReviewDispatchRepository;
+use track_dal::review_repository::ReviewRepository;
+use track_dal::task_repository::FileTaskRepository;
+use track_projects::project_metadata::{
+    ProjectMetadataUpdateInput, ProjectRecord, ProjectUpsertInput,
 };
-use track_core::remote_agent::{RemoteDispatchService, RemoteReviewService};
-use track_core::review_dispatch_repository::ReviewDispatchRepository;
-use track_core::review_repository::ReviewRepository;
-use track_core::task_repository::FileTaskRepository;
-use track_core::task_sort::sort_tasks;
-use track_core::time_utils::now_utc;
-use track_core::types::{
+use track_remote_agent::{RemoteDispatchService, RemoteReviewService};
+use track_types::build_info::BuildInfo;
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::migration::{MigrationImportSummary, MigrationStatus};
+use track_types::task_sort::sort_tasks;
+use track_types::time_utils::now_utc;
+use track_types::types::{
     CreateReviewInput, RemoteAgentPreferredTool, RemoteCleanupSummary, RemoteResetSummary,
     ReviewRecord, ReviewRunRecord, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
     TaskUpdateInput,
 };
 
+use crate::backend_config::RemoteAgentConfigService;
 use crate::build_info::server_build_info;
+use crate::migration_service::MigrationService;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -994,7 +995,7 @@ fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
                 .flatten()
             {
                 if saved_dispatch.status.is_active() {
-                    saved_dispatch.status = track_core::types::DispatchStatus::Failed;
+                    saved_dispatch.status = track_types::types::DispatchStatus::Failed;
                     saved_dispatch.updated_at = now_utc();
                     saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
                     saved_dispatch.error_message = Some(format!(
@@ -1031,7 +1032,7 @@ fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRecord) {
                 .flatten()
             {
                 if saved_dispatch.status.is_active() {
-                    saved_dispatch.status = track_core::types::DispatchStatus::Failed;
+                    saved_dispatch.status = track_types::types::DispatchStatus::Failed;
                     saved_dispatch.updated_at = now_utc();
                     saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
                     saved_dispatch.error_message = Some(format!(
@@ -1384,41 +1385,42 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicU64;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::ServiceExt;
-    use track_core::backend_config::{BackendConfigRepository, RemoteAgentConfigService};
-    use track_core::config::{
+    use track_config::config::{
         RemoteAgentConfigFile, DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
         DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
-    use track_core::database::DatabaseContext;
-    use track_core::dispatch_repository::DispatchRepository;
-    use track_core::migration_service::MigrationService;
-    use track_core::paths::{
+    use track_config::paths::{
         get_backend_managed_remote_agent_key_path,
         get_backend_managed_remote_agent_known_hosts_path,
     };
-    use track_core::project_catalog::ProjectInfo;
-    use track_core::project_repository::{ProjectMetadata, ProjectRepository};
-    use track_core::review_dispatch_repository::ReviewDispatchRepository;
-    use track_core::review_repository::ReviewRepository;
-    use track_core::settings_repository::SettingsRepository;
-    use track_core::task_repository::FileTaskRepository;
-    use track_core::time_utils::now_utc;
-    use track_core::types::{
+    use track_dal::database::DatabaseContext;
+    use track_dal::dispatch_repository::DispatchRepository;
+    use track_dal::project_repository::ProjectRepository;
+    use track_dal::review_dispatch_repository::ReviewDispatchRepository;
+    use track_dal::review_repository::ReviewRepository;
+    use track_dal::settings_repository::SettingsRepository;
+    use track_dal::task_repository::FileTaskRepository;
+    use track_projects::project_catalog::ProjectInfo;
+    use track_projects::project_metadata::ProjectMetadata;
+    use track_types::time_utils::now_utc;
+    use track_types::types::{
         DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
         TaskCreateInput, TaskSource,
     };
 
     use super::{build_app, AppState};
+    use crate::backend_config::{BackendConfigRepository, RemoteAgentConfigService};
+    use crate::migration_service::MigrationService;
+    use crate::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
 
     fn static_root(directory: &TempDir) -> std::path::PathBuf {
         let root = directory.path().join("static");
@@ -1432,63 +1434,32 @@ mod tests {
         directory.path().join("backend").join("track.sqlite")
     }
 
-    fn test_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct ScopedEnvVar {
-        key: &'static str,
-        previous_value: Option<OsString>,
-    }
-
-    impl ScopedEnvVar {
-        fn set_path(key: &'static str, value: PathBuf) -> Self {
-            let previous_value = std::env::var_os(key);
-            std::env::set_var(key, value);
-
-            Self {
-                key,
-                previous_value,
-            }
-        }
-    }
-
-    impl Drop for ScopedEnvVar {
-        fn drop(&mut self) {
-            match self.previous_value.take() {
-                Some(previous_value) => std::env::set_var(self.key, previous_value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-
     struct TestEnvironment {
         _env_lock: std::sync::MutexGuard<'static, ()>,
-        _track_state_dir_guard: ScopedEnvVar,
-        _track_legacy_root_guard: ScopedEnvVar,
-        _track_legacy_config_guard: ScopedEnvVar,
+        _track_data_dir_guard: EnvVarGuard,
+        _track_state_dir_guard: EnvVarGuard,
+        _track_legacy_root_guard: EnvVarGuard,
+        _track_legacy_config_guard: EnvVarGuard,
     }
 
     impl TestEnvironment {
         fn new(directory: &TempDir) -> Self {
-            let env_lock = test_env_lock()
+            let env_lock = track_data_env_lock()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let backend_state_dir = directory.path().join("backend");
+            let backend_data_dir = backend_state_dir.join("issues");
             let legacy_root = directory.path().join("legacy-root");
             let legacy_config_path = directory.path().join("legacy-config/config.json");
 
             Self {
                 _env_lock: env_lock,
-                _track_state_dir_guard: ScopedEnvVar::set_path(
-                    "TRACK_STATE_DIR",
-                    backend_state_dir,
-                ),
-                _track_legacy_root_guard: ScopedEnvVar::set_path("TRACK_LEGACY_ROOT", legacy_root),
-                _track_legacy_config_guard: ScopedEnvVar::set_path(
+                _track_data_dir_guard: set_env_var("TRACK_DATA_DIR", &backend_data_dir),
+                _track_state_dir_guard: set_env_var("TRACK_STATE_DIR", &backend_state_dir),
+                _track_legacy_root_guard: set_env_var("TRACK_LEGACY_ROOT", &legacy_root),
+                _track_legacy_config_guard: set_env_var(
                     "TRACK_LEGACY_CONFIG_PATH",
-                    legacy_config_path,
+                    &legacy_config_path,
                 ),
             }
         }

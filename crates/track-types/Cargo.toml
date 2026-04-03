@@ -1,0 +1,16 @@
+[package]
+name = "track-types"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Shared domain types and low-level value helpers for the track issue tracker."
+readme = "../../README.md"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+slug = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true, features = ["formatting", "macros", "parsing"] }
