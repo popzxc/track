@@ -7,10 +7,8 @@ type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
 interface UseReviewViewStateOptions {
   currentPage: Ref<AppPage>
   followingUpReview: Ref<ReviewRecord | null>
-  loadSelectedReviewRunHistory: () => Promise<void>
   reviews: Ref<ReviewSummary[]>
   selectedReviewRuns: Ref<ReviewRunRecord[]>
-  setFriendlyError: (error: unknown) => void
 }
 
 /**
@@ -18,9 +16,8 @@ interface UseReviewViewStateOptions {
  *
  * Review state is smaller than task state, but it still has the same
  * lifecycle-sensitive behavior: the drawer should close when the selected
- * review disappears, and run history should only load for the active review.
- * Pulling that coordination into one composable makes the remaining shell code
- * read as review mutations instead of review bookkeeping.
+ * review disappears. Pulling that coordination into one composable makes the
+ * remaining shell code read as review mutations instead of review bookkeeping.
  */
 export function useReviewViewState(options: UseReviewViewStateOptions) {
   const selectedReviewId = ref<string | null>(null)
@@ -84,21 +81,6 @@ export function useReviewViewState(options: UseReviewViewStateOptions) {
       options.selectedReviewRuns.value = []
       options.followingUpReview.value = null
     }
-  })
-
-  watch([isReviewDrawerOpen, selectedReview], ([drawerOpen, review]) => {
-    if (!review) {
-      isReviewDrawerOpen.value = false
-      options.selectedReviewRuns.value = []
-      return
-    }
-
-    if (!drawerOpen) {
-      options.selectedReviewRuns.value = []
-      return
-    }
-
-    void options.loadSelectedReviewRunHistory().catch(options.setFriendlyError)
   })
 
   return {

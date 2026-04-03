@@ -24,10 +24,8 @@ describe('useTaskViewState', () => {
         dispatchingTaskId: ref(null),
         followingUpTaskId: ref(null),
         latestDispatchByTaskId: computed(() => ({})),
-        loadSelectedTaskRunHistory: vi.fn(async () => undefined),
         remoteAgentSettings: ref(null),
         selectedTaskRuns: taskRuns,
-        setFriendlyError: vi.fn(),
         taskLifecycleMutation: ref(null),
         taskLifecycleMutationTaskId: ref(null),
         tasks,
@@ -56,7 +54,6 @@ describe('useTaskViewState', () => {
 
   it('loads task history for the active drawer selection and clears it when leaving the page', async () => {
     const task = buildTask()
-    const loadSelectedTaskRunHistory = vi.fn(async () => undefined)
     const currentPage = ref<'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'>('tasks')
     const selectedTaskRuns = ref([buildRunRecord(task)])
 
@@ -72,10 +69,8 @@ describe('useTaskViewState', () => {
         latestDispatchByTaskId: computed(() => ({
           [task.id]: buildDispatch({ taskId: task.id, project: task.project }),
         })),
-        loadSelectedTaskRunHistory,
         remoteAgentSettings: ref(null),
         selectedTaskRuns,
-        setFriendlyError: vi.fn(),
         taskLifecycleMutation: ref(null),
         taskLifecycleMutationTaskId: ref(null),
         tasks: ref([task]),
@@ -88,8 +83,6 @@ describe('useTaskViewState', () => {
 
     state.selectTask(task.id)
     await nextTick()
-
-    expect(loadSelectedTaskRunHistory).toHaveBeenCalledTimes(1)
 
     currentPage.value = 'reviews'
     await nextTick()

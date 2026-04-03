@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
 import {
   ApiClientError,
@@ -12,16 +12,10 @@ import {
   deleteTask,
   discardDispatch,
   dispatchTask,
-  fetchDispatches,
   fetchMigrationStatus,
   fetchProjects,
   followUpReview,
-  fetchReviewRuns,
-  fetchReviews,
   fetchRemoteAgentSettings,
-  fetchRuns,
-  fetchTaskRuns,
-  fetchTaskChangeVersion,
   fetchTasks,
   followUpTask,
   importLegacyData,
@@ -43,8 +37,10 @@ import SettingsPage from './components/SettingsPage.vue'
 import TaskDrawer from './components/TaskDrawer.vue'
 import TaskEditorModal from './components/TaskEditorModal.vue'
 import TasksPage from './components/TasksPage.vue'
+import { useBackgroundSync } from './composables/useBackgroundSync'
 import { useProjectViewState } from './composables/useProjectViewState'
 import { useReviewViewState } from './composables/useReviewViewState'
+import { useRunState } from './composables/useRunState'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
   dispatchBadgeClass,
@@ -87,13 +83,6 @@ type PendingRunnerSetupRequest = {
   preferredTool: RemoteAgentPreferredTool
 }
 
-const TASK_CHANGE_POLL_INTERVAL_MS = 2_000
-
-// Remote Codex runs are deliberately refreshed more slowly than local task
-// files. New tasks should appear almost immediately, while long-running remote
-// work should not turn into constant SSH-backed churn.
-const RUN_POLL_INTERVAL_MS = 60_000
-
 // =============================================================================
 // App Shell State
 // =============================================================================
@@ -114,7 +103,6 @@ const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
 const selectedTaskRuns = ref<RunRecord[]>([])
 const selectedReviewRuns = ref<ReviewRunRecord[]>([])
 const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
-const taskChangeVersion = ref<number | null>(null)
 const loading = ref(true)
 const refreshing = ref(false)
 const saving = ref(false)
@@ -147,13 +135,6 @@ const resetSummary = ref<RemoteResetSummary | null>(null)
 const migrationStatus = ref<MigrationStatus | null>(null)
 const migrationImportSummary = ref<MigrationImportSummary | null>(null)
 const migrationImportPending = ref(false)
-
-let taskChangePollTimer: number | null = null
-let taskChangePollInFlight = false
-let runPollTimer: number | null = null
-let runPollInFlight = false
-let selectedTaskRunsRequestVersion = 0
-let selectedReviewRunsRequestVersion = 0
 
 // =============================================================================
 // Derived State
@@ -225,10 +206,8 @@ const {
   dispatchingTaskId,
   followingUpTaskId,
   latestDispatchByTaskId,
-  loadSelectedTaskRunHistory,
   remoteAgentSettings,
   selectedTaskRuns,
-  setFriendlyError,
   taskLifecycleMutation,
   taskLifecycleMutationTaskId,
   tasks,
@@ -258,10 +237,43 @@ const {
 } = useReviewViewState({
   currentPage,
   followingUpReview,
-  loadSelectedReviewRunHistory,
   reviews,
   selectedReviewRuns,
-  setFriendlyError,
+})
+
+const {
+  activeReviewRuns,
+  activeRuns,
+  loadLatestDispatchesForVisibleTasks,
+  loadReviews,
+  loadRuns,
+  loadSelectedReviewRunHistory,
+  loadSelectedTaskRunHistory,
+  recentReviewRuns,
+  recentRuns,
+  removeReview,
+  removeTaskRuns,
+  replaceSelectedReviewRuns,
+  upsertLatestReviewRun,
+  upsertLatestTaskDispatch,
+  upsertReviewSummary,
+  upsertRunRecord,
+  upsertSelectedReviewRun,
+  upsertSelectedTaskRun,
+} = useRunState({
+  closeReviewDrawer,
+  isReviewDrawerOpen,
+  isTaskDrawerOpen,
+  latestTaskDispatchesByTaskId,
+  reviews,
+  runs,
+  selectedReview,
+  selectedReviewId,
+  selectedReviewRuns,
+  selectedTask,
+  selectedTaskId,
+  selectedTaskRuns,
+  tasks,
 })
 
 // =============================================================================
@@ -276,45 +288,7 @@ const taskGroups = computed(() => {
   return groupTasksByProject(tasks.value)
 })
 
-const activeRuns = computed(() =>
-  runs.value
-    .filter((run) => run.dispatch.status === 'preparing' || run.dispatch.status === 'running')
-    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt)),
-)
-
-const activeReviewRuns = computed(() =>
-  reviews.value
-    .filter(
-      (summary) =>
-        summary.latestRun?.status === 'preparing' || summary.latestRun?.status === 'running',
-    )
-    .sort((left, right) => {
-      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.updatedAt ?? left.review.createdAt
-      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.updatedAt ?? right.review.createdAt
-      return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
-    }),
-)
-
 const activeRemoteWorkCount = computed(() => activeRuns.value.length + activeReviewRuns.value.length)
-
-const recentRuns = computed(() =>
-  runs.value
-    .slice()
-    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-    .slice(0, 40),
-)
-
-const recentReviewRuns = computed(() =>
-  reviews.value
-    .filter((summary) => Boolean(summary.latestRun))
-    .slice()
-    .sort((left, right) => {
-      const leftCreatedAt = left.latestRun?.createdAt ?? left.review.updatedAt ?? left.review.createdAt
-      const rightCreatedAt = right.latestRun?.createdAt ?? right.review.updatedAt ?? right.review.createdAt
-      return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
-    })
-    .slice(0, 40),
-)
 
 const followingUpDispatch = computed(() =>
   followingUpTask.value ? latestDispatchByTaskId.value[followingUpTask.value.id] ?? undefined : undefined,
@@ -387,102 +361,6 @@ function setFriendlyError(error: unknown) {
     error instanceof Error ? error.message : 'Something went wrong while talking to the API.'
 }
 
-function upsertRunRecord(task: Task, dispatch: TaskDispatch) {
-  const nextRecord: RunRecord = { task, dispatch }
-  runs.value = [nextRecord, ...runs.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId)]
-    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-}
-
-function upsertLatestTaskDispatch(dispatch: TaskDispatch) {
-  latestTaskDispatchesByTaskId.value = {
-    ...latestTaskDispatchesByTaskId.value,
-    [dispatch.taskId]: dispatch,
-  }
-}
-
-function replaceSelectedTaskRuns(taskRuns: RunRecord[]) {
-  selectedTaskRuns.value = taskRuns
-    .slice()
-    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-}
-
-function upsertSelectedTaskRun(task: Task, dispatch: TaskDispatch) {
-  if (selectedTaskId.value !== task.id) {
-    return
-  }
-
-  replaceSelectedTaskRuns([
-    { task, dispatch },
-    ...selectedTaskRuns.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId),
-  ])
-}
-
-function removeTaskRuns(taskId: string) {
-  runs.value = runs.value.filter((run) => run.task.id !== taskId)
-  const nextDispatches = { ...latestTaskDispatchesByTaskId.value }
-  delete nextDispatches[taskId]
-  latestTaskDispatchesByTaskId.value = nextDispatches
-
-  if (selectedTaskId.value === taskId) {
-    selectedTaskRuns.value = []
-  }
-}
-
-function reviewSummaryTimestamp(summary: ReviewSummary) {
-  return summary.latestRun?.createdAt ?? summary.review.updatedAt ?? summary.review.createdAt
-}
-
-function sortReviewSummaries(reviewSummaries: ReviewSummary[]) {
-  return reviewSummaries
-    .slice()
-    .sort((left, right) => Date.parse(reviewSummaryTimestamp(right)) - Date.parse(reviewSummaryTimestamp(left)))
-}
-
-function replaceSelectedReviewRuns(reviewRuns: ReviewRunRecord[]) {
-  selectedReviewRuns.value = reviewRuns
-    .slice()
-    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-}
-
-function upsertReviewSummary(review: ReviewRecord, latestRun?: ReviewRunRecord | null) {
-  const existingSummary = reviews.value.find((summary) => summary.review.id === review.id)
-  reviews.value = sortReviewSummaries([
-    {
-      review,
-      latestRun: latestRun ?? existingSummary?.latestRun,
-    },
-    ...reviews.value.filter((summary) => summary.review.id !== review.id),
-  ])
-}
-
-function upsertLatestReviewRun(reviewId: string, latestRun: ReviewRunRecord) {
-  reviews.value = sortReviewSummaries(
-    reviews.value.map((summary) =>
-      summary.review.id === reviewId
-        ? { ...summary, latestRun }
-        : summary),
-  )
-}
-
-function upsertSelectedReviewRun(run: ReviewRunRecord) {
-  if (selectedReviewId.value !== run.reviewId) {
-    return
-  }
-
-  replaceSelectedReviewRuns([
-    run,
-    ...selectedReviewRuns.value.filter((entry) => entry.dispatchId !== run.dispatchId),
-  ])
-}
-
-function removeReview(reviewId: string) {
-  reviews.value = reviews.value.filter((summary) => summary.review.id !== reviewId)
-
-  if (selectedReviewId.value === reviewId) {
-    closeReviewDrawer()
-  }
-}
-
 function openSelectedTaskProjectDetails() {
   if (!selectedTaskProject.value) {
     return
@@ -526,75 +404,6 @@ async function loadTasks() {
       description: undefined,
     },
   }))
-}
-
-async function loadReviews() {
-  reviews.value = sortReviewSummaries(await fetchReviews())
-}
-
-async function loadLatestDispatchesForVisibleTasks() {
-  const dispatches = await fetchDispatches(tasks.value.map((task) => task.id))
-
-  const latestByTaskId: Record<string, TaskDispatch> = {}
-  for (const dispatch of dispatches) {
-    latestByTaskId[dispatch.taskId] = dispatch
-  }
-
-  latestTaskDispatchesByTaskId.value = latestByTaskId
-}
-
-async function loadSelectedTaskRunHistory() {
-  if (!isTaskDrawerOpen.value || !selectedTask.value) {
-    selectedTaskRuns.value = []
-    return
-  }
-
-  const requestVersion = ++selectedTaskRunsRequestVersion
-  const taskId = selectedTask.value.id
-  const taskRuns = await fetchTaskRuns(taskId)
-
-  // The drawer is transient, so stale responses should not overwrite a newer
-  // selection if the user switched tasks while the request was in flight.
-  if (
-    requestVersion !== selectedTaskRunsRequestVersion
-    || !isTaskDrawerOpen.value
-    || selectedTask.value?.id !== taskId
-  ) {
-    return
-  }
-
-  replaceSelectedTaskRuns(taskRuns)
-}
-
-async function loadSelectedReviewRunHistory() {
-  if (!isReviewDrawerOpen.value || !selectedReview.value) {
-    selectedReviewRuns.value = []
-    return
-  }
-
-  const requestVersion = ++selectedReviewRunsRequestVersion
-  const reviewId = selectedReview.value.id
-  const reviewRuns = await fetchReviewRuns(reviewId)
-
-  // The review drawer is also transient, so we apply the same stale-response
-  // protection that task run history already uses.
-  if (
-    requestVersion !== selectedReviewRunsRequestVersion
-    || !isReviewDrawerOpen.value
-    || selectedReview.value?.id !== reviewId
-  ) {
-    return
-  }
-
-  replaceSelectedReviewRuns(reviewRuns)
-}
-
-async function loadRuns() {
-  runs.value = await fetchRuns(200)
-}
-
-async function syncTaskChangeVersion() {
-  taskChangeVersion.value = await fetchTaskChangeVersion()
 }
 
 function resetAppDataForMigration() {
@@ -1125,135 +934,33 @@ function openRemoteResetConfirmation() {
 function clearPendingRemoteReset() {
   resetPendingConfirmation.value = false
 }
-
-// =============================================================================
-// Background Sync
-// =============================================================================
-//
-// Tasks still refresh quickly because local creation is a core workflow. Run
-// status remains slower because those updates imply remote work and can happen
-// in the background without forcing a noisy interface.
-async function pollForTaskChanges() {
-  if (
-    taskChangePollInFlight ||
-    loading.value ||
-    refreshing.value ||
-    saving.value ||
-    dispatchingTaskId.value !== null ||
-    cancelingDispatchTaskId.value !== null ||
-    cancelingReviewId.value !== null ||
-    discardingDispatchTaskId.value !== null ||
-    followingUpTaskId.value !== null
-  ) {
-    return
-  }
-
-  taskChangePollInFlight = true
-
-  try {
-    const nextVersion = await fetchTaskChangeVersion()
-    if (taskChangeVersion.value === null) {
-      taskChangeVersion.value = nextVersion
-      return
-    }
-
-    if (nextVersion !== taskChangeVersion.value) {
-      await refreshAll()
-      return
-    }
-
-    taskChangeVersion.value = nextVersion
-  } catch {
-    // Background refresh is a convenience path. Foreground actions already
-    // surface actionable failures.
-  } finally {
-    taskChangePollInFlight = false
-  }
-}
-
-async function pollForRunChanges() {
-  if (
-    runPollInFlight ||
-    loading.value ||
-    refreshing.value ||
-    saving.value ||
-    dispatchingTaskId.value !== null ||
-    cancelingDispatchTaskId.value !== null ||
-    cancelingReviewId.value !== null ||
-    discardingDispatchTaskId.value !== null ||
-    followingUpTaskId.value !== null
-  ) {
-    return
-  }
-
-  if (activeRuns.value.length === 0 && activeReviewRuns.value.length === 0) {
-    return
-  }
-
-  runPollInFlight = true
-
-  try {
-    await Promise.all([
-      loadRuns(),
-      loadReviews(),
-      loadLatestDispatchesForVisibleTasks(),
-      loadSelectedTaskRunHistory().catch(() => {
-        // The rest of the run state remains useful even if the drawer history
-        // fails to refresh on one background poll.
-      }),
-      loadSelectedReviewRunHistory().catch(() => {
-        // Review history is secondary to the latest status cards, so this poll
-        // stays best-effort for the review drawer as well.
-      }),
-    ])
-  } catch {
-    // The last known run state remains useful, so this poll stays best-effort.
-  } finally {
-    runPollInFlight = false
-  }
-}
-
-watch([showClosed, selectedProjectFilter], () => {
-  if (loading.value) {
-    return
-  }
-
-  void (async () => {
-    try {
-      await loadTasks()
-      await Promise.all([
-        loadLatestDispatchesForVisibleTasks(),
-        loadSelectedTaskRunHistory().catch(() => {
-          // Changing filters should not blank the queue just because drawer
-          // history could not be refreshed for the currently selected task.
-        }),
-      ])
-    } catch (error) {
-      setFriendlyError(error)
-    }
-  })()
-})
-
-onMounted(() => {
-  void refreshAll()
-
-  taskChangePollTimer = window.setInterval(() => {
-    void pollForTaskChanges()
-  }, TASK_CHANGE_POLL_INTERVAL_MS)
-
-  runPollTimer = window.setInterval(() => {
-    void pollForRunChanges()
-  }, RUN_POLL_INTERVAL_MS)
-})
-
-onBeforeUnmount(() => {
-  if (taskChangePollTimer !== null) {
-    window.clearInterval(taskChangePollTimer)
-  }
-
-  if (runPollTimer !== null) {
-    window.clearInterval(runPollTimer)
-  }
+const { syncTaskChangeVersion } = useBackgroundSync({
+  activeReviewRuns,
+  activeRuns,
+  cancelingDispatchTaskId,
+  cancelingReviewId,
+  dispatchingTaskId,
+  discardingDispatchTaskId,
+  followingUpTaskId,
+  isReviewDrawerOpen,
+  isTaskDrawerOpen,
+  loading,
+  loadLatestDispatchesForVisibleTasks,
+  loadReviews,
+  loadRuns,
+  loadSelectedReviewRunHistory,
+  loadSelectedTaskRunHistory,
+  loadTasks,
+  refreshAll,
+  refreshing,
+  saving,
+  selectedProjectFilter,
+  selectedReview,
+  selectedReviewRuns,
+  selectedTask,
+  selectedTaskRuns,
+  setFriendlyError,
+  showClosed,
 })
 </script>
 

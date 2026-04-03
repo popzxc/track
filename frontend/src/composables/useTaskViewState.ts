@@ -21,10 +21,8 @@ interface UseTaskViewStateOptions {
   dispatchingTaskId: Ref<string | null>
   followingUpTaskId: Ref<string | null>
   latestDispatchByTaskId: ComputedRef<Record<string, TaskDispatch>>
-  loadSelectedTaskRunHistory: () => Promise<void>
   remoteAgentSettings: Ref<RemoteAgentSettings | null>
   selectedTaskRuns: Ref<RunRecord[]>
-  setFriendlyError: (error: unknown) => void
   taskLifecycleMutation: Ref<TaskLifecycleMutation | null>
   taskLifecycleMutationTaskId: Ref<string | null>
   tasks: Ref<Task[]>
@@ -47,10 +45,10 @@ function taskLifecycleProgressMessage(mutation: TaskLifecycleMutation | null): s
  * Coordinates the task queue, task drawer, and task-scoped run history.
  *
  * The task surface has a few easy-to-miss reactivity edge cases:
- * filters can temporarily hide the selected task, opening a run from the Runs
- * page may need to widen filters before the row exists again, and the drawer
- * should only fetch history for the active selection. Centralizing that
- * behavior here keeps App.vue focused on mutations and API orchestration.
+ * filters can temporarily hide the selected task, and opening a run from the
+ * Runs page may need to widen filters before the row exists again.
+ * Centralizing that behavior here keeps App.vue focused on mutations and API
+ * orchestration instead of queue-specific selection edge cases.
  */
 export function useTaskViewState(options: UseTaskViewStateOptions) {
   const showClosed = ref(false)
@@ -229,21 +227,6 @@ export function useTaskViewState(options: UseTaskViewStateOptions) {
       isTaskDrawerOpen.value = false
       options.selectedTaskRuns.value = []
     }
-  })
-
-  watch([isTaskDrawerOpen, selectedTask], ([drawerOpen, task]) => {
-    if (!task) {
-      isTaskDrawerOpen.value = false
-      options.selectedTaskRuns.value = []
-      return
-    }
-
-    if (!drawerOpen) {
-      options.selectedTaskRuns.value = []
-      return
-    }
-
-    void options.loadSelectedTaskRunHistory().catch(options.setFriendlyError)
   })
 
   return {
