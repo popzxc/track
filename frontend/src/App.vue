@@ -2,20 +2,13 @@
 import { computed, ref } from 'vue'
 
 import { ApiClientError } from './api/client'
-import ConfirmDialog from './components/ConfirmDialog.vue'
-import FollowUpModal from './components/FollowUpModal.vue'
 import MigrationStatePanel from './components/MigrationStatePanel.vue'
 import ProjectsPage from './components/ProjectsPage.vue'
-import ProjectMetadataModal from './components/ProjectMetadataModal.vue'
-import ReviewDrawer from './components/ReviewDrawer.vue'
 import ReviewsPage from './components/ReviewsPage.vue'
-import ReviewFollowUpModal from './components/ReviewFollowUpModal.vue'
-import ReviewRequestModal from './components/ReviewRequestModal.vue'
-import RemoteAgentSetupModal from './components/RemoteAgentSetupModal.vue'
+import ShellOverlayMount from './components/ShellOverlayMount.vue'
+import ShellSidebar from './components/ShellSidebar.vue'
 import RunsPage from './components/RunsPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
-import TaskDrawer from './components/TaskDrawer.vue'
-import TaskEditorModal from './components/TaskEditorModal.vue'
 import TasksPage from './components/TasksPage.vue'
 import { useAppDataLoader } from './composables/useAppDataLoader'
 import { useBackgroundSync } from './composables/useBackgroundSync'
@@ -28,13 +21,9 @@ import { useShellOverlays } from './composables/useShellOverlays'
 import { useTaskMutations, type PendingRunnerSetupRequest } from './composables/useTaskMutations'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
-  drawerPrimaryAction,
   groupTasksByProject,
   mergeProjects,
 } from './features/tasks/presentation'
-import {
-  taskTitle,
-} from './features/tasks/description'
 import type {
   MigrationImportSummary,
   MigrationStatus,
@@ -268,39 +257,6 @@ const followingUpDispatch = computed(() =>
 
 const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
-// =============================================================================
-// Presentation Helpers
-// =============================================================================
-//
-// The UI intentionally keeps the queue dense and reserves stronger styling for
-// actual run outcomes. Priority remains visible, but it no longer competes with
-// failure states for the loudest color on screen.
-function drawerPrimaryActionLabel(task: Task, dispatch?: TaskDispatch | null): string {
-  switch (drawerPrimaryAction(task, dispatch)) {
-    case 'reopen':
-      return selectedTaskLifecycleMutation.value === 'reopening' ? 'Reopening...' : 'Reopen task'
-    case 'cancel':
-      return cancelingDispatchTaskId.value === task.id ? 'Canceling...' : 'Cancel run'
-    case 'continue':
-      return followingUpTaskId.value === task.id ? 'Continuing...' : 'Continue run'
-    case 'start':
-      return dispatchingTaskId.value === task.id ? 'Starting...' : 'Start agent'
-  }
-}
-
-function drawerPrimaryActionClass(task: Task, dispatch?: TaskDispatch | null): string {
-  switch (drawerPrimaryAction(task, dispatch)) {
-    case 'reopen':
-      return 'border border-yellow/30 bg-yellow/10 text-yellow hover:bg-yellow/15'
-    case 'cancel':
-      return 'border border-orange/30 bg-orange/10 text-orange hover:bg-orange/15'
-    case 'continue':
-      return 'border border-aqua/30 bg-aqua/10 text-aqua hover:bg-aqua/15'
-    case 'start':
-      return 'border border-blue/30 bg-blue/10 text-blue hover:bg-blue/15'
-  }
-}
-
 function openExternal(url: string) {
   window.open(url, '_blank', 'noreferrer')
 }
@@ -528,119 +484,16 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
   <main class="min-h-screen px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
     <div class="mx-auto max-w-[1800px]">
       <div class="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside class="border border-fg2/20 bg-bg1/95 p-4 shadow-panel lg:sticky lg:top-4 lg:self-start">
-          <div class="flex items-center justify-between gap-3 border-b border-fg2/10 pb-4">
-            <p class="font-display text-3xl text-fg0">
-              track
-            </p>
-
-            <span
-              class="border px-3 py-2 text-xs font-semibold tracking-[0.08em]"
-              :class="
-                runnerSetupReady
-                  ? 'border-aqua/30 bg-aqua/10 text-aqua'
-                  : remoteAgentSettings?.configured
-                    ? 'border-yellow/30 bg-yellow/10 text-yellow'
-                    : 'border-fg2/20 bg-bg0 text-fg2'
-              "
-            >
-              {{
-                runnerSetupReady
-                  ? 'ready'
-                  : remoteAgentSettings?.configured
-                    ? 'setup'
-                    : 'local'
-              }}
-            </span>
-          </div>
-
-          <nav class="mt-4 space-y-2">
-            <button
-              type="button"
-              class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
-              :class="
-                currentPage === 'tasks'
-                  ? 'border-aqua/35 bg-aqua/10 text-aqua'
-                  : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
-              "
-              @click="currentPage = 'tasks'"
-            >
-              <span>Tasks</span>
-              <span class="text-xs text-fg3">{{ visibleTaskCount }}</span>
-            </button>
-            <button
-              type="button"
-              class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
-              :class="
-                currentPage === 'reviews'
-                  ? 'border-aqua/35 bg-aqua/10 text-aqua'
-                  : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
-              "
-              @click="currentPage = 'reviews'"
-            >
-              <span>Reviews</span>
-              <span class="text-xs text-fg3">{{ reviewCount }}</span>
-            </button>
-            <button
-              type="button"
-              class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
-              :class="
-                currentPage === 'runs'
-                  ? 'border-aqua/35 bg-aqua/10 text-aqua'
-                  : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
-              "
-              @click="currentPage = 'runs'"
-            >
-              <span>Runs</span>
-              <span class="text-xs text-fg3">{{ activeRemoteWorkCount }}</span>
-            </button>
-            <button
-              type="button"
-              class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
-              :class="
-                currentPage === 'projects'
-                  ? 'border-aqua/35 bg-aqua/10 text-aqua'
-                  : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
-              "
-              @click="currentPage = 'projects'"
-            >
-              <span>Projects</span>
-              <span class="text-xs text-fg3">{{ totalProjectCount }}</span>
-            </button>
-            <button
-              type="button"
-              class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
-              :class="
-                currentPage === 'settings'
-                  ? 'border-aqua/35 bg-aqua/10 text-aqua'
-                  : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
-              "
-              @click="currentPage = 'settings'"
-            >
-              <span>Settings</span>
-              <span class="text-xs text-fg3">remote</span>
-            </button>
-          </nav>
-
-          <div class="mt-6 border-t border-fg2/10 pt-4 text-sm text-fg2">
-            <div class="flex items-center justify-between">
-              <span>Active remote work</span>
-              <span>{{ activeRemoteWorkCount }}</span>
-            </div>
-            <div class="mt-2 flex items-center justify-between">
-              <span>Visible tasks</span>
-              <span>{{ visibleTaskCount }}</span>
-            </div>
-            <div class="mt-2 flex items-center justify-between">
-              <span>Reviews</span>
-              <span>{{ reviewCount }}</span>
-            </div>
-            <div class="mt-2 flex items-center justify-between">
-              <span>Projects</span>
-              <span>{{ totalProjectCount }}</span>
-            </div>
-          </div>
-        </aside>
+        <ShellSidebar
+          :active-page="currentPage"
+          :active-remote-work-count="activeRemoteWorkCount"
+          :remote-agent-configured="Boolean(remoteAgentSettings?.configured)"
+          :review-count="reviewCount"
+          :runner-setup-ready="runnerSetupReady"
+          :total-project-count="totalProjectCount"
+          :visible-task-count="visibleTaskCount"
+          @navigate="currentPage = $event"
+        />
 
         <section class="min-w-0 space-y-4">
           <div
@@ -732,159 +585,88 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
       </div>
     </div>
 
-    <TaskDrawer
-      v-if="currentPage === 'tasks' && isTaskDrawerOpen && selectedTask"
-      :can-continue="selectedTaskCanContinue"
-      :can-discard-history="selectedTaskCanDiscardHistory"
-      :can-start-fresh="selectedTaskCanStartFresh"
-      :dispatch-disabled-reason="selectedTaskDispatchDisabledReason"
-      :is-discarding-history="discardingDispatchTaskId === selectedTask.id"
-      :is-dispatching="dispatchingTaskId === selectedTask.id"
-      :latest-dispatch="selectedTaskLatestDispatch"
-      :latest-reusable-pull-request="selectedTaskLatestReusablePullRequest"
-      :lifecycle-mutation="selectedTaskLifecycleMutation"
-      :lifecycle-progress-message="selectedTaskLifecycleMessage"
-      :pinned-tool="selectedTaskPinnedTool"
-      :primary-action-class="drawerPrimaryActionClass(selectedTask, selectedTaskLatestDispatch)"
-      :primary-action-disabled="selectedTaskPrimaryActionDisabled"
-      :primary-action-label="drawerPrimaryActionLabel(selectedTask, selectedTaskLatestDispatch)"
-      :start-tool="selectedTaskDispatchTool"
-      :task="selectedTask"
-      :task-project="selectedTaskProject"
-      :task-runs="selectedTaskRuns"
-      @close="closeTaskDrawer"
-      @request-close-task="updateTaskStatus(selectedTask, 'closed')"
-      @request-delete-task="queueTaskDeletion(selectedTask)"
-      @request-discard-history="discardRunHistory(selectedTask)"
-      @request-edit-task="openTaskEditor(selectedTask)"
-      @request-open-project="openSelectedTaskProjectDetails"
-      @request-open-url="openExternal"
-      @request-primary-action="handlePrimaryAction"
-      @request-start-fresh="startRemoteRun(selectedTask)"
-      @update:start-tool="selectedTaskStartTool = $event"
-    />
-
-    <ReviewDrawer
-      v-if="currentPage === 'reviews' && isReviewDrawerOpen && selectedReview"
-      :can-cancel="selectedReviewCanCancel"
-      :can-re-review="selectedReviewCanReReview"
+    <ShellOverlayMount
+      :available-projects="availableProjects"
+      :canceling-dispatch-task-id="cancelingDispatchTaskId"
       :canceling-review-id="cancelingReviewId"
+      :cleanup-pending-confirmation="cleanupPendingConfirmation"
+      :cleaning-up-remote-artifacts="cleaningUpRemoteArtifacts"
+      :creating-review="creatingReview"
+      :creating-task="creatingTask"
+      :default-create-project="defaultCreateProject"
+      :default-remote-agent-preferred-tool="defaultRemoteAgentPreferredTool"
+      :dispatching-task-id="dispatchingTaskId"
+      :discarding-dispatch-task-id="discardingDispatchTaskId"
+      :editing-project="editingProject"
+      :editing-remote-agent-setup="editingRemoteAgentSetup"
+      :editing-task="editingTask"
+      :following-up-dispatch="followingUpDispatch"
+      :following-up-review="followingUpReview"
       :following-up-review-id="followingUpReviewId"
-      :latest-run="selectedReviewLatestRun"
-      :review="selectedReview"
-      :review-runs="selectedReviewRuns"
+      :following-up-task="followingUpTask"
+      :following-up-task-id="followingUpTaskId"
+      :remote-agent-settings="remoteAgentSettings"
+      :reset-pending-confirmation="resetPendingConfirmation"
+      :resetting-remote-workspace="resettingRemoteWorkspace"
+      :review-pending-deletion="reviewPendingDeletion"
+      :runner-setup-required-for-dispatch="taskPendingRunnerSetup !== null"
       :saving="saving"
-      @close="closeReviewDrawer"
+      :selected-review="selectedReview"
+      :selected-review-can-cancel="selectedReviewCanCancel"
+      :selected-review-can-re-review="selectedReviewCanReReview"
+      :selected-review-latest-run="selectedReviewLatestRun"
+      :selected-review-runs="selectedReviewRuns"
+      :selected-task="selectedTask"
+      :selected-task-can-continue="selectedTaskCanContinue"
+      :selected-task-can-discard-history="selectedTaskCanDiscardHistory"
+      :selected-task-can-start-fresh="selectedTaskCanStartFresh"
+      :selected-task-dispatch-disabled-reason="selectedTaskDispatchDisabledReason"
+      :selected-task-dispatch-tool="selectedTaskDispatchTool"
+      :selected-task-latest-dispatch="selectedTaskLatestDispatch"
+      :selected-task-latest-reusable-pull-request="selectedTaskLatestReusablePullRequest"
+      :selected-task-lifecycle-message="selectedTaskLifecycleMessage"
+      :selected-task-lifecycle-mutation="selectedTaskLifecycleMutation"
+      :selected-task-pinned-tool="selectedTaskPinnedTool"
+      :selected-task-primary-action-disabled="selectedTaskPrimaryActionDisabled"
+      :selected-task-project="selectedTaskProject"
+      :selected-task-runs="selectedTaskRuns"
+      :show-review-drawer="currentPage === 'reviews' && isReviewDrawerOpen && selectedReview !== null"
+      :show-task-drawer="currentPage === 'tasks' && isTaskDrawerOpen && selectedTask !== null"
+      :task-pending-deletion="taskPendingDeletion"
+      @cancel-cleanup="clearPendingRemoteCleanup"
+      @cancel-project-editor="closeProjectEditor"
+      @cancel-reset="clearPendingRemoteReset"
+      @cancel-review-delete="clearPendingReviewDeletion"
+      @cancel-review-drawer="closeReviewDrawer"
+      @cancel-review-editor="closeReviewEditor"
+      @cancel-review-follow-up="closeReviewFollowUpEditor"
+      @cancel-runner-setup="closeRunnerSetup"
+      @cancel-task-delete="clearPendingDeletion"
+      @cancel-task-drawer="closeTaskDrawer"
+      @cancel-task-editor="closeTaskEditor"
+      @cancel-task-follow-up="closeFollowUpEditor"
+      @confirm-cleanup="confirmRemoteCleanup"
+      @confirm-reset="confirmRemoteReset"
+      @confirm-review-delete="confirmReviewDelete"
+      @confirm-task-delete="confirmDelete"
       @request-cancel-review-run="cancelReviewRun"
       @request-delete-review="queueReviewDeletion"
+      @request-edit-task="openTaskEditor"
+      @request-open-task-project="openSelectedTaskProjectDetails"
       @request-open-url="openExternal"
-      @request-rereview="openReviewFollowUpEditor"
-    />
-
-    <TaskEditorModal
-      :busy="saving"
-      :default-project="defaultCreateProject"
-      :mode="creatingTask ? 'create' : 'edit'"
-      :open="creatingTask || editingTask !== null"
-      :projects="availableProjects"
-      :task="editingTask"
-      @cancel="closeTaskEditor"
-      @save="creatingTask ? createTaskFromWeb($event) : saveTaskEdits($event)"
-    />
-
-    <ReviewRequestModal
-      :busy="saving"
-      :default-preferred-tool="defaultRemoteAgentPreferredTool"
-      :main-user="remoteAgentSettings?.reviewFollowUp?.mainUser"
-      :open="creatingReview"
-      @cancel="closeReviewEditor"
-      @save="createReviewFromWeb"
-    />
-
-    <ReviewFollowUpModal
-      :busy="followingUpReviewId !== null"
-      :open="followingUpReview !== null"
-      :review="followingUpReview"
-      @cancel="closeReviewFollowUpEditor"
-      @save="submitReviewFollowUp"
-    />
-
-    <ProjectMetadataModal
-      :busy="saving"
-      :open="editingProject !== null"
-      :project="editingProject"
-      @cancel="closeProjectEditor"
-      @save="saveProjectEdits"
-    />
-
-    <RemoteAgentSetupModal
-      :busy="saving"
-      :open="editingRemoteAgentSetup"
-      :required-for-dispatch="taskPendingRunnerSetup !== null"
-      :settings="remoteAgentSettings"
-      @cancel="closeRunnerSetup"
-      @save="saveRemoteAgentSetup"
-    />
-
-    <FollowUpModal
-      :busy="followingUpTaskId !== null"
-      :dispatch="followingUpDispatch"
-      :open="followingUpTask !== null"
-      :task="followingUpTask"
-      @cancel="closeFollowUpEditor"
-      @save="submitFollowUp"
-    />
-
-    <ConfirmDialog
-      :busy="saving"
-      confirm-busy-label="Deleting..."
-      confirm-label="Delete forever"
-      confirm-variant="danger"
-      :description="taskPendingDeletion ? `Delete ${taskTitle(taskPendingDeletion)} permanently? This cannot be undone.` : ''"
-      eyebrow="Destructive action"
-      :open="taskPendingDeletion !== null"
-      title="Delete task"
-      @cancel="clearPendingDeletion"
-      @confirm="confirmDelete"
-    />
-
-    <ConfirmDialog
-      :busy="saving"
-      confirm-busy-label="Deleting..."
-      confirm-label="Delete review"
-      confirm-variant="danger"
-      :description="reviewPendingDeletion ? `Delete the saved review for ${reviewPendingDeletion.repositoryFullName} PR #${reviewPendingDeletion.pullRequestNumber}? This removes local history and remote review artifacts.` : ''"
-      eyebrow="Destructive action"
-      :open="reviewPendingDeletion !== null"
-      title="Delete PR review"
-      @cancel="clearPendingReviewDeletion"
-      @confirm="confirmReviewDelete"
-    />
-
-    <ConfirmDialog
-      :busy="cleaningUpRemoteArtifacts"
-      confirm-busy-label="Cleaning up..."
-      confirm-label="Run cleanup"
-      confirm-variant="primary"
-      description="Sweep the remote workspace and remove stale worktrees plus orphaned dispatch artifacts using the same rules as task close/delete."
-      eyebrow="Maintenance action"
-      :open="cleanupPendingConfirmation"
-      title="Clean up remote artifacts"
-      @cancel="clearPendingRemoteCleanup"
-      @confirm="confirmRemoteCleanup"
-    />
-
-    <ConfirmDialog
-      :busy="resettingRemoteWorkspace"
-      confirm-busy-label="Resetting..."
-      confirm-label="Reset workspace"
-      confirm-variant="danger"
-      description="Delete the entire remote workspace managed by track and remove the remote projects registry. Local tasks and local dispatch history will stay intact, but the next dispatch will need to rebuild the remote environment from scratch."
-      eyebrow="Destructive remote action"
-      :open="resetPendingConfirmation"
-      title="Reset remote workspace"
-      @cancel="clearPendingRemoteReset"
-      @confirm="confirmRemoteReset"
+      @request-review-follow-up="openReviewFollowUpEditor"
+      @request-save-project="saveProjectEdits"
+      @request-save-review="createReviewFromWeb"
+      @request-save-review-follow-up="submitReviewFollowUp"
+      @request-save-runner-setup="saveRemoteAgentSetup"
+      @request-save-task="creatingTask ? createTaskFromWeb($event) : saveTaskEdits($event)"
+      @request-save-task-follow-up="submitFollowUp"
+      @request-selected-task-close="updateTaskStatus($event, 'closed')"
+      @request-selected-task-delete="queueTaskDeletion"
+      @request-selected-task-discard-history="discardRunHistory"
+      @request-selected-task-primary-action="handlePrimaryAction"
+      @request-selected-task-start-fresh="startRemoteRun"
+      @update:task-start-tool="selectedTaskStartTool = $event"
     />
   </main>
 </template>
