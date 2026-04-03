@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
-use serde::de::DeserializeOwned;
 use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::time_utils::{now_utc, parse_iso_8601_seconds};
 use track_types::types::{
-    DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentPreferredTool, RemoteAgentReviewOutcome,
-    ReviewRunRecord, TaskDispatchRecord,
+    DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentReviewOutcome, ReviewRunRecord,
+    TaskDispatchRecord,
 };
 
 use crate::constants::{
@@ -303,7 +302,7 @@ impl<'a> RemoteReviewService<'a> {
                     "Remote review run completed without producing a structured result.",
                 )
             })?;
-            let outcome = parse_remote_agent_output::<RemoteAgentReviewOutcome>(
+            let outcome = ClaudeStructuredOutputEnvelope::<RemoteAgentReviewOutcome>::parse_result(
                 remote_result,
                 record.preferred_tool,
                 "Remote review result",
@@ -530,7 +529,7 @@ pub(crate) fn refresh_dispatch_record_from_snapshot(
                 "Remote agent run completed without producing a structured result.",
             )
         })?;
-        let outcome = parse_remote_agent_output::<RemoteAgentDispatchOutcome>(
+        let outcome = ClaudeStructuredOutputEnvelope::<RemoteAgentDispatchOutcome>::parse_result(
             remote_result,
             record.preferred_tool,
             "Remote agent result",
@@ -657,33 +656,4 @@ pub(crate) fn mark_terminal_review_refresh_failure(
     ));
     record.error_message = Some(error.to_string());
     Some(record)
-}
-
-pub(crate) fn parse_remote_agent_output<T>(
-    raw_result: &str,
-    preferred_tool: RemoteAgentPreferredTool,
-    result_label: &str,
-) -> Result<T, TrackError>
-where
-    T: DeserializeOwned,
-{
-    match serde_json::from_str::<T>(raw_result) {
-        Ok(outcome) => Ok(outcome),
-        Err(direct_error) if preferred_tool == RemoteAgentPreferredTool::Claude => {
-            serde_json::from_str::<ClaudeStructuredOutputEnvelope<T>>(raw_result)
-                .map(|envelope| envelope.structured_output)
-                .map_err(|envelope_error| {
-                    TrackError::new(
-                        ErrorCode::RemoteDispatchFailed,
-                        format!(
-                            "{result_label} did not match the expected direct or Claude structured-output format: direct parse failed with {direct_error}; envelope parse failed with {envelope_error}",
-                        ),
-                    )
-                })
-        }
-        Err(error) => Err(TrackError::new(
-            ErrorCode::RemoteDispatchFailed,
-            format!("{result_label} is not valid JSON: {error}"),
-        )),
-    }
 }

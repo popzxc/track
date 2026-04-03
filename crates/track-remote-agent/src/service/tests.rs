@@ -295,25 +295,21 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
         review_request_head_oid: None,
         review_request_user: None,
     };
-    let snapshot = RemoteDispatchSnapshot {
-        status: Some("completed\n".to_owned()),
-        result: Some(
-            json!({
-                "result": "Mock Claude completed successfully.",
-                "structured_output": {
-                    "status": "succeeded",
-                    "summary": "Mock Claude completed successfully.",
-                    "pullRequestUrl": "https://github.com/acme/project-a/pull/42",
-                    "branchName": "track/dispatch-1",
-                    "worktreePath": "/tmp/project-a/worktrees/dispatch-1",
-                    "notes": "Captured from the Claude mock."
-                }
-            })
-            .to_string(),
-        ),
-        stderr: None,
-        finished_at: Some("2026-03-18T10:35:31Z\n".to_owned()),
-    };
+    let snapshot = RemoteDispatchSnapshot::completed(
+        json!({
+            "result": "Mock Claude completed successfully.",
+            "structured_output": {
+                "status": "succeeded",
+                "summary": "Mock Claude completed successfully.",
+                "pullRequestUrl": "https://github.com/acme/project-a/pull/42",
+                "branchName": "track/dispatch-1",
+                "worktreePath": "/tmp/project-a/worktrees/dispatch-1",
+                "notes": "Captured from the Claude mock."
+            }
+        })
+        .to_string(),
+        "2026-03-18T10:35:31Z\n",
+    );
 
     let refreshed = refresh_dispatch_record_from_snapshot(record, &snapshot)
         .expect("Claude envelope should refresh successfully");
@@ -364,26 +360,22 @@ fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
         notes: None,
         error_message: None,
     };
-    let snapshot = RemoteDispatchSnapshot {
-            status: Some("completed\n".to_owned()),
-            result: Some(
-                json!({
-                    "result": "Mock Claude reviewed the pull request successfully.",
-                    "structured_output": {
-                        "status": "succeeded",
-                        "summary": "Mock Claude reviewed the pull request successfully.",
-                        "reviewSubmitted": true,
-                        "githubReviewId": "1001",
-                        "githubReviewUrl": "https://github.com/acme/project-a/pull/42#pullrequestreview-1001",
-                        "worktreePath": "/tmp/project-a/review-worktrees/review-1",
-                        "notes": "Captured from the Claude review mock."
-                    }
-                })
-                .to_string(),
-            ),
-            stderr: None,
-            finished_at: Some("2026-03-18T10:35:31Z\n".to_owned()),
-        };
+    let snapshot = RemoteDispatchSnapshot::completed(
+        json!({
+            "result": "Mock Claude reviewed the pull request successfully.",
+            "structured_output": {
+                "status": "succeeded",
+                "summary": "Mock Claude reviewed the pull request successfully.",
+                "reviewSubmitted": true,
+                "githubReviewId": "1001",
+                "githubReviewUrl": "https://github.com/acme/project-a/pull/42#pullrequestreview-1001",
+                "worktreePath": "/tmp/project-a/review-worktrees/review-1",
+                "notes": "Captured from the Claude review mock."
+            }
+        })
+        .to_string(),
+        "2026-03-18T10:35:31Z\n",
+    );
 
     let refreshed = context
         .review_service()
@@ -434,12 +426,7 @@ fn refresh_marks_remote_canceled_runs_as_terminal() {
         review_request_head_oid: None,
         review_request_user: None,
     };
-    let snapshot = RemoteDispatchSnapshot {
-        status: Some("canceled\n".to_owned()),
-        result: None,
-        stderr: None,
-        finished_at: Some("2026-03-18T10:35:31Z\n".to_owned()),
-    };
+    let snapshot = RemoteDispatchSnapshot::canceled("2026-03-18T10:35:31Z\n");
 
     let refreshed = refresh_dispatch_record_from_snapshot(record, &snapshot)
         .expect("canceled snapshot should refresh");

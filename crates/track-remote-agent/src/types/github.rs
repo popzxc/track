@@ -5,6 +5,7 @@
 //! workspaces. Some DTOs are therefore much smaller than the upstream JSON.
 
 use serde::Deserialize;
+use track_types::errors::{ErrorCode, TrackError};
 
 /// Identifies a specific pull request in GitHub.
 ///
@@ -16,6 +17,72 @@ pub(crate) struct GithubPullRequestReference {
     pub(crate) owner: String,
     pub(crate) repository: String,
     pub(crate) number: u64,
+}
+
+impl GithubPullRequestReference {
+    pub(crate) fn parse(pull_request_url: &str) -> Result<Self, TrackError> {
+        let trimmed = pull_request_url.trim().trim_end_matches('/');
+        let without_scheme = trimmed.strip_prefix("https://github.com/").ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Pull request URL {pull_request_url} does not look like a GitHub pull request."
+                ),
+            )
+        })?;
+        let parts = without_scheme.split('/').collect::<Vec<_>>();
+        if parts.len() != 4 || parts[2] != "pull" {
+            return Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Pull request URL {pull_request_url} does not look like a GitHub pull request."
+                ),
+            ));
+        }
+
+        let number = parts[3].parse::<u64>().map_err(|_| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Pull request URL {pull_request_url} does not contain a valid PR number."),
+            )
+        })?;
+
+        Ok(Self {
+            owner: parts[0].to_owned(),
+            repository: parts[1].to_owned(),
+            number,
+        })
+    }
+
+    pub(crate) fn pull_request_endpoint(&self) -> String {
+        format!(
+            "repos/{}/{}/pulls/{}",
+            self.owner, self.repository, self.number
+        )
+    }
+
+    pub(crate) fn reviews_endpoint(&self) -> String {
+        format!("{}/reviews?per_page=100", self.pull_request_endpoint())
+    }
+
+    pub(crate) fn issue_comments_endpoint(&self) -> String {
+        format!(
+            "repos/{}/{}/issues/{}/comments",
+            self.owner, self.repository, self.number
+        )
+    }
+
+    pub(crate) fn repository_full_name(&self) -> String {
+        format!("{}/{}", self.owner, self.repository)
+    }
+
+    pub(crate) fn repo_url(&self) -> String {
+        format!("https://github.com/{}/{}", self.owner, self.repository)
+    }
+
+    pub(crate) fn git_url(&self) -> String {
+        format!("git@github.com:{}/{}.git", self.owner, self.repository)
+    }
 }
 
 /// Captures the pull-request facts needed to create or reuse a remote review
@@ -34,6 +101,42 @@ pub(crate) struct GithubPullRequestMetadata {
     pub(crate) git_url: String,
     pub(crate) base_branch: String,
     pub(crate) head_oid: String,
+}
+
+impl GithubPullRequestMetadata {
+    pub(crate) fn from_api_response(
+        reference: &GithubPullRequestReference,
+        pull_request_url: &str,
+        pull_request: GithubPullRequestApiResponse,
+    ) -> Result<Self, TrackError> {
+        if pull_request.state != "open" || pull_request.merged_at.is_some() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Pull request {pull_request_url} is not open anymore."),
+            ));
+        }
+
+        Ok(Self {
+            pull_request_url: pull_request_url.trim().to_owned(),
+            pull_request_number: reference.number,
+            pull_request_title: pull_request.title,
+            repository_full_name: reference.repository_full_name(),
+            repo_url: reference.repo_url(),
+            git_url: reference.git_url(),
+            base_branch: pull_request.base.branch_ref,
+            head_oid: pull_request.head.sha,
+        })
+    }
+
+    pub(crate) fn workspace_key(&self) -> String {
+        let slug = slug::slugify(self.repository_full_name.replace('/', "-").trim());
+
+        if slug.is_empty() {
+            "review-repo".to_owned()
+        } else {
+            slug
+        }
+    }
 }
 
 /// Describes the review-relevant state of a pull request at one point in time.
@@ -57,6 +160,15 @@ pub(crate) struct GithubPullRequestReviewState {
 pub(crate) struct GithubSubmittedReview {
     pub(crate) state: String,
     pub(crate) submitted_at: time::OffsetDateTime,
+}
+
+impl GithubSubmittedReview {
+    pub(crate) fn new(state: String, submitted_at: time::OffsetDateTime) -> Self {
+        Self {
+            state,
+            submitted_at,
+        }
+    }
 }
 
 /// Subset of a GitHub pull-request response used to derive repository and head

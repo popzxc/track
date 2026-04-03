@@ -5,10 +5,8 @@ use track_types::types::{ReviewRunRecord, Status, TaskDispatchRecord};
 use crate::prompts::RemoteDispatchPrompt;
 use crate::remote_actions::{FetchPullRequestReviewStateAction, PostPullRequestCommentAction};
 use crate::ssh::SshClient;
-use crate::types::RemoteReviewFollowUpReconciliation;
-use crate::utils::{
-    build_review_follow_up_notification_comment, contextualize_track_error, review_follow_up_event,
-};
+use crate::types::{RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation};
+use crate::utils::{build_review_follow_up_notification_comment, contextualize_track_error};
 
 use super::RemoteDispatchService;
 
@@ -85,7 +83,7 @@ impl<'a> RemoteDispatchService<'a> {
                 Ok(pull_request_state) => pull_request_state,
                 Err(error) => {
                     reconciliation.failures += 1;
-                    reconciliation.events.push(review_follow_up_event(
+                    reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                         "fetch_failed",
                         error.to_string(),
                         &dispatch_record,
@@ -96,7 +94,7 @@ impl<'a> RemoteDispatchService<'a> {
                 }
             };
 
-            reconciliation.events.push(review_follow_up_event(
+            reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                 "task_evaluated",
                 "Fetched PR review state for automatic follow-up reconciliation.",
                 &dispatch_record,
@@ -104,7 +102,7 @@ impl<'a> RemoteDispatchService<'a> {
                 Some(&pull_request_state),
             ));
             if !pull_request_state.is_open {
-                reconciliation.events.push(review_follow_up_event(
+                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "skip_closed_pr",
                     "Skipped automatic follow-up because the PR is not open anymore.",
                     &dispatch_record,
@@ -115,7 +113,7 @@ impl<'a> RemoteDispatchService<'a> {
             }
 
             if dispatch_record.status.is_active() {
-                reconciliation.events.push(review_follow_up_event(
+                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "skip_active_dispatch",
                     "Skipped automatic follow-up because the latest dispatch is still active.",
                     &dispatch_record,
@@ -134,7 +132,7 @@ impl<'a> RemoteDispatchService<'a> {
                     );
                     let queued_dispatch = self
                         .queue_follow_up_dispatch(&dispatch_record.task_id, &follow_up_request)?;
-                    reconciliation.events.push(review_follow_up_event(
+                    reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                         "queue_follow_up",
                         format!(
                             "Queued a follow-up dispatch because reviewer @{} submitted {} at {} after dispatch {} started.",
@@ -153,7 +151,7 @@ impl<'a> RemoteDispatchService<'a> {
             }
 
             if pull_request_state.head_oid.is_empty() {
-                reconciliation.events.push(review_follow_up_event(
+                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "skip_missing_head_oid",
                     "Skipped PR reviewer notification because the PR head SHA is missing.",
                     &dispatch_record,
@@ -168,7 +166,7 @@ impl<'a> RemoteDispatchService<'a> {
                 && dispatch_record.review_request_user.as_deref()
                     == Some(review_follow_up.main_user.as_str());
             if already_recorded_for_head {
-                reconciliation.events.push(review_follow_up_event(
+                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "skip_notification_already_recorded",
                     "Skipped PR reviewer notification because this PR head already recorded the same reviewer.",
                     &dispatch_record,
@@ -199,7 +197,7 @@ impl<'a> RemoteDispatchService<'a> {
             });
             if let Err(error) = notify_reviewer_result {
                 reconciliation.failures += 1;
-                reconciliation.events.push(review_follow_up_event(
+                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "notify_reviewer_failed",
                     error.to_string(),
                     &dispatch_record,
@@ -213,7 +211,7 @@ impl<'a> RemoteDispatchService<'a> {
                 &pull_request_state.head_oid,
                 &review_follow_up.main_user,
             )?;
-            reconciliation.events.push(review_follow_up_event(
+            reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                 "notify_reviewer_posted",
                 "Posted a PR comment mentioning the configured main GitHub user for the current PR head.",
                 &dispatch_record,

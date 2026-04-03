@@ -7,28 +7,7 @@ use crate::types::{
     GithubPullRequestApiResponse, GithubPullRequestMetadata, GithubPullRequestReference,
     GithubPullRequestReviewState, GithubReviewApiResponse, GithubSubmittedReview,
 };
-use crate::utils::{contextualize_track_error, parse_github_pull_request_reference};
-
-fn github_pull_request_endpoint(reference: &GithubPullRequestReference) -> String {
-    format!(
-        "repos/{}/{}/pulls/{}",
-        reference.owner, reference.repository, reference.number
-    )
-}
-
-fn github_pull_request_reviews_endpoint(reference: &GithubPullRequestReference) -> String {
-    format!(
-        "{}/reviews?per_page=100",
-        github_pull_request_endpoint(reference)
-    )
-}
-
-fn github_pull_request_issue_comments_endpoint(reference: &GithubPullRequestReference) -> String {
-    format!(
-        "repos/{}/{}/issues/{}/comments",
-        reference.owner, reference.repository, reference.number
-    )
-}
+use crate::utils::contextualize_track_error;
 
 /// Asks the remote `gh` CLI which GitHub account it is authenticated as, which
 /// validates remote GitHub access and identifies the fork namespace to use.
@@ -73,8 +52,8 @@ impl<'a> FetchPullRequestMetadataAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<GithubPullRequestMetadata, TrackError> {
-        let reference = parse_github_pull_request_reference(self.pull_request_url)?;
-        let pull_request_endpoint = github_pull_request_endpoint(&reference);
+        let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
+        let pull_request_endpoint = reference.pull_request_endpoint();
         let script = FetchGithubApiScript;
         let arguments = script.arguments(&pull_request_endpoint);
         let pull_request_json = self
@@ -104,32 +83,11 @@ impl<'a> FetchPullRequestMetadataAction<'a> {
                 },
             )?;
 
-        if pull_request.state != "open" || pull_request.merged_at.is_some() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!(
-                    "Pull request {} is not open anymore.",
-                    self.pull_request_url
-                ),
-            ));
-        }
-
-        Ok(GithubPullRequestMetadata {
-            pull_request_url: self.pull_request_url.trim().to_owned(),
-            pull_request_number: reference.number,
-            pull_request_title: pull_request.title,
-            repository_full_name: format!("{}/{}", reference.owner, reference.repository),
-            repo_url: format!(
-                "https://github.com/{}/{}",
-                reference.owner, reference.repository
-            ),
-            git_url: format!(
-                "git@github.com:{}/{}.git",
-                reference.owner, reference.repository
-            ),
-            base_branch: pull_request.base.branch_ref,
-            head_oid: pull_request.head.sha,
-        })
+        GithubPullRequestMetadata::from_api_response(
+            &reference,
+            self.pull_request_url,
+            pull_request,
+        )
     }
 }
 
@@ -156,8 +114,8 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<GithubPullRequestReviewState, TrackError> {
-        let reference = parse_github_pull_request_reference(self.pull_request_url)?;
-        let pull_request_endpoint = github_pull_request_endpoint(&reference);
+        let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
+        let pull_request_endpoint = reference.pull_request_endpoint();
         let fetch_api_script = FetchGithubApiScript;
         let pull_request_arguments = fetch_api_script.arguments(&pull_request_endpoint);
         let pull_request_json = self
@@ -187,7 +145,7 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
                 },
             )?;
 
-        let reviews_endpoint = github_pull_request_reviews_endpoint(&reference);
+        let reviews_endpoint = reference.reviews_endpoint();
         let review_arguments = fetch_api_script.arguments(&reviews_endpoint);
         let reviews_json = self
             .ssh_client
@@ -232,10 +190,7 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
                     .as_deref()
                     .and_then(|value| parse_iso_8601_seconds(value).ok())?;
 
-                Some(GithubSubmittedReview {
-                    state: review.state,
-                    submitted_at,
-                })
+                Some(GithubSubmittedReview::new(review.state, submitted_at))
             })
             .max_by_key(|review| review.submitted_at);
 
@@ -269,8 +224,8 @@ impl<'a> PostPullRequestCommentAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let reference = parse_github_pull_request_reference(self.pull_request_url)?;
-        let issue_comments_endpoint = github_pull_request_issue_comments_endpoint(&reference);
+        let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
+        let issue_comments_endpoint = reference.issue_comments_endpoint();
         let script = PostPullRequestCommentScript;
         let arguments = script.arguments(&issue_comments_endpoint, self.comment_body);
         self.ssh_client

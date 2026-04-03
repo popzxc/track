@@ -227,14 +227,11 @@ impl<'a> RemoteDispatchService<'a> {
             let mut updated_registry = remote_registry;
             updated_registry.projects.insert(
                 task.project.clone(),
-                RemoteProjectRegistryEntry {
-                    checkout_path: checkout_path.clone(),
-                    fork_git_url: fork_git_url.clone(),
-                    repo_url: project_metadata.repo_url.clone(),
-                    git_url: project_metadata.git_url.clone(),
-                    base_branch: project_metadata.base_branch.clone(),
-                    updated_at: format_iso_8601_millis(now_utc()),
-                },
+                RemoteProjectRegistryEntry::from_project_metadata(
+                    checkout_path.clone(),
+                    fork_git_url.clone(),
+                    &project_metadata,
+                ),
             );
             WriteRemoteRegistryAction::new(
                 &ssh_client,

@@ -1,6 +1,9 @@
 //! Types that describe noteworthy outcomes from remote follow-up reconciliation.
 
+use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::TaskDispatchRecord;
+
+use crate::types::GithubPullRequestReviewState;
 
 /// Summarizes one reconciliation pass over saved review follow-up state.
 ///
@@ -36,4 +39,37 @@ pub struct RemoteReviewFollowUpEvent {
     pub pr_head_oid: Option<String>,
     pub latest_review_state: Option<String>,
     pub latest_review_submitted_at: Option<String>,
+}
+
+impl RemoteReviewFollowUpEvent {
+    pub(crate) fn new(
+        outcome: &str,
+        detail: impl Into<String>,
+        dispatch_record: &TaskDispatchRecord,
+        reviewer: &str,
+        pull_request_state: Option<&GithubPullRequestReviewState>,
+    ) -> Self {
+        let latest_review_state = pull_request_state
+            .and_then(|state| state.latest_eligible_review.as_ref())
+            .map(|review| review.state.clone());
+        let latest_review_submitted_at = pull_request_state
+            .and_then(|state| state.latest_eligible_review.as_ref())
+            .map(|review| format_iso_8601_millis(review.submitted_at));
+
+        Self {
+            outcome: outcome.to_owned(),
+            detail: detail.into(),
+            task_id: dispatch_record.task_id.clone(),
+            dispatch_id: dispatch_record.dispatch_id.clone(),
+            dispatch_status: dispatch_record.status.as_str().to_owned(),
+            remote_host: dispatch_record.remote_host.clone(),
+            branch_name: dispatch_record.branch_name.clone(),
+            pull_request_url: dispatch_record.pull_request_url.clone(),
+            reviewer: reviewer.to_owned(),
+            pr_is_open: pull_request_state.map(|state| state.is_open),
+            pr_head_oid: pull_request_state.map(|state| state.head_oid.clone()),
+            latest_review_state,
+            latest_review_submitted_at,
+        }
+    }
 }

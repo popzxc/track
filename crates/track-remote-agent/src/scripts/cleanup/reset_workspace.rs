@@ -67,9 +67,6 @@ printf '{{"workspaceEntriesRemoved":%s,"registryRemoved":%s}}\n' \
                 )
             })?;
 
-        Ok(RemoteResetSummary {
-            workspace_entries_removed: parsed_report.workspace_entries_removed,
-            registry_removed: parsed_report.registry_removed,
-        })
+        Ok(parsed_report.into_summary())
     }
 }

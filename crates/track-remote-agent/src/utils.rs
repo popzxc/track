@@ -1,12 +1,7 @@
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::{ReviewRunRecord, TaskDispatchRecord};
 
 use crate::constants::REVIEW_WORKTREE_DIRECTORY_NAME;
-use crate::types::{
-    GithubPullRequestMetadata, GithubPullRequestReference, GithubPullRequestReviewState,
-    RemoteReviewFollowUpEvent,
-};
 use track_config::runtime::RemoteAgentRuntimeConfig;
 
 pub(crate) fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord]) -> Vec<String> {
@@ -97,52 +92,6 @@ pub(crate) fn parse_github_repository_name(repo_url: &str) -> Result<String, Tra
     Ok(repository_name.to_owned())
 }
 
-pub(crate) fn parse_github_pull_request_reference(
-    pull_request_url: &str,
-) -> Result<GithubPullRequestReference, TrackError> {
-    let trimmed = pull_request_url.trim().trim_end_matches('/');
-    let without_scheme = trimmed.strip_prefix("https://github.com/").ok_or_else(|| {
-        TrackError::new(
-            ErrorCode::RemoteDispatchFailed,
-            format!(
-                "Pull request URL {pull_request_url} does not look like a GitHub pull request."
-            ),
-        )
-    })?;
-    let parts = without_scheme.split('/').collect::<Vec<_>>();
-    if parts.len() != 4 || parts[2] != "pull" {
-        return Err(TrackError::new(
-            ErrorCode::RemoteDispatchFailed,
-            format!(
-                "Pull request URL {pull_request_url} does not look like a GitHub pull request."
-            ),
-        ));
-    }
-
-    let number = parts[3].parse::<u64>().map_err(|_| {
-        TrackError::new(
-            ErrorCode::RemoteDispatchFailed,
-            format!("Pull request URL {pull_request_url} does not contain a valid PR number."),
-        )
-    })?;
-
-    Ok(GithubPullRequestReference {
-        owner: parts[0].to_owned(),
-        repository: parts[1].to_owned(),
-        number,
-    })
-}
-
-pub(crate) fn build_review_workspace_key(pull_request: &GithubPullRequestMetadata) -> String {
-    let slug = slug::slugify(pull_request.repository_full_name.replace('/', "-").trim());
-
-    if slug.is_empty() {
-        "review-repo".to_owned()
-    } else {
-        slug
-    }
-}
-
 pub(crate) fn build_review_follow_up_notification_comment(
     main_user: &str,
     head_oid: &str,
@@ -153,37 +102,6 @@ pub(crate) fn build_review_follow_up_notification_comment(
         "@{main_user} new bot updates are ready on commit `{short_head_oid}`. \
 Please leave a PR review (COMMENTED or CHANGES_REQUESTED) if you want the bot to follow up automatically."
     )
-}
-
-pub(crate) fn review_follow_up_event(
-    outcome: &str,
-    detail: impl Into<String>,
-    dispatch_record: &TaskDispatchRecord,
-    reviewer: &str,
-    pull_request_state: Option<&GithubPullRequestReviewState>,
-) -> RemoteReviewFollowUpEvent {
-    let latest_review_state = pull_request_state
-        .and_then(|state| state.latest_eligible_review.as_ref())
-        .map(|review| review.state.clone());
-    let latest_review_submitted_at = pull_request_state
-        .and_then(|state| state.latest_eligible_review.as_ref())
-        .map(|review| format_iso_8601_millis(review.submitted_at));
-
-    RemoteReviewFollowUpEvent {
-        outcome: outcome.to_owned(),
-        detail: detail.into(),
-        task_id: dispatch_record.task_id.clone(),
-        dispatch_id: dispatch_record.dispatch_id.clone(),
-        dispatch_status: dispatch_record.status.as_str().to_owned(),
-        remote_host: dispatch_record.remote_host.clone(),
-        branch_name: dispatch_record.branch_name.clone(),
-        pull_request_url: dispatch_record.pull_request_url.clone(),
-        reviewer: reviewer.to_owned(),
-        pr_is_open: pull_request_state.map(|state| state.is_open),
-        pr_head_oid: pull_request_state.map(|state| state.head_oid.clone()),
-        latest_review_state,
-        latest_review_submitted_at,
-    }
 }
 
 pub(crate) fn contextualize_track_error(
@@ -203,11 +121,9 @@ mod tests {
         DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord, TaskDispatchRecord,
     };
 
-    use super::{
-        build_review_workspace_key, describe_remote_reset_blockers,
-        parse_github_pull_request_reference, parse_github_repository_name,
-        GithubPullRequestMetadata,
-    };
+    use crate::types::{GithubPullRequestMetadata, GithubPullRequestReference};
+
+    use super::{describe_remote_reset_blockers, parse_github_repository_name};
 
     #[test]
     fn parses_github_repository_name() {
@@ -221,7 +137,7 @@ mod tests {
     #[test]
     fn parses_github_pull_request_reference() {
         let reference =
-            parse_github_pull_request_reference("https://github.com/acme/project-x/pull/42")
+            GithubPullRequestReference::parse("https://github.com/acme/project-x/pull/42")
                 .expect("github pr url should parse");
 
         assert_eq!(reference.owner, "acme");
@@ -242,7 +158,7 @@ mod tests {
             head_oid: "abc123".to_owned(),
         };
 
-        assert_eq!(build_review_workspace_key(&metadata), "acme-project-x");
+        assert_eq!(metadata.workspace_key(), "acme-project-x");
     }
 
     #[test]

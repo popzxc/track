@@ -2,7 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use track_projects::project_metadata::ProjectMetadata;
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::time_utils::{format_iso_8601_millis, now_utc};
+use track_types::types::{RemoteAgentPreferredTool, RemoteResetSummary, ReviewRecord};
 
 /// Snapshot of the remote artifacts that describe one dispatch or review run.
 ///
@@ -17,6 +22,28 @@ pub(crate) struct RemoteDispatchSnapshot {
     pub(crate) finished_at: Option<String>,
 }
 
+impl RemoteDispatchSnapshot {
+    #[cfg(test)]
+    pub(crate) fn completed(result: impl Into<String>, finished_at: impl Into<String>) -> Self {
+        Self {
+            status: Some("completed\n".to_owned()),
+            result: Some(result.into()),
+            stderr: None,
+            finished_at: Some(finished_at.into()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn canceled(finished_at: impl Into<String>) -> Self {
+        Self {
+            status: Some("canceled\n".to_owned()),
+            result: None,
+            stderr: None,
+            finished_at: Some(finished_at.into()),
+        }
+    }
+}
+
 /// Normalized summary of what a remote cleanup operation actually removed.
 ///
 /// Higher layers use these counts to report cleanup outcomes without leaking the
@@ -25,6 +52,15 @@ pub(crate) struct RemoteDispatchSnapshot {
 pub(crate) struct RemoteArtifactCleanupCounts {
     pub(crate) worktrees_removed: usize,
     pub(crate) run_directories_removed: usize,
+}
+
+impl From<RemoteArtifactCleanupReport> for RemoteArtifactCleanupCounts {
+    fn from(report: RemoteArtifactCleanupReport) -> Self {
+        Self {
+            worktrees_removed: report.worktrees_removed,
+            run_directories_removed: report.run_directories_removed,
+        }
+    }
 }
 
 /// Raw cleanup report returned by the remote helper script.
@@ -49,6 +85,15 @@ pub(crate) struct RemoteWorkspaceResetReport {
     pub(crate) workspace_entries_removed: usize,
     #[serde(rename = "registryRemoved")]
     pub(crate) registry_removed: bool,
+}
+
+impl RemoteWorkspaceResetReport {
+    pub(crate) fn into_summary(self) -> RemoteResetSummary {
+        RemoteResetSummary {
+            workspace_entries_removed: self.workspace_entries_removed,
+            registry_removed: self.registry_removed,
+        }
+    }
 }
 
 /// Persisted registry of repositories that are available on the remote host for
@@ -83,6 +128,38 @@ pub(crate) struct RemoteProjectRegistryEntry {
     pub(crate) updated_at: String,
 }
 
+impl RemoteProjectRegistryEntry {
+    pub(crate) fn from_project_metadata(
+        checkout_path: impl Into<String>,
+        fork_git_url: impl Into<String>,
+        metadata: &ProjectMetadata,
+    ) -> Self {
+        Self {
+            checkout_path: checkout_path.into(),
+            fork_git_url: fork_git_url.into(),
+            repo_url: metadata.repo_url.clone(),
+            git_url: metadata.git_url.clone(),
+            base_branch: metadata.base_branch.clone(),
+            updated_at: format_iso_8601_millis(now_utc()),
+        }
+    }
+
+    pub(crate) fn from_review(
+        checkout_path: impl Into<String>,
+        fork_git_url: impl Into<String>,
+        review: &ReviewRecord,
+    ) -> Self {
+        Self {
+            checkout_path: checkout_path.into(),
+            fork_git_url: fork_git_url.into(),
+            repo_url: review.repo_url.clone(),
+            git_url: review.git_url.clone(),
+            base_branch: review.base_branch.clone(),
+            updated_at: format_iso_8601_millis(now_utc()),
+        }
+    }
+}
+
 impl Default for RemoteProjectRegistryFile {
     fn default() -> Self {
         Self {
@@ -113,4 +190,35 @@ pub(crate) enum RemoteTaskCleanupMode {
 pub(crate) struct ClaudeStructuredOutputEnvelope<T> {
     #[serde(rename = "structured_output")]
     pub(crate) structured_output: T,
+}
+
+impl<T> ClaudeStructuredOutputEnvelope<T>
+where
+    T: DeserializeOwned,
+{
+    pub(crate) fn parse_result(
+        raw_result: &str,
+        preferred_tool: RemoteAgentPreferredTool,
+        result_label: &str,
+    ) -> Result<T, TrackError> {
+        match serde_json::from_str::<T>(raw_result) {
+            Ok(outcome) => Ok(outcome),
+            Err(direct_error) if preferred_tool == RemoteAgentPreferredTool::Claude => {
+                serde_json::from_str::<ClaudeStructuredOutputEnvelope<T>>(raw_result)
+                    .map(|envelope| envelope.structured_output)
+                    .map_err(|envelope_error| {
+                        TrackError::new(
+                            ErrorCode::RemoteDispatchFailed,
+                            format!(
+                                "{result_label} did not match the expected direct or Claude structured-output format: direct parse failed with {direct_error}; envelope parse failed with {envelope_error}",
+                            ),
+                        )
+                    })
+            }
+            Err(error) => Err(TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("{result_label} is not valid JSON: {error}"),
+            )),
+        }
+    }
 }

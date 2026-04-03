@@ -5,7 +5,7 @@ use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentR
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::task_id::build_unique_task_id;
-use track_types::time_utils::{format_iso_8601_millis, now_utc};
+use track_types::time_utils::now_utc;
 use track_types::types::{CreateReviewInput, DispatchStatus, ReviewRecord, ReviewRunRecord};
 
 use crate::constants::{
@@ -22,8 +22,7 @@ use crate::schemas::RemoteReviewSchema;
 use crate::ssh::SshClient;
 use crate::types::RemoteProjectRegistryEntry;
 use crate::utils::{
-    build_review_workspace_key, parse_github_repository_name, unique_review_run_directories,
-    unique_review_worktree_paths,
+    parse_github_repository_name, unique_review_run_directories, unique_review_worktree_paths,
 };
 
 use super::follow_up::{first_follow_up_line, select_previous_submitted_review_run};
@@ -63,7 +62,7 @@ impl<'a> RemoteReviewService<'a> {
         let workspace_key = project_match
             .as_ref()
             .map(|project| project.canonical_name.clone())
-            .unwrap_or_else(|| build_review_workspace_key(&pull_request_metadata));
+            .unwrap_or_else(|| pull_request_metadata.workspace_key());
         let review_timestamp = now_utc();
         let review_id = build_unique_task_id(
             review_timestamp,
@@ -256,14 +255,11 @@ impl<'a> RemoteReviewService<'a> {
             let mut updated_registry = remote_registry;
             updated_registry.projects.insert(
                 review.workspace_key.clone(),
-                RemoteProjectRegistryEntry {
-                    checkout_path: checkout_path.clone(),
+                RemoteProjectRegistryEntry::from_review(
+                    checkout_path.clone(),
                     fork_git_url,
-                    repo_url: review.repo_url.clone(),
-                    git_url: review.git_url.clone(),
-                    base_branch: review.base_branch.clone(),
-                    updated_at: format_iso_8601_millis(now_utc()),
-                },
+                    &review,
+                ),
             );
             WriteRemoteRegistryAction::new(
                 &ssh_client,

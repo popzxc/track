@@ -23,8 +23,5 @@ fn parse_remote_cleanup_counts(report: &str) -> Result<RemoteArtifactCleanupCoun
             )
         })?;
 
-    Ok(RemoteArtifactCleanupCounts {
-        worktrees_removed: parsed_report.worktrees_removed,
-        run_directories_removed: parsed_report.run_directories_removed,
-    })
+    Ok(parsed_report.into())
 }
