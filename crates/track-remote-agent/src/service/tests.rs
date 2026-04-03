@@ -12,6 +12,7 @@ use time::Duration;
 use track_config::config::{
     ApiConfigFile, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
 };
+use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::dispatch_repository::DispatchRepository;
 use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
@@ -19,29 +20,21 @@ use track_dal::review_repository::ReviewRepository;
 use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::ErrorCode;
-use track_types::task_description::render_task_description;
 use track_types::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
-use track_types::time_utils::{now_utc, parse_iso_8601_seconds};
+use track_types::time_utils::now_utc;
 use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
     Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
 };
 
-use crate::scripts::{
-    remote_path_helpers_shell, render_remote_script_with_shell_prelude, CreateReviewWorktreeScript,
-    ReadDispatchSnapshotsScript, RemoteAgentLauncherScript,
-};
+use crate::types::RemoteDispatchSnapshot;
 
-use super::{
-    build_remote_dispatch_prompt, build_remote_dispatch_schema, build_remote_review_prompt,
-    build_remote_review_schema, build_review_follow_up_request, build_review_workspace_key,
-    describe_remote_reset_blockers, latest_pull_request_for_branch,
-    parse_github_pull_request_reference, parse_github_repository_name,
-    refresh_dispatch_record_from_snapshot, select_follow_up_base_dispatch,
-    select_previous_submitted_review_run, GithubPullRequestMetadata,
-    RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig, RemoteDispatchService,
-    RemoteDispatchSnapshot, RemoteReviewService, StaticRemoteAgentConfigService,
+use super::follow_up::{
+    latest_pull_request_for_branch, select_follow_up_base_dispatch,
+    select_previous_submitted_review_run,
 };
+use super::refresh::refresh_dispatch_record_from_snapshot;
+use super::{RemoteDispatchService, RemoteReviewService, StaticRemoteAgentConfigService};
 
 struct TestContext {
     _directory: TempDir,
@@ -195,44 +188,6 @@ impl TestContext {
             .expect("review should save");
         review
     }
-
-    fn create_review_run(&self, review: &ReviewRecord, status: DispatchStatus) -> ReviewRunRecord {
-        let timestamp = now_utc();
-        let dispatch_id = format!("dispatch-{}", timestamp.unix_timestamp_nanos());
-        let record = ReviewRunRecord {
-            dispatch_id: dispatch_id.clone(),
-            review_id: review.id.clone(),
-            pull_request_url: review.pull_request_url.clone(),
-            repository_full_name: review.repository_full_name.clone(),
-            workspace_key: review.workspace_key.clone(),
-            preferred_tool: review.preferred_tool,
-            status,
-            created_at: timestamp,
-            updated_at: timestamp,
-            finished_at: None,
-            remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some(format!("track-review/{dispatch_id}")),
-            worktree_path: Some(format!(
-                "~/workspace/{}/{}/{}",
-                review.workspace_key,
-                super::REVIEW_WORKTREE_DIRECTORY_NAME,
-                dispatch_id
-            )),
-            follow_up_request: None,
-            target_head_oid: Some("abc123def456".to_owned()),
-            summary: None,
-            review_submitted: false,
-            github_review_id: None,
-            github_review_url: None,
-            notes: None,
-            error_message: None,
-        };
-        self.review_dispatch_repository
-            .save_dispatch(&record)
-            .expect("review run should save");
-
-        record
-    }
 }
 
 fn base_test_config(remote_agent: Option<RemoteAgentConfigFile>) -> TrackConfigFile {
@@ -287,208 +242,6 @@ fn sample_review_record() -> ReviewRecord {
 }
 
 #[test]
-fn builds_remote_prompt_with_both_summary_layers() {
-    let prompt = build_remote_dispatch_prompt(
-        "project-x",
-        &ProjectMetadata {
-            repo_url: "https://github.com/acme/project-x".to_owned(),
-            git_url: "git@github.com:acme/project-x.git".to_owned(),
-            base_branch: "main".to_owned(),
-            description: Some("Main repo".to_owned()),
-        },
-        "track/dispatch-1",
-        "~/workspace/project-x/worktrees/dispatch-1",
-        &render_task_description(
-            "Fix a bug in module A",
-            Some("- Inspect `module_a.rs`"),
-            Some("proj-x prio high fix a bug in module A"),
-        ),
-        Some("https://github.com/acme/project-x/pull/42"),
-        Some("Address review comments from the latest PR review."),
-    );
-
-    assert!(prompt.contains("## Summary"));
-    assert!(prompt.contains("## Original note"));
-    assert!(prompt.contains("## Existing PR"));
-    assert!(prompt.contains("## Current follow-up request"));
-    assert!(prompt.contains("fetch that context with `gh`"));
-    assert!(prompt.contains("only act on that reviewer's feedback"));
-    assert!(prompt.contains("track/dispatch-1"));
-    assert!(prompt.contains("Use conventional commits for both commit messages and the PR title"));
-}
-
-#[test]
-fn dispatch_schema_limits_terminal_status_values() {
-    let schema = build_remote_dispatch_schema();
-
-    assert!(schema.contains("\"succeeded\""));
-    assert!(schema.contains("\"failed\""));
-    assert!(schema.contains("\"blocked\""));
-    assert!(schema.contains("\"pullRequestUrl\""));
-    assert!(schema.contains("\"branchName\""));
-    assert!(schema.contains("\"notes\""));
-    assert!(schema.contains("\"required\""));
-    assert!(!schema.contains("\"running\""));
-}
-
-#[test]
-fn builds_remote_review_prompt_with_follow_up_guidance_and_saved_context() {
-    let review = sample_review_record();
-    let previous_review_run = ReviewRunRecord {
-        dispatch_id: "review-dispatch-1".to_owned(),
-        review_id: review.id.clone(),
-        pull_request_url: review.pull_request_url.clone(),
-        repository_full_name: review.repository_full_name.clone(),
-        workspace_key: review.workspace_key.clone(),
-        preferred_tool: review.preferred_tool,
-        status: DispatchStatus::Succeeded,
-        created_at: now_utc(),
-        updated_at: now_utc(),
-        finished_at: Some(now_utc()),
-        remote_host: "198.51.100.10".to_owned(),
-        branch_name: Some("track-review/review-dispatch-1".to_owned()),
-        worktree_path: Some("~/workspace/project-x/review-worktrees/review-dispatch-1".to_owned()),
-        follow_up_request: None,
-        target_head_oid: Some("abc123def456".to_owned()),
-        summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
-        review_submitted: true,
-        github_review_id: Some("1001".to_owned()),
-        github_review_url: Some(
-            "https://github.com/acme/project-x/pull/42#pullrequestreview-1001".to_owned(),
-        ),
-        notes: None,
-        error_message: None,
-    };
-    let current_review_run = ReviewRunRecord {
-        dispatch_id: "review-dispatch-2".to_owned(),
-        review_id: review.id.clone(),
-        pull_request_url: review.pull_request_url.clone(),
-        repository_full_name: review.repository_full_name.clone(),
-        workspace_key: review.workspace_key.clone(),
-        preferred_tool: review.preferred_tool,
-        status: DispatchStatus::Preparing,
-        created_at: now_utc(),
-        updated_at: now_utc(),
-        finished_at: None,
-        remote_host: "198.51.100.10".to_owned(),
-        branch_name: Some("track-review/review-dispatch-2".to_owned()),
-        worktree_path: Some("~/workspace/project-x/review-worktrees/review-dispatch-2".to_owned()),
-        follow_up_request: Some(
-            "Check whether the main review comments were actually resolved.".to_owned(),
-        ),
-        target_head_oid: Some("fedcba654321".to_owned()),
-        summary: Some(
-            "Re-review request: Check whether the main review comments were actually resolved."
-                .to_owned(),
-        ),
-        review_submitted: false,
-        github_review_id: None,
-        github_review_url: None,
-        notes: None,
-        error_message: None,
-    };
-    let prompt =
-        build_remote_review_prompt(&review, &current_review_run, Some(&previous_review_run));
-
-    assert!(prompt.contains("You are responsible for submitting the GitHub review yourself"));
-    assert!(prompt.contains("Submit one GitHub review in COMMENT mode."));
-    assert!(prompt.contains("Prefer inline review comments"));
-    assert!(prompt.contains("The first line of the top-level review body must be `@octocat requested me to review this PR.`"));
-    assert!(prompt.contains("- Pinned review commit: fedcba654321"));
-    assert!(prompt.contains("the prepared worktree is intended to match that exact commit"));
-    assert!(prompt.contains("Capture the submitted GitHub review's durable handle"));
-    assert!(prompt.contains("Return `reviewSubmitted` as `true` only after GitHub confirms"));
-    assert!(prompt.contains("## Current re-review request"));
-    assert!(prompt.contains("Check whether the main review comments were actually resolved."));
-    assert!(prompt.contains("## Previous bot review context"));
-    assert!(prompt.contains("https://github.com/acme/project-x/pull/42#pullrequestreview-1001"));
-    assert!(prompt.contains("## Re-review guidance"));
-    assert!(prompt.contains(
-        "non-blocking input at the discretion of the reviewee unless @octocat explicitly commented"
-    ));
-    assert!(prompt.contains("do not repeat it as a primary finding"));
-    assert!(prompt.contains("## Default review prompt"));
-    assert!(prompt.contains("Focus on regressions and missing tests."));
-    assert!(prompt.contains("## Extra instructions"));
-    assert!(prompt.contains("Pay special attention to queue rendering."));
-}
-
-#[test]
-fn review_worktree_script_pins_the_requested_commit_or_fails_explicitly() {
-    let script = CreateReviewWorktreeScript.render();
-
-    assert!(script.contains("TARGET_HEAD_OID"));
-    assert!(script.contains("fetch upstream \"$TARGET_HEAD_OID\""));
-    assert!(script.contains("TARGET_REF=\"$TARGET_HEAD_OID\""));
-    assert!(script.contains("Requested review commit $TARGET_HEAD_OID is not available locally."));
-    assert!(script.contains("review would drift to a newer commit"));
-    assert!(script.contains("branch -f \"$BRANCH_NAME\" \"$TARGET_REF\""));
-}
-
-#[test]
-fn review_schema_requires_review_submission_metadata_and_terminal_status_values() {
-    let schema = build_remote_review_schema();
-
-    assert!(schema.contains("\"reviewSubmitted\""));
-    assert!(schema.contains("\"githubReviewId\""));
-    assert!(schema.contains("\"githubReviewUrl\""));
-    assert!(schema.contains("\"succeeded\""));
-    assert!(schema.contains("\"failed\""));
-    assert!(schema.contains("\"blocked\""));
-    assert!(!schema.contains("\"running\""));
-}
-
-#[test]
-fn parses_github_repository_name() {
-    assert_eq!(
-        parse_github_repository_name("https://github.com/acme/project-x")
-            .expect("github url should parse"),
-        "project-x"
-    );
-}
-
-#[test]
-fn parses_github_pull_request_reference() {
-    let reference =
-        parse_github_pull_request_reference("https://github.com/acme/project-x/pull/42")
-            .expect("github pr url should parse");
-
-    assert_eq!(reference.owner, "acme");
-    assert_eq!(reference.repository, "project-x");
-    assert_eq!(reference.number, 42);
-}
-
-#[test]
-fn builds_review_workspace_key_from_repository_name() {
-    let metadata = GithubPullRequestMetadata {
-        pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
-        pull_request_number: 42,
-        pull_request_title: "Fix queue layout".to_owned(),
-        repository_full_name: "acme/project-x".to_owned(),
-        repo_url: "https://github.com/acme/project-x".to_owned(),
-        git_url: "git@github.com:acme/project-x.git".to_owned(),
-        base_branch: "main".to_owned(),
-        head_oid: "abc123".to_owned(),
-    };
-
-    assert_eq!(build_review_workspace_key(&metadata), "acme-project-x");
-}
-
-#[test]
-fn builds_review_follow_up_request_that_scopes_feedback_to_one_user() {
-    let request = build_review_follow_up_request(
-        "https://github.com/acme/project-x/pull/42",
-        "octocat",
-        parse_iso_8601_seconds("2026-03-25T12:00:00Z").expect("timestamp should parse"),
-    );
-
-    assert!(request.contains("@octocat"));
-    assert!(request.contains("COMMENTED or CHANGES_REQUESTED"));
-    assert!(request.contains("Ignore APPROVED reviews"));
-    assert!(request.contains("https://github.com/acme/project-x/pull/42"));
-}
-
-#[test]
 fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_settings() {
     let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
@@ -517,142 +270,6 @@ fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_se
         loaded_review.default_review_prompt,
         review.default_review_prompt
     );
-}
-
-#[test]
-fn parses_batched_dispatch_snapshot_report() {
-    let report = concat!(
-        "run\t~/workspace/project-x/dispatches/dispatch-1\n",
-        "status\tpresent\t72756e6e696e670a\n",
-        "result\tmissing\t\n",
-        "stderr\tmissing\t\n",
-        "finished_at\tmissing\t\n",
-        "run\t~/workspace/project-y/dispatches/dispatch-2\n",
-        "status\tpresent\t636f6d706c657465640a\n",
-        "result\tpresent\t7b22737461747573223a22737563636565646564227d\n",
-        "stderr\tpresent\t\n",
-        "finished_at\tpresent\t323032362d30332d31385431303a33353a33315a0a\n",
-    );
-
-    let snapshots = ReadDispatchSnapshotsScript
-        .parse_report(report)
-        .expect("dispatch snapshot report should parse");
-
-    assert_eq!(
-        snapshots
-            .first()
-            .expect("first dispatch snapshot should exist")
-            .status
-            .as_deref(),
-        Some("running\n")
-    );
-    assert_eq!(
-        snapshots
-            .get(1)
-            .expect("second dispatch snapshot should exist")
-            .result
-            .as_deref(),
-        Some("{\"status\":\"succeeded\"}")
-    );
-    assert_eq!(
-        snapshots
-            .get(1)
-            .expect("second dispatch snapshot should exist")
-            .finished_at
-            .as_deref(),
-        Some("2026-03-18T10:35:31Z\n")
-    );
-}
-
-#[test]
-fn prepends_shell_prelude_before_remote_script_body() {
-    let rendered = render_remote_script_with_shell_prelude(
-        "set -eu\nprintf '%s\\n' done\n",
-        "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n",
-    );
-
-    assert!(rendered.starts_with("set -e\n"));
-    assert!(rendered.contains("export NVM_DIR=\"$HOME/.nvm\""));
-    assert!(rendered.contains(". \"$HOME/.cargo/env\""));
-    assert!(rendered.contains("printf '%s\\n' done"));
-}
-
-#[test]
-fn expands_tilde_prefixed_remote_paths_without_reintroducing_a_literal_tilde_segment() {
-    let helper_script = format!(
-        r#"
-set -eu
-HOME="/tmp/remote-home"
-{path_helpers}
-expand_remote_path "$1"
-"#,
-        path_helpers = remote_path_helpers_shell(),
-    );
-
-    let output = std::process::Command::new("bash")
-        .arg("-s")
-        .arg("--")
-        .arg("~/workspace/project-a/dispatches/dispatch-1")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write as _;
-
-            let stdin = child.stdin.as_mut().expect("bash stdin should exist");
-            stdin
-                .write_all(helper_script.as_bytes())
-                .expect("helper script should write to bash stdin");
-            child.wait_with_output()
-        })
-        .expect("bash helper should run");
-
-    assert!(
-        output.status.success(),
-        "helper script should succeed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "/tmp/remote-home/workspace/project-a/dispatches/dispatch-1"
-    );
-}
-
-#[test]
-fn builds_codex_launcher_with_runner_shell_prelude() {
-    let launcher = RemoteAgentLauncherScript::new(
-        RemoteAgentPreferredTool::Codex,
-        "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n",
-    )
-    .render();
-
-    assert!(launcher.starts_with("#!/usr/bin/env bash"));
-    assert!(launcher.contains("export NVM_DIR=\"$HOME/.nvm\""));
-    assert!(launcher.contains("codex --search exec"));
-    assert!(launcher.contains("RUN_DIR=\"$1\""));
-    assert!(launcher.contains("WORKTREE_PATH=\"$2\""));
-    assert!(launcher.contains("launcher.pid"));
-    assert!(launcher.contains("codex.pid"));
-    assert!(launcher.contains("trap cancel_run TERM INT"));
-    assert!(launcher.contains("canceled"));
-}
-
-#[test]
-fn builds_claude_launcher_with_schema_validation_and_yolo_mode() {
-    let launcher = RemoteAgentLauncherScript::new(
-        RemoteAgentPreferredTool::Claude,
-        "export PATH=\"$HOME/.local/bin:$PATH\"\n",
-    )
-    .render();
-
-    assert!(launcher.starts_with("#!/usr/bin/env bash"));
-    assert!(launcher.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
-    assert!(launcher.contains("SCHEMA_CONTENT=\"$(tr -d '\\n'"));
-    assert!(launcher.contains("cd \"$WORKTREE_PATH\""));
-    assert!(launcher.contains("claude -p --dangerously-skip-permissions"));
-    assert!(launcher.contains("--output-format json"));
-    assert!(launcher.contains("--json-schema \"$SCHEMA_CONTENT\""));
-    assert!(launcher.contains("codex.pid"));
 }
 
 #[test]
@@ -1173,33 +790,14 @@ fn follow_up_dispatch_keeps_the_original_runner_tool() {
 }
 
 #[test]
-fn reset_blockers_include_active_review_runs() {
-    let context = TestContext::new(base_test_config(None));
-    let task = context.create_task("project-a", "Keep reset from interrupting live work");
-    let task_dispatch = context.create_running_dispatch(&task);
-    let review = context.create_review();
-    let review_dispatch = context.create_review_run(&review, DispatchStatus::Running);
-
-    let blockers = describe_remote_reset_blockers(&[task_dispatch], &[review_dispatch]);
-
-    assert_eq!(blockers.len(), 2);
-    assert!(blockers
-        .iter()
-        .any(|blocker| blocker.contains(&task.id) && blocker.contains("task")));
-    assert!(blockers
-        .iter()
-        .any(|blocker| blocker.contains(&review.id) && blocker.contains("review")));
-}
-
-#[test]
 fn task_dispatch_start_guard_serializes_same_task() {
     let acquired_in_second_thread = Arc::new(AtomicBool::new(false));
-    let guard = super::TaskDispatchStartGuard::acquire("task-1");
+    let guard = super::start_gate::TaskDispatchStartGuard::acquire("task-1");
 
     std::thread::scope(|scope| {
         let acquired_in_second_thread_for_join = Arc::clone(&acquired_in_second_thread);
         let join_handle = scope.spawn(move || {
-            let _guard = super::TaskDispatchStartGuard::acquire("task-1");
+            let _guard = super::start_gate::TaskDispatchStartGuard::acquire("task-1");
             acquired_in_second_thread_for_join.store(true, Ordering::SeqCst);
         });
 
@@ -1224,12 +822,12 @@ fn task_dispatch_start_guard_serializes_same_task() {
 #[test]
 fn review_dispatch_start_guard_serializes_same_review() {
     let acquired_in_second_thread = Arc::new(AtomicBool::new(false));
-    let guard = super::ReviewDispatchStartGuard::acquire("review-1");
+    let guard = super::start_gate::ReviewDispatchStartGuard::acquire("review-1");
 
     std::thread::scope(|scope| {
         let acquired_in_second_thread_for_join = Arc::clone(&acquired_in_second_thread);
         let join_handle = scope.spawn(move || {
-            let _guard = super::ReviewDispatchStartGuard::acquire("review-1");
+            let _guard = super::start_gate::ReviewDispatchStartGuard::acquire("review-1");
             acquired_in_second_thread_for_join.store(true, Ordering::SeqCst);
         });
 

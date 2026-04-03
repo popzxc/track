@@ -153,3 +153,53 @@ fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ReadDispatchSnapshotsScript;
+
+    #[test]
+    fn parses_batched_dispatch_snapshot_report() {
+        let report = concat!(
+            "run\t~/workspace/project-x/dispatches/dispatch-1\n",
+            "status\tpresent\t72756e6e696e670a\n",
+            "result\tmissing\t\n",
+            "stderr\tmissing\t\n",
+            "finished_at\tmissing\t\n",
+            "run\t~/workspace/project-y/dispatches/dispatch-2\n",
+            "status\tpresent\t636f6d706c657465640a\n",
+            "result\tpresent\t7b22737461747573223a22737563636565646564227d\n",
+            "stderr\tpresent\t\n",
+            "finished_at\tpresent\t323032362d30332d31385431303a33353a33315a0a\n",
+        );
+
+        let snapshots = ReadDispatchSnapshotsScript
+            .parse_report(report)
+            .expect("dispatch snapshot report should parse");
+
+        assert_eq!(
+            snapshots
+                .first()
+                .expect("first dispatch snapshot should exist")
+                .status
+                .as_deref(),
+            Some("running\n")
+        );
+        assert_eq!(
+            snapshots
+                .get(1)
+                .expect("second dispatch snapshot should exist")
+                .result
+                .as_deref(),
+            Some("{\"status\":\"succeeded\"}")
+        );
+        assert_eq!(
+            snapshots
+                .get(1)
+                .expect("second dispatch snapshot should exist")
+                .finished_at
+                .as_deref(),
+            Some("2026-03-18T10:35:31Z\n")
+        );
+    }
+}

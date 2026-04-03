@@ -83,3 +83,22 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$TARGET
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CreateReviewWorktreeScript;
+
+    #[test]
+    fn pins_the_requested_commit_or_fails_explicitly() {
+        let script = CreateReviewWorktreeScript.render();
+
+        assert!(script.contains("TARGET_HEAD_OID"));
+        assert!(script.contains("fetch upstream \"$TARGET_HEAD_OID\""));
+        assert!(script.contains("TARGET_REF=\"$TARGET_HEAD_OID\""));
+        assert!(
+            script.contains("Requested review commit $TARGET_HEAD_OID is not available locally.")
+        );
+        assert!(script.contains("review would drift to a newer commit"));
+        assert!(script.contains("branch -f \"$BRANCH_NAME\" \"$TARGET_REF\""));
+    }
+}

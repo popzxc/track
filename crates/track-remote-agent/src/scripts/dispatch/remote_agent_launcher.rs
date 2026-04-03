@@ -113,3 +113,47 @@ fn build_remote_agent_command(preferred_tool: RemoteAgentPreferredTool) -> Strin
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use track_types::types::RemoteAgentPreferredTool;
+
+    use super::RemoteAgentLauncherScript;
+
+    #[test]
+    fn builds_codex_launcher_with_runner_shell_prelude() {
+        let launcher = RemoteAgentLauncherScript::new(
+            RemoteAgentPreferredTool::Codex,
+            "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n",
+        )
+        .render();
+
+        assert!(launcher.starts_with("#!/usr/bin/env bash"));
+        assert!(launcher.contains("export NVM_DIR=\"$HOME/.nvm\""));
+        assert!(launcher.contains("codex --search exec"));
+        assert!(launcher.contains("RUN_DIR=\"$1\""));
+        assert!(launcher.contains("WORKTREE_PATH=\"$2\""));
+        assert!(launcher.contains("launcher.pid"));
+        assert!(launcher.contains("codex.pid"));
+        assert!(launcher.contains("trap cancel_run TERM INT"));
+        assert!(launcher.contains("canceled"));
+    }
+
+    #[test]
+    fn builds_claude_launcher_with_schema_validation_and_yolo_mode() {
+        let launcher = RemoteAgentLauncherScript::new(
+            RemoteAgentPreferredTool::Claude,
+            "export PATH=\"$HOME/.local/bin:$PATH\"\n",
+        )
+        .render();
+
+        assert!(launcher.starts_with("#!/usr/bin/env bash"));
+        assert!(launcher.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
+        assert!(launcher.contains("SCHEMA_CONTENT=\"$(tr -d '\\n'"));
+        assert!(launcher.contains("cd \"$WORKTREE_PATH\""));
+        assert!(launcher.contains("claude -p --dangerously-skip-permissions"));
+        assert!(launcher.contains("--output-format json"));
+        assert!(launcher.contains("--json-schema \"$SCHEMA_CONTENT\""));
+        assert!(launcher.contains("codex.pid"));
+    }
+}
