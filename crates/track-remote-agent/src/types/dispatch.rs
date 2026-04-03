@@ -4,10 +4,70 @@ use std::collections::BTreeMap;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::time_utils::{format_iso_8601_millis, now_utc};
+use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use track_types::types::{RemoteAgentPreferredTool, RemoteResetSummary, ReviewRecord};
+
+/// Logical remote run states that can be persisted in the remote status file.
+///
+/// The remote scripts exchange state through plain-text files, but the rest of
+/// the crate reasons about a closed set of meaningful states. `Incorrect`
+/// preserves unexpected values so reconciliation can still report what was
+/// observed instead of silently flattening malformed remote data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum RemoteRunStatus {
+    #[default]
+    Missing,
+    Preparing,
+    Running,
+    Completed,
+    Canceled,
+    LauncherFailed,
+    Incorrect(String),
+}
+
+impl RemoteRunStatus {
+    pub(crate) fn from_status_file_contents(contents: Option<String>) -> Self {
+        let Some(contents) = contents else {
+            return Self::Missing;
+        };
+        let normalized = contents.trim();
+        if normalized.is_empty() {
+            return Self::Missing;
+        }
+
+        match normalized {
+            "preparing" => Self::Preparing,
+            "running" => Self::Running,
+            "completed" => Self::Completed,
+            "canceled" => Self::Canceled,
+            "launcher_failed" => Self::LauncherFailed,
+            other => Self::Incorrect(other.to_owned()),
+        }
+    }
+
+    pub(crate) fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
+
+    pub(crate) fn is_canceled(&self) -> bool {
+        matches!(self, Self::Canceled)
+    }
+
+    pub(crate) fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed)
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        matches!(self, Self::Completed | Self::LauncherFailed)
+    }
+}
 
 /// Snapshot of the remote artifacts that describe one dispatch or review run.
 ///
@@ -16,17 +76,17 @@ use track_types::types::{RemoteAgentPreferredTool, RemoteResetSummary, ReviewRec
 /// database's opinion about that run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RemoteDispatchSnapshot {
-    pub(crate) status: Option<String>,
-    pub(crate) result: Option<String>,
-    pub(crate) stderr: Option<String>,
-    pub(crate) finished_at: Option<String>,
+    status: RemoteRunStatus,
+    result: Option<String>,
+    stderr: Option<String>,
+    finished_at: Option<String>,
 }
 
 impl RemoteDispatchSnapshot {
     #[cfg(test)]
     pub(crate) fn completed(result: impl Into<String>, finished_at: impl Into<String>) -> Self {
         Self {
-            status: Some("completed\n".to_owned()),
+            status: RemoteRunStatus::Completed,
             result: Some(result.into()),
             stderr: None,
             finished_at: Some(finished_at.into()),
@@ -36,11 +96,79 @@ impl RemoteDispatchSnapshot {
     #[cfg(test)]
     pub(crate) fn canceled(finished_at: impl Into<String>) -> Self {
         Self {
-            status: Some("canceled\n".to_owned()),
+            status: RemoteRunStatus::Canceled,
             result: None,
             stderr: None,
             finished_at: Some(finished_at.into()),
         }
+    }
+
+    pub(crate) fn set_status_from_file_contents(&mut self, contents: Option<String>) {
+        self.status = RemoteRunStatus::from_status_file_contents(contents);
+    }
+
+    pub(crate) fn set_result(&mut self, result: Option<String>) {
+        self.result = result;
+    }
+
+    pub(crate) fn set_stderr(&mut self, stderr: Option<String>) {
+        self.stderr = stderr;
+    }
+
+    pub(crate) fn set_finished_at(&mut self, finished_at: Option<String>) {
+        self.finished_at = finished_at;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status(&self) -> &RemoteRunStatus {
+        &self.status
+    }
+
+    pub(crate) fn is_missing(&self) -> bool {
+        self.status.is_missing()
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.status.is_running()
+    }
+
+    pub(crate) fn is_canceled(&self) -> bool {
+        self.status.is_canceled()
+    }
+
+    pub(crate) fn is_completed(&self) -> bool {
+        self.status.is_completed()
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.status.is_finished()
+    }
+
+    pub(crate) fn finished_at_or(&self, fallback: OffsetDateTime) -> OffsetDateTime {
+        self.finished_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| parse_iso_8601_seconds(value).ok())
+            .unwrap_or(fallback)
+    }
+
+    pub(crate) fn required_result(
+        &self,
+        missing_message: &'static str,
+    ) -> Result<&str, TrackError> {
+        self.result
+            .as_deref()
+            .ok_or_else(|| TrackError::new(ErrorCode::RemoteDispatchFailed, missing_message))
+    }
+
+    pub(crate) fn failure_message(&self, fallback_message: &'static str) -> String {
+        self.stderr
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| fallback_message.to_owned())
     }
 }
 

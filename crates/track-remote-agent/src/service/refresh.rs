@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::time_utils::{now_utc, parse_iso_8601_seconds};
+use track_types::time_utils::now_utc;
 use track_types::types::{
     DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentReviewOutcome, ReviewRunRecord,
     TaskDispatchRecord,
@@ -16,53 +16,60 @@ use crate::remote_actions::ReadDispatchSnapshotsAction;
 use crate::ssh::SshClient;
 use crate::types::{ClaudeStructuredOutputEnvelope, RemoteDispatchSnapshot};
 
-use super::{RemoteDispatchService, RemoteReviewService};
+use super::{RemoteAgentConfigProvider, RemoteDispatchService, RemoteReviewService};
+
+enum RefreshRemoteClient {
+    Available(SshClient),
+    UnavailableLocally { error_message: String },
+}
+
+fn load_refresh_ssh_client(
+    config_service: &dyn RemoteAgentConfigProvider,
+) -> Result<RefreshRemoteClient, TrackError> {
+    let remote_agent = match config_service.load_remote_agent_runtime_config() {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            return Ok(RefreshRemoteClient::UnavailableLocally {
+                error_message: "Remote agent configuration is missing locally.".to_owned(),
+            });
+        }
+        Err(error) if error.remote_unavailable() => {
+            return Ok(RefreshRemoteClient::UnavailableLocally {
+                error_message: error.to_string(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+
+    if !remote_agent.managed_key_path.exists() {
+        return Ok(RefreshRemoteClient::UnavailableLocally {
+            error_message: format!(
+                "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
+                collapse_home_path(&remote_agent.managed_key_path)
+            ),
+        });
+    }
+
+    Ok(RefreshRemoteClient::Available(SshClient::new(
+        &remote_agent,
+    )?))
+}
 
 impl<'a> RemoteDispatchService<'a> {
     pub(super) fn refresh_active_dispatch_records(
         &self,
         records: Vec<TaskDispatchRecord>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let remote_agent = match self.config_service.load_remote_agent_runtime_config() {
-            Ok(config) => config,
-            Err(error)
-                if matches!(
-                    error.code,
-                    ErrorCode::ConfigNotFound
-                        | ErrorCode::InvalidConfig
-                        | ErrorCode::InvalidRemoteAgentConfig
-                ) =>
-            {
-                let error_message = error.to_string();
+        let ssh_client = match load_refresh_ssh_client(self.config_service)? {
+            RefreshRemoteClient::Available(ssh_client) => ssh_client,
+            RefreshRemoteClient::UnavailableLocally { error_message } => {
                 return self.release_active_dispatches_after_reconciliation_loss(
                     records,
                     "Remote reconciliation is unavailable locally, so active runs were released.",
                     &error_message,
                 );
             }
-            Err(error) => return Err(error),
         };
-
-        let Some(remote_agent) = remote_agent else {
-            return self.release_active_dispatches_after_reconciliation_loss(
-                records,
-                "Remote reconciliation is unavailable locally, so active runs were released.",
-                "Remote agent configuration is missing locally.",
-            );
-        };
-        if !remote_agent.managed_key_path.exists() {
-            let error_message = format!(
-                "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                collapse_home_path(&remote_agent.managed_key_path)
-            );
-            return self.release_active_dispatches_after_reconciliation_loss(
-                records,
-                "Remote reconciliation is unavailable locally, so active runs were released.",
-                &error_message,
-            );
-        }
-
-        let ssh_client = SshClient::new(&remote_agent)?;
         let snapshots_by_dispatch_id = match load_dispatch_snapshots_for_records(
             &ssh_client,
             &records,
@@ -111,11 +118,9 @@ impl<'a> RemoteDispatchService<'a> {
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
-                    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
-                    if remote_status == "completed" || remote_status == "launcher_failed" {
+                    if snapshot.is_finished() {
                         let refreshed_at = now_utc();
-                        let finished_at =
-                            parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+                        let finished_at = snapshot.finished_at_or(refreshed_at);
                         let updated = record.clone().mark_failed_from_remote_refresh(
                             refreshed_at,
                             finished_at,
@@ -169,46 +174,16 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         records: Vec<ReviewRunRecord>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let remote_agent = match self.config_service.load_remote_agent_runtime_config() {
-            Ok(config) => config,
-            Err(error)
-                if matches!(
-                    error.code,
-                    ErrorCode::ConfigNotFound
-                        | ErrorCode::InvalidConfig
-                        | ErrorCode::InvalidRemoteAgentConfig
-                ) =>
-            {
-                let error_message = error.to_string();
+        let ssh_client = match load_refresh_ssh_client(self.config_service)? {
+            RefreshRemoteClient::Available(ssh_client) => ssh_client,
+            RefreshRemoteClient::UnavailableLocally { error_message } => {
                 return self.release_active_review_dispatches_after_reconciliation_loss(
                     records,
                     "Remote reconciliation is unavailable locally, so active review runs were released.",
                     &error_message,
                 );
             }
-            Err(error) => return Err(error),
         };
-
-        let Some(remote_agent) = remote_agent else {
-            return self.release_active_review_dispatches_after_reconciliation_loss(
-                records,
-                "Remote reconciliation is unavailable locally, so active review runs were released.",
-                "Remote agent configuration is missing locally.",
-            );
-        };
-        if !remote_agent.managed_key_path.exists() {
-            let error_message = format!(
-                "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                collapse_home_path(&remote_agent.managed_key_path)
-            );
-            return self.release_active_review_dispatches_after_reconciliation_loss(
-                records,
-                "Remote reconciliation is unavailable locally, so active review runs were released.",
-                &error_message,
-            );
-        }
-
-        let ssh_client = SshClient::new(&remote_agent)?;
         let snapshots_by_dispatch_id = load_review_snapshots_for_records(&ssh_client, &records)?;
         let mut refreshed_records = Vec::with_capacity(records.len());
         for record in records {
@@ -244,11 +219,9 @@ impl<'a> RemoteReviewService<'a> {
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
-                    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
-                    if remote_status == "completed" || remote_status == "launcher_failed" {
+                    if snapshot.is_finished() {
                         let refreshed_at = now_utc();
-                        let finished_at =
-                            parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+                        let finished_at = snapshot.finished_at_or(refreshed_at);
                         let updated = record.clone().mark_failed_from_remote_refresh(
                             refreshed_at,
                             finished_at,
@@ -278,8 +251,7 @@ impl<'a> RemoteReviewService<'a> {
         record: ReviewRunRecord,
         snapshot: &RemoteDispatchSnapshot,
     ) -> Result<ReviewRunRecord, TrackError> {
-        let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
-        if remote_status.is_empty() {
+        if snapshot.is_missing() {
             if let Some(updated) = record
                 .clone()
                 .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
@@ -290,26 +262,22 @@ impl<'a> RemoteReviewService<'a> {
             return Ok(record);
         }
 
-        if remote_status == "running" {
+        if snapshot.is_running() {
             return Ok(record.mark_running_from_remote(now_utc()));
         }
 
-        if remote_status == "canceled" {
+        if snapshot.is_canceled() {
             let refreshed_at = now_utc();
-            let finished_at =
-                parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+            let finished_at = snapshot.finished_at_or(refreshed_at);
             return Ok(record.mark_canceled_from_remote(refreshed_at, finished_at));
         }
 
         let refreshed_at = now_utc();
-        let finished_at = parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
-        if remote_status == "completed" {
-            let remote_result = snapshot.result.as_deref().ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteDispatchFailed,
-                    "Remote review run completed without producing a structured result.",
-                )
-            })?;
+        let finished_at = snapshot.finished_at_or(refreshed_at);
+        if snapshot.is_completed() {
+            let remote_result = snapshot.required_result(
+                "Remote review run completed without producing a structured result.",
+            )?;
             let outcome = ClaudeStructuredOutputEnvelope::<RemoteAgentReviewOutcome>::parse_result(
                 remote_result,
                 record.preferred_tool,
@@ -322,14 +290,7 @@ impl<'a> RemoteReviewService<'a> {
             refreshed_at,
             finished_at,
             snapshot
-                .stderr
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_owned())
-                .unwrap_or_else(|| {
-                    "Remote review run failed before returning a structured result.".to_owned()
-                }),
+                .failure_message("Remote review run failed before returning a structured result."),
         ))
     }
 
@@ -477,8 +438,7 @@ pub(crate) fn refresh_dispatch_record_from_snapshot(
     record: TaskDispatchRecord,
     snapshot: &RemoteDispatchSnapshot,
 ) -> Result<TaskDispatchRecord, TrackError> {
-    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
-    if remote_status.is_empty() {
+    if snapshot.is_missing() {
         if let Some(updated) = record
             .clone()
             .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
@@ -489,25 +449,21 @@ pub(crate) fn refresh_dispatch_record_from_snapshot(
         return Ok(record);
     }
 
-    if remote_status == "running" {
+    if snapshot.is_running() {
         return Ok(record.mark_running_from_remote(now_utc()));
     }
 
-    if remote_status == "canceled" {
+    if snapshot.is_canceled() {
         let refreshed_at = now_utc();
-        let finished_at = parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+        let finished_at = snapshot.finished_at_or(refreshed_at);
         return Ok(record.mark_canceled_from_remote(refreshed_at, finished_at));
     }
 
     let refreshed_at = now_utc();
-    let finished_at = parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
-    if remote_status == "completed" {
-        let remote_result = snapshot.result.as_deref().ok_or_else(|| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                "Remote agent run completed without producing a structured result.",
-            )
-        })?;
+    let finished_at = snapshot.finished_at_or(refreshed_at);
+    if snapshot.is_completed() {
+        let remote_result = snapshot
+            .required_result("Remote agent run completed without producing a structured result.")?;
         let outcome = ClaudeStructuredOutputEnvelope::<RemoteAgentDispatchOutcome>::parse_result(
             remote_result,
             record.preferred_tool,
@@ -519,25 +475,6 @@ pub(crate) fn refresh_dispatch_record_from_snapshot(
     Ok(record.mark_failed_from_remote_refresh(
         refreshed_at,
         finished_at,
-        snapshot
-            .stderr
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_owned())
-            .unwrap_or_else(|| {
-                "Remote agent run failed before returning a structured result.".to_owned()
-            }),
+        snapshot.failure_message("Remote agent run failed before returning a structured result."),
     ))
-}
-
-pub(crate) fn parse_remote_finished_at(
-    value: Option<&str>,
-    fallback: time::OffsetDateTime,
-) -> time::OffsetDateTime {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| parse_iso_8601_seconds(value).ok())
-        .unwrap_or(fallback)
 }

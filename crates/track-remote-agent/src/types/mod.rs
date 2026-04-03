@@ -4,6 +4,8 @@ mod dispatch;
 mod events;
 mod github;
 
+#[cfg(test)]
+pub(crate) use dispatch::RemoteRunStatus;
 pub(crate) use dispatch::{
     ClaudeStructuredOutputEnvelope, RemoteArtifactCleanupCounts, RemoteArtifactCleanupReport,
     RemoteDispatchSnapshot, RemoteProjectRegistryEntry, RemoteProjectRegistryFile,

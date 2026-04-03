@@ -101,10 +101,10 @@ done
                         ));
                     };
                     match *field_name {
-                        "status" => snapshot.status = value,
-                        "result" => snapshot.result = value,
-                        "stderr" => snapshot.stderr = value,
-                        "finished_at" => snapshot.finished_at = value,
+                        "status" => snapshot.set_status_from_file_contents(value),
+                        "result" => snapshot.set_result(value),
+                        "stderr" => snapshot.set_stderr(value),
+                        "finished_at" => snapshot.set_finished_at(value),
                         _ => {}
                     }
                 }
@@ -156,6 +156,8 @@ fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::RemoteRunStatus;
+
     use super::ReadDispatchSnapshotsScript;
 
     #[test]
@@ -181,25 +183,46 @@ mod tests {
             snapshots
                 .first()
                 .expect("first dispatch snapshot should exist")
-                .status
-                .as_deref(),
-            Some("running\n")
+                .status(),
+            &RemoteRunStatus::Running
         );
         assert_eq!(
             snapshots
                 .get(1)
                 .expect("second dispatch snapshot should exist")
-                .result
-                .as_deref(),
+                .required_result("completed snapshot should keep the parsed result")
+                .ok(),
             Some("{\"status\":\"succeeded\"}")
         );
         assert_eq!(
             snapshots
                 .get(1)
                 .expect("second dispatch snapshot should exist")
-                .finished_at
-                .as_deref(),
-            Some("2026-03-18T10:35:31Z\n")
+                .finished_at_or(time::OffsetDateTime::UNIX_EPOCH),
+            time::macros::datetime!(2026-03-18 10:35:31 UTC)
+        );
+    }
+
+    #[test]
+    fn preserves_unexpected_remote_status_values() {
+        let report = concat!(
+            "run\t~/workspace/project-x/dispatches/dispatch-1\n",
+            "status\tpresent\t7761740a\n",
+            "result\tmissing\t\n",
+            "stderr\tmissing\t\n",
+            "finished_at\tmissing\t\n",
+        );
+
+        let snapshots = ReadDispatchSnapshotsScript
+            .parse_report(report)
+            .expect("dispatch snapshot report should parse");
+
+        assert_eq!(
+            snapshots
+                .first()
+                .expect("dispatch snapshot should exist")
+                .status(),
+            &RemoteRunStatus::Incorrect("wat".to_owned())
         );
     }
 }
