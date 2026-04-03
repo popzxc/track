@@ -1,13 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
-import {
-  ApiClientError,
-  fetchMigrationStatus,
-  fetchProjects,
-  fetchRemoteAgentSettings,
-  fetchTasks,
-} from './api/client'
+import { ApiClientError } from './api/client'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import FollowUpModal from './components/FollowUpModal.vue'
 import ProjectsPage from './components/ProjectsPage.vue'
@@ -21,12 +15,14 @@ import SettingsPage from './components/SettingsPage.vue'
 import TaskDrawer from './components/TaskDrawer.vue'
 import TaskEditorModal from './components/TaskEditorModal.vue'
 import TasksPage from './components/TasksPage.vue'
+import { useAppDataLoader } from './composables/useAppDataLoader'
 import { useBackgroundSync } from './composables/useBackgroundSync'
 import { useReviewMutations } from './composables/useReviewMutations'
 import { useProjectViewState } from './composables/useProjectViewState'
 import { useReviewViewState } from './composables/useReviewViewState'
 import { useRunState } from './composables/useRunState'
 import { useSettingsMutations } from './composables/useSettingsMutations'
+import { useShellOverlays } from './composables/useShellOverlays'
 import { useTaskMutations, type PendingRunnerSetupRequest } from './composables/useTaskMutations'
 import { useTaskViewState } from './composables/useTaskViewState'
 import {
@@ -42,25 +38,19 @@ import {
   taskTitle,
 } from './features/tasks/description'
 import type {
-  CreateReviewInput,
   MigrationImportSummary,
   MigrationStatus,
   ProjectInfo,
-  ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
   RemoteResetSummary,
   RemoteAgentPreferredTool,
   RemoteAgentSettings,
-  RemoteAgentSettingsUpdateInput,
   ReviewRecord,
-  ReviewFollowUpInput,
   ReviewRunRecord,
   ReviewSummary,
   RunRecord,
   Task,
-  TaskCreateInput,
   TaskDispatch,
-  TaskFollowUpInput,
 } from './types/task'
 
 type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
@@ -342,100 +332,36 @@ function openSelectedTaskProjectDetails() {
   selectProjectDetails(selectedTaskProject.value)
 }
 
-// =============================================================================
-// Data Loading
-// =============================================================================
-//
-// Each loader owns one slice of backend truth. Foreground mutations still
-// refresh from the server because the filesystem and persisted run history are
-// the real source of truth.
-async function loadProjects() {
-  projects.value = await fetchProjects()
-}
+let syncTaskChangeVersion = async () => undefined
 
-async function loadMigrationGate() {
-  migrationStatus.value = await fetchMigrationStatus()
-}
-
-async function loadRemoteAgentSettings() {
-  remoteAgentSettings.value = await fetchRemoteAgentSettings()
-}
-
-async function loadTasks() {
-  tasks.value = await fetchTasks({
-    includeClosed: showClosed.value,
-    project: selectedProjectFilter.value || undefined,
-  })
-
-  taskProjectOptions.value = tasks.value.map((task) => ({
-    canonicalName: task.project,
-    aliases: [],
-    metadata: {
-      repoUrl: '',
-      gitUrl: '',
-      baseBranch: 'main',
-      description: undefined,
-    },
-  }))
-}
-
-function resetAppDataForMigration() {
-  tasks.value = []
-  reviews.value = []
-  projects.value = []
-  taskProjectOptions.value = []
-  runs.value = []
-  latestTaskDispatchesByTaskId.value = {}
-  selectedTaskRuns.value = []
-  selectedReviewRuns.value = []
-  remoteAgentSettings.value = null
-}
-
-async function refreshAll() {
-  errorMessage.value = ''
-  refreshing.value = true
-
-  try {
-    await Promise.all([
-      loadProjects(),
-      loadTasks(),
-      loadReviews(),
-      syncTaskChangeVersion(),
-      loadRemoteAgentSettings().catch(() => {
-        // Runner setup is useful context, but the rest of the app should still
-        // render if that endpoint is temporarily unavailable.
-      }),
-    ])
-
-    await Promise.all([
-      loadLatestDispatchesForVisibleTasks(),
-      loadRuns(),
-      loadSelectedTaskRunHistory().catch(() => {
-        // The drawer can still show the task body if task-scoped run history
-        // is temporarily unavailable.
-      }),
-      loadSelectedReviewRunHistory().catch(() => {
-        // The review drawer can still show the persisted review record if its
-        // run history is temporarily unavailable.
-      }),
-    ])
-    migrationStatus.value = null
-  } catch (error) {
-    if (error instanceof ApiClientError && error.code === 'MIGRATION_REQUIRED') {
-      try {
-        await loadMigrationGate()
-        resetAppDataForMigration()
-      } catch (migrationError) {
-        setFriendlyError(migrationError)
-      }
-    } else {
-      setFriendlyError(error)
-    }
-  } finally {
-    loading.value = false
-    refreshing.value = false
-  }
-}
+const {
+  loadRemoteAgentSettings,
+  loadTasks,
+  refreshAll,
+} = useAppDataLoader({
+  errorMessage,
+  latestTaskDispatchesByTaskId,
+  loading,
+  loadLatestDispatchesForVisibleTasks,
+  loadReviews,
+  loadRuns,
+  loadSelectedReviewRunHistory,
+  loadSelectedTaskRunHistory,
+  migrationStatus,
+  projects,
+  refreshing,
+  remoteAgentSettings,
+  reviews,
+  runs,
+  selectedProjectFilter,
+  selectedReviewRuns,
+  selectedTaskRuns,
+  setFriendlyError,
+  showClosed,
+  syncTaskChangeVersion: () => syncTaskChangeVersion(),
+  taskProjectOptions,
+  tasks,
+})
 
 const {
   cancelRemoteRun,
@@ -538,97 +464,45 @@ const {
   taskPendingRunnerSetup,
 })
 
-function openTaskEditor(task: Task) {
-  editingTask.value = task
-}
+const {
+  clearPendingDeletion,
+  clearPendingRemoteCleanup,
+  clearPendingRemoteReset,
+  clearPendingReviewDeletion,
+  closeFollowUpEditor,
+  closeProjectEditor,
+  closeReviewEditor,
+  closeReviewFollowUpEditor,
+  closeRunnerSetup,
+  closeTaskEditor,
+  openNewReviewEditor,
+  openNewTaskEditor,
+  openProjectEditor,
+  openRemoteCleanupConfirmation,
+  openRemoteResetConfirmation,
+  openReviewFollowUpEditor,
+  openRunnerSetup,
+  openTaskEditor,
+  queueReviewDeletion,
+  queueTaskDeletion,
+} = useShellOverlays({
+  cleanupPendingConfirmation,
+  creatingReview,
+  creatingTask,
+  editingProject,
+  editingRemoteAgentSetup,
+  editingTask,
+  followingUpReview,
+  followingUpTask,
+  resetPendingConfirmation,
+  reviewPendingDeletion,
+  selectedProjectDetails,
+  selectedReview,
+  taskPendingDeletion,
+  taskPendingRunnerSetup,
+})
 
-function openNewTaskEditor() {
-  creatingTask.value = true
-}
-
-function openNewReviewEditor() {
-  creatingReview.value = true
-}
-
-function openReviewFollowUpEditor(review = selectedReview.value) {
-  if (!review) {
-    return
-  }
-
-  followingUpReview.value = review
-}
-
-function openProjectEditor(project = selectedProjectDetails.value) {
-  if (!project) {
-    return
-  }
-
-  editingProject.value = project
-}
-
-function openRunnerSetup() {
-  taskPendingRunnerSetup.value = null
-  editingRemoteAgentSetup.value = true
-}
-
-function closeTaskEditor() {
-  editingTask.value = null
-  creatingTask.value = false
-}
-
-function closeReviewEditor() {
-  creatingReview.value = false
-}
-
-function closeReviewFollowUpEditor() {
-  followingUpReview.value = null
-}
-
-function closeProjectEditor() {
-  editingProject.value = null
-}
-
-function closeRunnerSetup() {
-  editingRemoteAgentSetup.value = false
-  taskPendingRunnerSetup.value = null
-}
-
-function closeFollowUpEditor() {
-  followingUpTask.value = null
-}
-
-function queueTaskDeletion(task: Task) {
-  taskPendingDeletion.value = task
-}
-
-function clearPendingDeletion() {
-  taskPendingDeletion.value = null
-}
-
-function queueReviewDeletion(review: ReviewRecord) {
-  reviewPendingDeletion.value = review
-}
-
-function clearPendingReviewDeletion() {
-  reviewPendingDeletion.value = null
-}
-
-function openRemoteCleanupConfirmation() {
-  cleanupPendingConfirmation.value = true
-}
-
-function clearPendingRemoteCleanup() {
-  cleanupPendingConfirmation.value = false
-}
-
-function openRemoteResetConfirmation() {
-  resetPendingConfirmation.value = true
-}
-
-function clearPendingRemoteReset() {
-  resetPendingConfirmation.value = false
-}
-const { syncTaskChangeVersion } = useBackgroundSync({
+const backgroundSync = useBackgroundSync({
   activeReviewRuns,
   activeRuns,
   cancelingDispatchTaskId,
@@ -656,6 +530,7 @@ const { syncTaskChangeVersion } = useBackgroundSync({
   setFriendlyError,
   showClosed,
 })
+syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
 </script>
 
 <template>
