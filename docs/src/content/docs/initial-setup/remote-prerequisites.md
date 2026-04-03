@@ -88,6 +88,8 @@ Create the key locally:
 ssh-keygen -t ed25519 -f ~/.ssh/track_remote_agent -C "track remote agent"
 ```
 
+When prompted for a passphrase, leave it empty. `track` uses this key for automated remote dispatches and cannot supply a passphrase interactively.
+
 Install the public key on the remote machine and verify login works:
 
 ```bash
