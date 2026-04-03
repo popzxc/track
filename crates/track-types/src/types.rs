@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 use crate::errors::{ErrorCode, TrackError};
 use crate::path_component::validate_single_normal_path_component;
@@ -291,6 +291,99 @@ pub struct TaskDispatchRecord {
     pub review_request_user: Option<String>,
 }
 
+impl TaskDispatchRecord {
+    /// Marks a preparing dispatch as actively running once remote reconciliation
+    /// observes the launcher making forward progress.
+    pub fn mark_running_from_remote(mut self, refreshed_at: OffsetDateTime) -> Self {
+        if self.status == DispatchStatus::Preparing {
+            self.status = DispatchStatus::Running;
+            self.updated_at = refreshed_at;
+            self.finished_at = None;
+            self.error_message = None;
+        }
+
+        self
+    }
+
+    /// Marks a preparing dispatch as abandoned when reconciliation can no
+    /// longer observe launch progress for longer than the tolerated stale
+    /// window.
+    pub fn mark_abandoned_if_preparing_stale(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        stale_after: Duration,
+    ) -> Option<Self> {
+        if self.status != DispatchStatus::Preparing {
+            return None;
+        }
+
+        if refreshed_at - self.updated_at < stale_after {
+            return None;
+        }
+
+        self.status = DispatchStatus::Failed;
+        self.updated_at = refreshed_at;
+        self.finished_at = Some(refreshed_at);
+        self.error_message =
+            Some("Dispatch preparation stopped before the remote agent launched.".to_owned());
+        Some(self)
+    }
+
+    /// Records that the remote run was canceled after launch and should now be
+    /// treated as terminal locally.
+    pub fn mark_canceled_from_remote(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+    ) -> Self {
+        self.status = DispatchStatus::Canceled;
+        self.updated_at = refreshed_at;
+        self.finished_at = Some(finished_at);
+        self.summary = Some(
+            self.summary
+                .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
+        );
+        self.error_message = None;
+        self
+    }
+
+    /// Applies the structured outcome returned by a completed remote task run
+    /// to the locally persisted dispatch record.
+    pub fn apply_remote_dispatch_outcome(
+        mut self,
+        outcome: RemoteAgentDispatchOutcome,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+    ) -> Self {
+        self.status = outcome.status;
+        self.updated_at = refreshed_at;
+        self.summary = Some(outcome.summary);
+        self.pull_request_url = outcome.pull_request_url;
+        let existing_branch_name = self.branch_name.take();
+        self.branch_name = outcome.branch_name.or(existing_branch_name);
+        self.worktree_path = Some(outcome.worktree_path);
+        self.notes = outcome.notes;
+        self.error_message = None;
+        self.finished_at = Some(finished_at);
+        self
+    }
+
+    /// Records a terminal refresh failure after the remote run has already
+    /// reached a state that should not be retried locally.
+    pub fn mark_failed_from_remote_refresh(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+        error_message: impl Into<String>,
+    ) -> Self {
+        self.status = DispatchStatus::Failed;
+        self.updated_at = refreshed_at;
+        self.finished_at = Some(finished_at);
+        self.error_message = Some(error_message.into());
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRecord {
     pub id: String,
@@ -385,6 +478,98 @@ pub struct ReviewRunRecord {
     pub notes: Option<String>,
     #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+}
+
+impl ReviewRunRecord {
+    /// Marks a preparing review run as actively running once the remote review
+    /// launcher is confirmed to be making progress.
+    pub fn mark_running_from_remote(mut self, refreshed_at: OffsetDateTime) -> Self {
+        if self.status == DispatchStatus::Preparing {
+            self.status = DispatchStatus::Running;
+            self.updated_at = refreshed_at;
+            self.finished_at = None;
+            self.error_message = None;
+        }
+
+        self
+    }
+
+    /// Marks a preparing review run as abandoned when reconciliation no longer
+    /// sees evidence that the remote review launch is progressing.
+    pub fn mark_abandoned_if_preparing_stale(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        stale_after: Duration,
+    ) -> Option<Self> {
+        if self.status != DispatchStatus::Preparing {
+            return None;
+        }
+
+        if refreshed_at - self.updated_at < stale_after {
+            return None;
+        }
+
+        self.status = DispatchStatus::Failed;
+        self.updated_at = refreshed_at;
+        self.finished_at = Some(refreshed_at);
+        self.error_message =
+            Some("Review preparation stopped before the remote agent launched.".to_owned());
+        Some(self)
+    }
+
+    /// Records that the remote review run was canceled after it had already
+    /// been launched remotely.
+    pub fn mark_canceled_from_remote(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+    ) -> Self {
+        self.status = DispatchStatus::Canceled;
+        self.updated_at = refreshed_at;
+        self.finished_at = Some(finished_at);
+        self.summary = Some(
+            self.summary
+                .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
+        );
+        self.error_message = None;
+        self
+    }
+
+    /// Applies the structured outcome returned by a completed remote review
+    /// run to the locally persisted run record.
+    pub fn apply_remote_review_outcome(
+        mut self,
+        outcome: RemoteAgentReviewOutcome,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+    ) -> Self {
+        self.status = outcome.status;
+        self.updated_at = refreshed_at;
+        self.summary = Some(outcome.summary);
+        self.review_submitted = outcome.review_submitted;
+        self.github_review_id = outcome.github_review_id;
+        self.github_review_url = outcome.github_review_url;
+        self.worktree_path = Some(outcome.worktree_path);
+        self.notes = outcome.notes;
+        self.error_message = None;
+        self.finished_at = Some(finished_at);
+        self
+    }
+
+    /// Records a terminal refresh failure after the remote review run already
+    /// reached a non-retriable state.
+    pub fn mark_failed_from_remote_refresh(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+        error_message: impl Into<String>,
+    ) -> Self {
+        self.status = DispatchStatus::Failed;
+        self.updated_at = refreshed_at;
+        self.finished_at = Some(finished_at);
+        self.error_message = Some(error_message.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

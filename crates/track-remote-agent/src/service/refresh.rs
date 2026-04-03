@@ -85,7 +85,10 @@ impl<'a> RemoteDispatchService<'a> {
             }
 
             let Some(snapshot) = snapshots_by_dispatch_id.get(&record.dispatch_id) else {
-                if let Some(updated) = mark_abandoned_preparing_dispatch(record.clone()) {
+                if let Some(updated) = record
+                    .clone()
+                    .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
+                {
                     self.dispatch_repository.save_dispatch(&updated)?;
                     refreshed_records.push(updated);
                 } else {
@@ -108,9 +111,16 @@ impl<'a> RemoteDispatchService<'a> {
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
-                    if let Some(updated) =
-                        mark_terminal_refresh_failure(record.clone(), snapshot, &error)
-                    {
+                    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
+                    if remote_status == "completed" || remote_status == "launcher_failed" {
+                        let refreshed_at = now_utc();
+                        let finished_at =
+                            parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+                        let updated = record.clone().mark_failed_from_remote_refresh(
+                            refreshed_at,
+                            finished_at,
+                            error.to_string(),
+                        );
                         self.dispatch_repository.save_dispatch(&updated)?;
                         refreshed_records.push(updated);
                     } else {
@@ -208,7 +218,10 @@ impl<'a> RemoteReviewService<'a> {
             }
 
             let Some(snapshot) = snapshots_by_dispatch_id.get(&record.dispatch_id) else {
-                if let Some(updated) = mark_abandoned_preparing_review_dispatch(record.clone()) {
+                if let Some(updated) = record
+                    .clone()
+                    .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
+                {
                     self.review_dispatch_repository.save_dispatch(&updated)?;
                     refreshed_records.push(updated);
                 } else {
@@ -231,9 +244,16 @@ impl<'a> RemoteReviewService<'a> {
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
-                    if let Some(updated) =
-                        mark_terminal_review_refresh_failure(record.clone(), snapshot, &error)
-                    {
+                    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
+                    if remote_status == "completed" || remote_status == "launcher_failed" {
+                        let refreshed_at = now_utc();
+                        let finished_at =
+                            parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+                        let updated = record.clone().mark_failed_from_remote_refresh(
+                            refreshed_at,
+                            finished_at,
+                            error.to_string(),
+                        );
                         self.review_dispatch_repository.save_dispatch(&updated)?;
                         refreshed_records.push(updated);
                     } else {
@@ -255,12 +275,15 @@ impl<'a> RemoteReviewService<'a> {
 
     pub(super) fn refresh_review_dispatch_record_from_snapshot(
         &self,
-        mut record: ReviewRunRecord,
+        record: ReviewRunRecord,
         snapshot: &RemoteDispatchSnapshot,
     ) -> Result<ReviewRunRecord, TrackError> {
         let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
         if remote_status.is_empty() {
-            if let Some(updated) = mark_abandoned_preparing_review_dispatch(record.clone()) {
+            if let Some(updated) = record
+                .clone()
+                .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
+            {
                 return Ok(updated);
             }
 
@@ -268,33 +291,18 @@ impl<'a> RemoteReviewService<'a> {
         }
 
         if remote_status == "running" {
-            if record.status == DispatchStatus::Preparing {
-                record.status = DispatchStatus::Running;
-                record.updated_at = now_utc();
-                record.finished_at = None;
-                record.error_message = None;
-            }
-            return Ok(record);
+            return Ok(record.mark_running_from_remote(now_utc()));
         }
 
         if remote_status == "canceled" {
-            record.status = DispatchStatus::Canceled;
-            record.updated_at = now_utc();
-            record.finished_at = Some(parse_remote_finished_at(
-                snapshot.finished_at.as_deref(),
-                now_utc(),
-            ));
-            record.summary = Some(
-                record
-                    .summary
-                    .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
-            );
-            record.error_message = None;
-            return Ok(record);
+            let refreshed_at = now_utc();
+            let finished_at =
+                parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+            return Ok(record.mark_canceled_from_remote(refreshed_at, finished_at));
         }
 
-        let now = now_utc();
-        record.updated_at = now;
+        let refreshed_at = now_utc();
+        let finished_at = parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
         if remote_status == "completed" {
             let remote_result = snapshot.result.as_deref().ok_or_else(|| {
                 TrackError::new(
@@ -307,38 +315,22 @@ impl<'a> RemoteReviewService<'a> {
                 record.preferred_tool,
                 "Remote review result",
             )?;
-
-            record.status = outcome.status;
-            record.summary = Some(outcome.summary);
-            record.review_submitted = outcome.review_submitted;
-            record.github_review_id = outcome.github_review_id;
-            record.github_review_url = outcome.github_review_url;
-            record.worktree_path = Some(outcome.worktree_path);
-            record.notes = outcome.notes;
-            record.error_message = None;
-            record.finished_at = Some(parse_remote_finished_at(
-                snapshot.finished_at.as_deref(),
-                now,
-            ));
-
-            return Ok(record);
+            return Ok(record.apply_remote_review_outcome(outcome, refreshed_at, finished_at));
         }
 
-        record.status = DispatchStatus::Failed;
-        record.finished_at = Some(parse_remote_finished_at(
-            snapshot.finished_at.as_deref(),
-            now,
-        ));
-        record.error_message = snapshot
-            .stderr
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_owned())
-            .or_else(|| {
-                Some("Remote review run failed before returning a structured result.".to_owned())
-            });
-        Ok(record)
+        Ok(record.mark_failed_from_remote_refresh(
+            refreshed_at,
+            finished_at,
+            snapshot
+                .stderr
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_owned())
+                .unwrap_or_else(|| {
+                    "Remote review run failed before returning a structured result.".to_owned()
+                }),
+        ))
     }
 
     fn release_active_review_dispatches_after_reconciliation_loss(
@@ -482,12 +474,15 @@ pub(crate) fn derive_review_run_directory(
 }
 
 pub(crate) fn refresh_dispatch_record_from_snapshot(
-    mut record: TaskDispatchRecord,
+    record: TaskDispatchRecord,
     snapshot: &RemoteDispatchSnapshot,
 ) -> Result<TaskDispatchRecord, TrackError> {
     let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
     if remote_status.is_empty() {
-        if let Some(updated) = mark_abandoned_preparing_dispatch(record.clone()) {
+        if let Some(updated) = record
+            .clone()
+            .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
+        {
             return Ok(updated);
         }
 
@@ -495,33 +490,17 @@ pub(crate) fn refresh_dispatch_record_from_snapshot(
     }
 
     if remote_status == "running" {
-        if record.status == DispatchStatus::Preparing {
-            record.status = DispatchStatus::Running;
-            record.updated_at = now_utc();
-            record.finished_at = None;
-            record.error_message = None;
-        }
-        return Ok(record);
+        return Ok(record.mark_running_from_remote(now_utc()));
     }
 
     if remote_status == "canceled" {
-        record.status = DispatchStatus::Canceled;
-        record.updated_at = now_utc();
-        record.finished_at = Some(parse_remote_finished_at(
-            snapshot.finished_at.as_deref(),
-            now_utc(),
-        ));
-        record.summary = Some(
-            record
-                .summary
-                .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
-        );
-        record.error_message = None;
-        return Ok(record);
+        let refreshed_at = now_utc();
+        let finished_at = parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
+        return Ok(record.mark_canceled_from_remote(refreshed_at, finished_at));
     }
 
-    let now = now_utc();
-    record.updated_at = now;
+    let refreshed_at = now_utc();
+    let finished_at = parse_remote_finished_at(snapshot.finished_at.as_deref(), refreshed_at);
     if remote_status == "completed" {
         let remote_result = snapshot.result.as_deref().ok_or_else(|| {
             TrackError::new(
@@ -534,75 +513,22 @@ pub(crate) fn refresh_dispatch_record_from_snapshot(
             record.preferred_tool,
             "Remote agent result",
         )?;
-        record.status = outcome.status;
-        record.summary = Some(outcome.summary);
-        record.pull_request_url = outcome.pull_request_url;
-        record.branch_name = outcome.branch_name.or(record.branch_name);
-        record.worktree_path = Some(outcome.worktree_path);
-        record.notes = outcome.notes;
-        record.error_message = None;
-        record.finished_at = Some(parse_remote_finished_at(
-            snapshot.finished_at.as_deref(),
-            now,
-        ));
-        return Ok(record);
+        return Ok(record.apply_remote_dispatch_outcome(outcome, refreshed_at, finished_at));
     }
 
-    record.status = DispatchStatus::Failed;
-    record.finished_at = Some(parse_remote_finished_at(
-        snapshot.finished_at.as_deref(),
-        now,
-    ));
-    record.error_message = snapshot
-        .stderr
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_owned())
-        .or_else(|| {
-            Some("Remote agent run failed before returning a structured result.".to_owned())
-        });
-    Ok(record)
-}
-
-pub(crate) fn mark_abandoned_preparing_dispatch(
-    mut record: TaskDispatchRecord,
-) -> Option<TaskDispatchRecord> {
-    if record.status != DispatchStatus::Preparing {
-        return None;
-    }
-
-    let now = now_utc();
-    if now - record.updated_at < PREPARING_STALE_AFTER {
-        return None;
-    }
-
-    record.status = DispatchStatus::Failed;
-    record.updated_at = now;
-    record.finished_at = Some(now);
-    record.error_message =
-        Some("Dispatch preparation stopped before the remote agent launched.".to_owned());
-    Some(record)
-}
-
-pub(crate) fn mark_abandoned_preparing_review_dispatch(
-    mut record: ReviewRunRecord,
-) -> Option<ReviewRunRecord> {
-    if record.status != DispatchStatus::Preparing {
-        return None;
-    }
-
-    let now = now_utc();
-    if now - record.updated_at < PREPARING_STALE_AFTER {
-        return None;
-    }
-
-    record.status = DispatchStatus::Failed;
-    record.updated_at = now;
-    record.finished_at = Some(now);
-    record.error_message =
-        Some("Review preparation stopped before the remote agent launched.".to_owned());
-    Some(record)
+    Ok(record.mark_failed_from_remote_refresh(
+        refreshed_at,
+        finished_at,
+        snapshot
+            .stderr
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| {
+                "Remote agent run failed before returning a structured result.".to_owned()
+            }),
+    ))
 }
 
 pub(crate) fn parse_remote_finished_at(
@@ -614,46 +540,4 @@ pub(crate) fn parse_remote_finished_at(
         .filter(|value| !value.is_empty())
         .and_then(|value| parse_iso_8601_seconds(value).ok())
         .unwrap_or(fallback)
-}
-
-pub(crate) fn mark_terminal_refresh_failure(
-    mut record: TaskDispatchRecord,
-    snapshot: &RemoteDispatchSnapshot,
-    error: &TrackError,
-) -> Option<TaskDispatchRecord> {
-    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
-    if remote_status != "completed" && remote_status != "launcher_failed" {
-        return None;
-    }
-
-    let now = now_utc();
-    record.status = DispatchStatus::Failed;
-    record.updated_at = now;
-    record.finished_at = Some(parse_remote_finished_at(
-        snapshot.finished_at.as_deref(),
-        now,
-    ));
-    record.error_message = Some(error.to_string());
-    Some(record)
-}
-
-pub(crate) fn mark_terminal_review_refresh_failure(
-    mut record: ReviewRunRecord,
-    snapshot: &RemoteDispatchSnapshot,
-    error: &TrackError,
-) -> Option<ReviewRunRecord> {
-    let remote_status = snapshot.status.as_deref().unwrap_or_default().trim();
-    if remote_status != "completed" && remote_status != "launcher_failed" {
-        return None;
-    }
-
-    let now = now_utc();
-    record.status = DispatchStatus::Failed;
-    record.updated_at = now;
-    record.finished_at = Some(parse_remote_finished_at(
-        snapshot.finished_at.as_deref(),
-        now,
-    ));
-    record.error_message = Some(error.to_string());
-    Some(record)
 }
