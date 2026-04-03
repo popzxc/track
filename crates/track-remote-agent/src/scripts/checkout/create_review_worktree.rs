@@ -1,0 +1,85 @@
+use crate::scripts::remote_path_helpers_shell;
+
+/// Creates a review worktree pinned to the pull request head the review was
+/// queued against.
+///
+/// Review work needs a reproducible snapshot of the pull request, so this
+/// script refreshes the GitHub PR ref but fails explicitly if the requested
+/// commit can no longer be materialized.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CreateReviewWorktreeScript;
+
+impl CreateReviewWorktreeScript {
+    pub(crate) fn render(&self) -> String {
+        format!(
+            r#"
+set -eu
+{path_helpers}
+CHECKOUT_PATH="$(expand_remote_path "$1")"
+PULL_REQUEST_NUMBER="$2"
+BRANCH_NAME="$3"
+WORKTREE_PATH="$(expand_remote_path "$4")"
+TARGET_HEAD_OID="${{5:-}}"
+
+mkdir -p "$(dirname "$WORKTREE_PATH")"
+
+worktree_is_registered() {{
+  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
+}}
+
+if [ -e "$WORKTREE_PATH" ]; then
+  if worktree_is_registered; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+  else
+    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a review worktree." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" worktree prune >&2
+git -C "$CHECKOUT_PATH" fetch upstream "pull/$PULL_REQUEST_NUMBER/head:$BRANCH_NAME" >&2
+
+# Review runs persist the exact PR head they were queued against. We still
+# refresh the PR ref so the checkout has current GitHub context, but then we
+# pin the local review branch back to the recorded commit when that object is
+# available. If the commit is gone, we fail explicitly instead of silently
+# reviewing a newer PR head than the user requested.
+TARGET_REF="$BRANCH_NAME"
+if [ -n "$TARGET_HEAD_OID" ]; then
+  if ! git -C "$CHECKOUT_PATH" cat-file -e "$TARGET_HEAD_OID^{{commit}}" 2>/dev/null; then
+    git -C "$CHECKOUT_PATH" fetch upstream "$TARGET_HEAD_OID" >&2 || true
+  fi
+
+  if git -C "$CHECKOUT_PATH" cat-file -e "$TARGET_HEAD_OID^{{commit}}" 2>/dev/null; then
+    TARGET_REF="$TARGET_HEAD_OID"
+  else
+    FETCHED_HEAD_OID="$(git -C "$CHECKOUT_PATH" rev-parse "$BRANCH_NAME^{{commit}}")"
+    echo "Requested review commit $TARGET_HEAD_OID is not available locally. The fetched PR head is $FETCHED_HEAD_OID, so the review would drift to a newer commit." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" branch -f "$BRANCH_NAME" "$TARGET_REF" >&2
+git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$TARGET_REF" >&2
+"#,
+            path_helpers = remote_path_helpers_shell(),
+        )
+    }
+
+    pub(crate) fn arguments(
+        &self,
+        checkout_path: &str,
+        pull_request_number: u64,
+        branch_name: &str,
+        worktree_path: &str,
+        target_head_oid: Option<&str>,
+    ) -> Vec<String> {
+        vec![
+            checkout_path.to_owned(),
+            pull_request_number.to_string(),
+            branch_name.to_owned(),
+            worktree_path.to_owned(),
+            target_head_oid.unwrap_or_default().to_owned(),
+        ]
+    }
+}

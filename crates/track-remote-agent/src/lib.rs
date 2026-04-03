@@ -1,4 +1,5 @@
 mod constants;
+mod scripts;
 mod service;
 mod types;
 mod utils;

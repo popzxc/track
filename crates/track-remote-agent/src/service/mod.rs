@@ -26,26 +26,31 @@ use track_types::types::{
 };
 
 use crate::constants::{
-    PREPARING_STALE_AFTER, REMOTE_CODEX_PID_FILE_NAME, REMOTE_FINISHED_AT_FILE_NAME,
-    REMOTE_LAUNCHER_PID_FILE_NAME, REMOTE_PROMPT_FILE_NAME, REMOTE_RESULT_FILE_NAME,
-    REMOTE_SCHEMA_FILE_NAME, REMOTE_STATUS_FILE_NAME, REMOTE_STDERR_FILE_NAME,
+    PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME,
     REVIEW_RUN_DIRECTORY_NAME, REVIEW_WORKTREE_DIRECTORY_NAME,
+};
+use crate::scripts::{
+    render_remote_script_with_shell_prelude, CancelRemoteDispatchScript,
+    CleanupOrphanedRemoteArtifactsScript, CleanupReviewArtifactsScript,
+    CleanupReviewWorkspaceCachesScript, CleanupTaskArtifactsScript, CreateReviewWorktreeScript,
+    CreateWorktreeScript, EnsureCheckoutScript, EnsureFollowUpWorktreeScript, FetchGithubApiScript,
+    FetchGithubLoginScript, LaunchRemoteDispatchScript, PostPullRequestCommentScript,
+    PrepareRemoteUploadScript, ReadDispatchSnapshotsScript, ReadRemoteFileScript,
+    RemoteAgentLauncherScript, ResetWorkspaceScript,
 };
 use crate::types::{
     ClaudeStructuredOutputEnvelope, GithubPullRequestApiResponse, GithubPullRequestMetadata,
     GithubPullRequestReference, GithubPullRequestReviewState, GithubReviewApiResponse,
-    GithubSubmittedReview, RemoteArtifactCleanupCounts, RemoteArtifactCleanupReport,
-    RemoteDispatchSnapshot, RemoteProjectRegistryEntry, RemoteProjectRegistryFile,
-    RemoteReviewFollowUpReconciliation, RemoteTaskCleanupMode, RemoteWorkspaceResetReport,
+    GithubSubmittedReview, RemoteArtifactCleanupCounts, RemoteDispatchSnapshot,
+    RemoteProjectRegistryEntry, RemoteProjectRegistryFile, RemoteReviewFollowUpReconciliation,
+    RemoteTaskCleanupMode,
 };
 use crate::utils::{
-    build_create_review_worktree_script, build_remote_agent_launcher, build_remote_dispatch_prompt,
-    build_remote_dispatch_schema, build_remote_review_prompt, build_remote_review_schema,
-    build_review_follow_up_notification_comment, build_review_follow_up_request,
-    build_review_workspace_key, contextualize_track_error, describe_remote_reset_blockers,
-    parse_dispatch_snapshot_report, parse_github_pull_request_reference,
-    parse_github_repository_name, remote_path_helpers_shell,
-    render_remote_script_with_shell_prelude, review_follow_up_event, unique_review_run_directories,
+    build_remote_dispatch_prompt, build_remote_dispatch_schema, build_remote_review_prompt,
+    build_remote_review_schema, build_review_follow_up_notification_comment,
+    build_review_follow_up_request, build_review_workspace_key, contextualize_track_error,
+    describe_remote_reset_blockers, parse_github_pull_request_reference,
+    parse_github_repository_name, review_follow_up_event, unique_review_run_directories,
     unique_review_worktree_paths,
 };
 
@@ -3153,13 +3158,8 @@ impl SshClient {
     }
 
     fn fetch_github_login(&self) -> Result<String, TrackError> {
-        let login = self.run_script(
-            r#"
-set -eu
-gh api user --jq .login
-"#,
-            &[],
-        )?;
+        let script = FetchGithubLoginScript;
+        let login = self.run_script(&script.render(), &[])?;
 
         let login = login.trim().to_owned();
         if login.is_empty() {
@@ -3178,15 +3178,10 @@ gh api user --jq .login
     ) -> Result<GithubPullRequestMetadata, TrackError> {
         let reference = parse_github_pull_request_reference(pull_request_url)?;
         let pull_request_endpoint = github_pull_request_endpoint(&reference);
+        let script = FetchGithubApiScript;
+        let arguments = script.arguments(&pull_request_endpoint);
         let pull_request_json = self
-            .run_script(
-                r#"
-set -eu
-ENDPOINT="$1"
-gh api "$ENDPOINT"
-"#,
-                std::slice::from_ref(&pull_request_endpoint),
-            )
+            .run_script(&script.render(), &arguments)
             .map_err(|error| {
                 contextualize_track_error(
                     error,
@@ -3240,15 +3235,10 @@ gh api "$ENDPOINT"
     ) -> Result<GithubPullRequestReviewState, TrackError> {
         let reference = parse_github_pull_request_reference(pull_request_url)?;
         let pull_request_endpoint = github_pull_request_endpoint(&reference);
+        let fetch_api_script = FetchGithubApiScript;
+        let pull_request_arguments = fetch_api_script.arguments(&pull_request_endpoint);
         let pull_request_json = self
-            .run_script(
-                r#"
-set -eu
-ENDPOINT="$1"
-gh api "$ENDPOINT"
-"#,
-                std::slice::from_ref(&pull_request_endpoint),
-            )
+            .run_script(&fetch_api_script.render(), &pull_request_arguments)
             .map_err(|error| {
                 contextualize_track_error(
                     error,
@@ -3271,15 +3261,9 @@ gh api "$ENDPOINT"
             )?;
 
         let reviews_endpoint = github_pull_request_reviews_endpoint(&reference);
+        let review_arguments = fetch_api_script.arguments(&reviews_endpoint);
         let reviews_json = self
-            .run_script(
-                r#"
-set -eu
-ENDPOINT="$1"
-gh api "$ENDPOINT"
-"#,
-                std::slice::from_ref(&reviews_endpoint),
-            )
+            .run_script(&fetch_api_script.render(), &review_arguments)
             .map_err(|error| {
                 contextualize_track_error(
                     error,
@@ -3338,24 +3322,18 @@ gh api "$ENDPOINT"
     ) -> Result<(), TrackError> {
         let reference = parse_github_pull_request_reference(pull_request_url)?;
         let issue_comments_endpoint = github_pull_request_issue_comments_endpoint(&reference);
-        self.run_script(
-            r#"
-set -eu
-ENDPOINT="$1"
-BODY="$2"
-gh api --method POST "$ENDPOINT" -f body="$BODY" >/dev/null
-"#,
-            &[issue_comments_endpoint.clone(), comment_body.to_owned()],
-        )
-        .map_err(|error| {
-            contextualize_track_error(
-                error,
-                format!(
+        let script = PostPullRequestCommentScript;
+        let arguments = script.arguments(&issue_comments_endpoint, comment_body);
+        self.run_script(&script.render(), &arguments)
+            .map_err(|error| {
+                contextualize_track_error(
+                    error,
+                    format!(
                     "Remote `gh api` on {}@{} could not post a PR comment for {} via endpoint `{}`",
                     self.user, self.host, pull_request_url, issue_comments_endpoint
                 ),
-            )
-        })?;
+                )
+            })?;
 
         Ok(())
     }
@@ -3367,91 +3345,9 @@ gh api --method POST "$ENDPOINT" -f body="$BODY" >/dev/null
         checkout_path: &str,
         github_login: &str,
     ) -> Result<String, TrackError> {
-        let ensure_checkout_script = format!(
-            r#"
-set -eu
-{path_helpers}
-REPO_URL="$1"
-REPOSITORY_NAME="$2"
-GIT_URL="$3"
-BASE_BRANCH="$4"
-CHECKOUT_PATH="$(expand_remote_path "$5")"
-GITHUB_LOGIN="$6"
-
-mkdir -p "$(dirname "$CHECKOUT_PATH")"
-
-# Remote automation runs on fresh machines too, so Git cannot assume that
-# GitHub already exists in the remote user's known_hosts file. We explicitly
-# manage a predictable known_hosts path here and tell Git to accept the first
-# key it sees. That keeps the initial clone/fetch flow unattended while still
-# recording the host key for the next command.
-REMOTE_SSH_DIR="$HOME/.ssh"
-REMOTE_KNOWN_HOSTS_PATH="$REMOTE_SSH_DIR/known_hosts"
-mkdir -p "$REMOTE_SSH_DIR"
-chmod 700 "$REMOTE_SSH_DIR"
-touch "$REMOTE_KNOWN_HOSTS_PATH"
-chmod 600 "$REMOTE_KNOWN_HOSTS_PATH"
-export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$REMOTE_KNOWN_HOSTS_PATH"
-
-resolve_fork_git_url() {{
-  gh repo view "$GITHUB_LOGIN/$REPOSITORY_NAME" --json sshUrl --jq .sshUrl 2>/dev/null || true
-}}
-
-FORK_GIT_URL="$(resolve_fork_git_url)"
-if [ -z "$FORK_GIT_URL" ]; then
-  gh repo fork "$REPO_URL" >/dev/null
-  FORK_GIT_URL="$(resolve_fork_git_url)"
-fi
-
-if [ -z "$FORK_GIT_URL" ]; then
-  echo "Could not determine the fork SSH URL for $GITHUB_LOGIN/$REPOSITORY_NAME after creating the fork." >&2
-  exit 1
-fi
-
-if [ ! -d "$CHECKOUT_PATH/.git" ]; then
-  git clone "$FORK_GIT_URL" "$CHECKOUT_PATH" >&2
-fi
-
-cd "$CHECKOUT_PATH"
-if git remote get-url origin >/dev/null 2>&1; then
-  git remote set-url origin "$FORK_GIT_URL"
-else
-  git remote add origin "$FORK_GIT_URL"
-fi
-
-if git remote get-url upstream >/dev/null 2>&1; then
-  git remote set-url upstream "$GIT_URL"
-else
-  git remote add upstream "$GIT_URL"
-fi
-
-git fetch origin --prune >&2
-git fetch upstream --prune >&2
-
-if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
-  git checkout "$BASE_BRANCH" >&2
-else
-  git checkout -B "$BASE_BRANCH" "upstream/$BASE_BRANCH" >&2
-fi
-
-git reset --hard "upstream/$BASE_BRANCH" >&2
-git clean -fd >&2
-
-printf '%s\n' "$FORK_GIT_URL"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        let fork_git_url = self.run_script(
-            &ensure_checkout_script,
-            &[
-                metadata.repo_url.clone(),
-                repository_name.to_owned(),
-                metadata.git_url.clone(),
-                metadata.base_branch.clone(),
-                checkout_path.to_owned(),
-                github_login.to_owned(),
-            ],
-        )?;
+        let script = EnsureCheckoutScript;
+        let arguments = script.arguments(metadata, repository_name, checkout_path, github_login);
+        let fork_git_url = self.run_script(&script.render(), &arguments)?;
 
         let fork_git_url = fork_git_url.trim().to_owned();
         if fork_git_url.is_empty() {
@@ -3471,44 +3367,9 @@ printf '%s\n' "$FORK_GIT_URL"
         branch_name: &str,
         worktree_path: &str,
     ) -> Result<(), TrackError> {
-        let create_worktree_script = format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-BASE_BRANCH="$2"
-BRANCH_NAME="$3"
-WORKTREE_PATH="$(expand_remote_path "$4")"
-
-mkdir -p "$(dirname "$WORKTREE_PATH")"
-
-worktree_is_registered() {{
-  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
-}}
-
-if [ -e "$WORKTREE_PATH" ]; then
-  if worktree_is_registered; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-  else
-    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a fresh dispatch worktree." >&2
-    exit 1
-  fi
-fi
-
-git -C "$CHECKOUT_PATH" worktree prune >&2
-git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstream/$BASE_BRANCH" >&2
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        self.run_script(
-            &create_worktree_script,
-            &[
-                checkout_path.to_owned(),
-                base_branch.to_owned(),
-                branch_name.to_owned(),
-                worktree_path.to_owned(),
-            ],
-        )?;
+        let script = CreateWorktreeScript;
+        let arguments = script.arguments(checkout_path, base_branch, branch_name, worktree_path);
+        self.run_script(&script.render(), &arguments)?;
 
         Ok(())
     }
@@ -3521,17 +3382,15 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstrea
         worktree_path: &str,
         target_head_oid: Option<&str>,
     ) -> Result<(), TrackError> {
-        let create_review_worktree_script = build_create_review_worktree_script();
-        self.run_script(
-            &create_review_worktree_script,
-            &[
-                checkout_path.to_owned(),
-                pull_request_number.to_string(),
-                branch_name.to_owned(),
-                worktree_path.to_owned(),
-                target_head_oid.unwrap_or_default().to_owned(),
-            ],
-        )?;
+        let script = CreateReviewWorktreeScript;
+        let arguments = script.arguments(
+            checkout_path,
+            pull_request_number,
+            branch_name,
+            worktree_path,
+            target_head_oid,
+        );
+        self.run_script(&script.render(), &arguments)?;
 
         Ok(())
     }
@@ -3542,58 +3401,9 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstrea
         branch_name: &str,
         worktree_path: &str,
     ) -> Result<(), TrackError> {
-        let ensure_follow_up_worktree_script = format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-BRANCH_NAME="$2"
-WORKTREE_PATH="$(expand_remote_path "$3")"
-
-mkdir -p "$(dirname "$WORKTREE_PATH")"
-git -C "$CHECKOUT_PATH" fetch origin --prune >&2 || true
-git -C "$CHECKOUT_PATH" fetch upstream --prune >&2 || true
-
-if [ -e "$WORKTREE_PATH/.git" ]; then
-  if ! git -C "$WORKTREE_PATH" rev-parse --show-toplevel >/dev/null 2>&1; then
-    echo "Existing follow-up worktree path $WORKTREE_PATH is not a valid Git worktree." >&2
-    exit 1
-  fi
-
-  git -C "$WORKTREE_PATH" checkout "$BRANCH_NAME" >&2
-  exit 0
-fi
-
-if [ -e "$WORKTREE_PATH" ]; then
-  echo "Follow-up worktree path $WORKTREE_PATH already exists but is not a Git worktree." >&2
-  exit 1
-fi
-
-git -C "$CHECKOUT_PATH" worktree prune >&2
-
-if git -C "$CHECKOUT_PATH" show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-  git -C "$CHECKOUT_PATH" worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >&2
-  exit 0
-fi
-
-if git -C "$CHECKOUT_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
-  git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2
-  exit 0
-fi
-
-echo "Could not restore the follow-up worktree for branch $BRANCH_NAME." >&2
-exit 1
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        self.run_script(
-            &ensure_follow_up_worktree_script,
-            &[
-                checkout_path.to_owned(),
-                branch_name.to_owned(),
-                worktree_path.to_owned(),
-            ],
-        )?;
+        let script = EnsureFollowUpWorktreeScript;
+        let arguments = script.arguments(checkout_path, branch_name, worktree_path);
+        self.run_script(&script.render(), &arguments)?;
 
         Ok(())
     }
@@ -3604,73 +3414,24 @@ exit 1
         worktree_path: &str,
         preferred_tool: RemoteAgentPreferredTool,
     ) -> Result<(), TrackError> {
-        let launcher_contents = build_remote_agent_launcher(preferred_tool, &self.shell_prelude);
+        let launcher_contents =
+            RemoteAgentLauncherScript::new(preferred_tool, &self.shell_prelude).render();
         self.upload_remote_file(
             &format!("{remote_run_directory}/launch.sh"),
             &launcher_contents,
         )?;
 
-        let launch_script = format!(
-            r#"
-set -eu
-{path_helpers}
-RUN_DIR="$(expand_remote_path "$1")"
-WORKTREE_PATH="$(expand_remote_path "$2")"
-
-mkdir -p "$RUN_DIR"
-LAUNCHER_PATH="$RUN_DIR/launch.sh"
-chmod +x "$LAUNCHER_PATH"
-nohup bash "$LAUNCHER_PATH" "$RUN_DIR" "$WORKTREE_PATH" >/dev/null 2>&1 </dev/null &
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        self.run_script(
-            &launch_script,
-            &[remote_run_directory.to_owned(), worktree_path.to_owned()],
-        )?;
+        let script = LaunchRemoteDispatchScript;
+        let arguments = script.arguments(remote_run_directory, worktree_path);
+        self.run_script(&script.render(), &arguments)?;
 
         Ok(())
     }
 
     fn cancel_remote_dispatch(&self, remote_run_directory: &str) -> Result<(), TrackError> {
-        let cancel_script = format!(
-            r#"
-set -eu
-{path_helpers}
-RUN_DIR="$(expand_remote_path "$1")"
-LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
-CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
-STATUS_FILE="$RUN_DIR/{status_file}"
-FINISHED_AT_FILE="$RUN_DIR/{finished_at_file}"
-
-kill_if_running() {{
-  PID="$1"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-  fi
-}}
-
-if [ -f "$LAUNCHER_PID_FILE" ]; then
-  LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
-  kill_if_running "$LAUNCHER_PID"
-fi
-
-if [ -f "$CODEX_PID_FILE" ]; then
-  CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
-  kill_if_running "$CODEX_PID"
-fi
-
-mkdir -p "$RUN_DIR"
-printf 'canceled\n' > "$STATUS_FILE"
-date -u +%Y-%m-%dT%H:%M:%SZ > "$FINISHED_AT_FILE"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
-            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
-            status_file = REMOTE_STATUS_FILE_NAME,
-            finished_at_file = REMOTE_FINISHED_AT_FILE_NAME,
-        );
-        self.run_script(&cancel_script, &[remote_run_directory.to_owned()])?;
+        let script = CancelRemoteDispatchScript;
+        let arguments = script.arguments(remote_run_directory);
+        self.run_script(&script.render(), &arguments)?;
         Ok(())
     }
 
@@ -3681,127 +3442,10 @@ date -u +%Y-%m-%dT%H:%M:%SZ > "$FINISHED_AT_FILE"
         run_directories: &[String],
         cleanup_mode: RemoteTaskCleanupMode,
     ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-        let cleanup_remote_dispatch_directories = cleanup_mode == RemoteTaskCleanupMode::DeleteTask;
-        let cleanup_script = format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-shift
-
-WORKTREE_PATHS=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--" ]; then
-    shift
-    break
-  fi
-
-  WORKTREE_PATHS+=("$1")
-  shift
-done
-
-RUN_DIRECTORIES=("$@")
-WORKTREES_REMOVED=0
-RUN_DIRECTORIES_REMOVED=0
-
-kill_if_running() {{
-  PID="$1"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-  fi
-}}
-
-worktree_is_registered() {{
-  TARGET_WORKTREE="$1"
-  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $TARGET_WORKTREE" >/dev/null 2>&1
-}}
-
-for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
-  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
-  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
-  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
-  STATUS_FILE="$RUN_DIR/{status_file}"
-  FINISHED_AT_FILE="$RUN_DIR/{finished_at_file}"
-  CURRENT_STATUS="$(tr -d '[:space:]' < "$STATUS_FILE" 2>/dev/null || true)"
-
-  if [ -f "$LAUNCHER_PID_FILE" ]; then
-    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
-    kill_if_running "$LAUNCHER_PID"
-  fi
-
-  if [ -f "$CODEX_PID_FILE" ]; then
-    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
-    kill_if_running "$CODEX_PID"
-  fi
-
-  if [ -d "$RUN_DIR" ] && {{ [ "$CURRENT_STATUS" = "preparing" ] || [ "$CURRENT_STATUS" = "running" ]; }}; then
-    printf 'canceled\n' > "$STATUS_FILE"
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$FINISHED_AT_FILE"
-  fi
-done
-
-for RAW_WORKTREE_PATH in "${{WORKTREE_PATHS[@]}}"; do
-  WORKTREE_PATH="$(expand_remote_path "$RAW_WORKTREE_PATH")"
-  HAD_WORKTREE_PATH="false"
-  if [ -e "$WORKTREE_PATH" ]; then
-    HAD_WORKTREE_PATH="true"
-  fi
-
-  if [ -d "$CHECKOUT_PATH/.git" ] && worktree_is_registered "$WORKTREE_PATH"; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-  fi
-
-  if [ -e "$WORKTREE_PATH" ]; then
-    rm -rf "$WORKTREE_PATH"
-  fi
-
-  if [ "$HAD_WORKTREE_PATH" = "true" ] && [ ! -e "$WORKTREE_PATH" ]; then
-    WORKTREES_REMOVED=$((WORKTREES_REMOVED + 1))
-  fi
-done
-
-if [ -d "$CHECKOUT_PATH/.git" ]; then
-  git -C "$CHECKOUT_PATH" worktree prune >&2 || true
-fi
-
-if [ "{cleanup_remote_dispatch_directories}" = "true" ]; then
-  for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
-    RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
-    HAD_RUN_DIRECTORY="false"
-    if [ -e "$RUN_DIR" ]; then
-      HAD_RUN_DIRECTORY="true"
-    fi
-    if [ -e "$RUN_DIR" ]; then
-      rm -rf "$RUN_DIR"
-    fi
-    if [ "$HAD_RUN_DIRECTORY" = "true" ] && [ ! -e "$RUN_DIR" ]; then
-      RUN_DIRECTORIES_REMOVED=$((RUN_DIRECTORIES_REMOVED + 1))
-    fi
-  done
-fi
-
-printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
-  "$WORKTREES_REMOVED" \
-  "$RUN_DIRECTORIES_REMOVED"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            cleanup_remote_dispatch_directories = if cleanup_remote_dispatch_directories {
-                "true"
-            } else {
-                "false"
-            },
-            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
-            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
-            status_file = REMOTE_STATUS_FILE_NAME,
-            finished_at_file = REMOTE_FINISHED_AT_FILE_NAME,
-        );
-
-        let mut arguments = vec![checkout_path.to_owned()];
-        arguments.extend(worktree_paths.iter().cloned());
-        arguments.push("--".to_owned());
-        arguments.extend(run_directories.iter().cloned());
-        let report = self.run_script(&cleanup_script, &arguments)?;
-        parse_remote_cleanup_counts(&report)
+        let script = CleanupTaskArtifactsScript::from_mode(cleanup_mode);
+        let arguments = script.arguments(checkout_path, worktree_paths, run_directories);
+        let report = self.run_script(&script.render(), &arguments)?;
+        script.parse_report(&report)
     }
 
     fn cleanup_review_artifacts(
@@ -3811,103 +3455,10 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
         worktree_paths: &[String],
         run_directories: &[String],
     ) -> Result<(), TrackError> {
-        let cleanup_script = format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-shift
-
-BRANCH_NAMES=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--worktrees" ]; then
-    shift
-    break
-  fi
-
-  BRANCH_NAMES+=("$1")
-  shift
-done
-
-WORKTREE_PATHS=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--runs" ]; then
-    shift
-    break
-  fi
-
-  WORKTREE_PATHS+=("$1")
-  shift
-done
-
-RUN_DIRECTORIES=("$@")
-
-kill_if_running() {{
-  PID="$1"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-  fi
-}}
-
-worktree_is_registered() {{
-  TARGET_WORKTREE="$1"
-  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $TARGET_WORKTREE" >/dev/null 2>&1
-}}
-
-for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
-  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
-  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
-  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
-
-  if [ -f "$LAUNCHER_PID_FILE" ]; then
-    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
-    kill_if_running "$LAUNCHER_PID"
-  fi
-
-  if [ -f "$CODEX_PID_FILE" ]; then
-    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
-    kill_if_running "$CODEX_PID"
-  fi
-
-  if [ -e "$RUN_DIR" ]; then
-    rm -rf "$RUN_DIR"
-  fi
-done
-
-for RAW_WORKTREE_PATH in "${{WORKTREE_PATHS[@]}}"; do
-  WORKTREE_PATH="$(expand_remote_path "$RAW_WORKTREE_PATH")"
-
-  if [ -d "$CHECKOUT_PATH/.git" ] && worktree_is_registered "$WORKTREE_PATH"; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-  fi
-
-  if [ -e "$WORKTREE_PATH" ]; then
-    rm -rf "$WORKTREE_PATH"
-  fi
-done
-
-for BRANCH_NAME in "${{BRANCH_NAMES[@]}}"; do
-  if [ -d "$CHECKOUT_PATH/.git" ]; then
-    git -C "$CHECKOUT_PATH" branch -D "$BRANCH_NAME" >&2 || true
-  fi
-done
-
-if [ -d "$CHECKOUT_PATH/.git" ]; then
-  git -C "$CHECKOUT_PATH" worktree prune >&2 || true
-fi
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
-            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
-        );
-
-        let mut arguments = vec![checkout_path.to_owned()];
-        arguments.extend(branch_names.iter().cloned());
-        arguments.push("--worktrees".to_owned());
-        arguments.extend(worktree_paths.iter().cloned());
-        arguments.push("--runs".to_owned());
-        arguments.extend(run_directories.iter().cloned());
-        self.run_script(&cleanup_script, &arguments)?;
+        let script = CleanupReviewArtifactsScript;
+        let arguments =
+            script.arguments(checkout_path, branch_names, worktree_paths, run_directories);
+        self.run_script(&script.render(), &arguments)?;
 
         Ok(())
     }
@@ -3925,153 +3476,10 @@ fi
         // local registry of every worktree ever created.
         // TODO: If the checkout layout ever becomes user-configurable, replace
         // this directory derivation with a registry-backed lookup.
-        let cleanup_script = format!(
-            r#"
-set -eu
-{path_helpers}
-WORKSPACE_ROOT="$(expand_remote_path "$1")"
-shift
-
-KEEP_WORKTREE_PATHS=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--" ]; then
-    shift
-    break
-  fi
-
-  KEEP_WORKTREE_PATHS+=("$(expand_remote_path "$1")")
-  shift
-done
-
-KEEP_RUN_DIRECTORIES=()
-for RAW_RUN_DIR in "$@"; do
-  KEEP_RUN_DIRECTORIES+=("$(expand_remote_path "$RAW_RUN_DIR")")
-done
-
-WORKTREES_REMOVED=0
-RUN_DIRECTORIES_REMOVED=0
-
-path_is_kept() {{
-  TARGET_PATH="$1"
-  shift
-
-  for KEPT_PATH in "$@"; do
-    if [ "$KEPT_PATH" = "$TARGET_PATH" ]; then
-      return 0
-    fi
-  done
-
-  return 1
-}}
-
-kill_if_running() {{
-  PID="$1"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-  fi
-}}
-
-remove_run_directory() {{
-  RUN_DIR="$1"
-  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
-  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
-
-  if [ -f "$LAUNCHER_PID_FILE" ]; then
-    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
-    kill_if_running "$LAUNCHER_PID"
-  fi
-
-  if [ -f "$CODEX_PID_FILE" ]; then
-    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
-    kill_if_running "$CODEX_PID"
-  fi
-
-  if [ -e "$RUN_DIR" ]; then
-    rm -rf "$RUN_DIR"
-  fi
-
-  if [ ! -e "$RUN_DIR" ]; then
-    RUN_DIRECTORIES_REMOVED=$((RUN_DIRECTORIES_REMOVED + 1))
-  fi
-}}
-
-remove_worktree_path() {{
-  WORKTREE_PATH="$1"
-  PROJECT_DIRECTORY="$(dirname "$(dirname "$WORKTREE_PATH")")"
-  PROJECT_NAME="$(basename "$PROJECT_DIRECTORY")"
-  CHECKOUT_PATH="$PROJECT_DIRECTORY/$PROJECT_NAME"
-
-  if [ -d "$CHECKOUT_PATH/.git" ]; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-    git -C "$CHECKOUT_PATH" worktree prune >&2 || true
-  fi
-
-  if [ -e "$WORKTREE_PATH" ]; then
-    rm -rf "$WORKTREE_PATH"
-  fi
-
-  if [ ! -e "$WORKTREE_PATH" ]; then
-    WORKTREES_REMOVED=$((WORKTREES_REMOVED + 1))
-  fi
-}}
-
-for PROJECT_DIRECTORY in "$WORKSPACE_ROOT"/*; do
-  [ -d "$PROJECT_DIRECTORY" ] || continue
-
-  for RUN_DIR in "$PROJECT_DIRECTORY"/dispatches/dispatch-*; do
-    [ -e "$RUN_DIR" ] || continue
-    if path_is_kept "$RUN_DIR" "${{KEEP_RUN_DIRECTORIES[@]}}"; then
-      continue
-    fi
-
-    remove_run_directory "$RUN_DIR"
-  done
-
-  for WORKTREE_PATH in "$PROJECT_DIRECTORY"/worktrees/dispatch-*; do
-    [ -e "$WORKTREE_PATH" ] || continue
-    if path_is_kept "$WORKTREE_PATH" "${{KEEP_WORKTREE_PATHS[@]}}"; then
-      continue
-    fi
-
-    remove_worktree_path "$WORKTREE_PATH"
-  done
-
-  for RUN_DIR in "$PROJECT_DIRECTORY"/{review_run_directory}/dispatch-*; do
-    [ -e "$RUN_DIR" ] || continue
-    if path_is_kept "$RUN_DIR" "${{KEEP_RUN_DIRECTORIES[@]}}"; then
-      continue
-    fi
-
-    remove_run_directory "$RUN_DIR"
-  done
-
-  for WORKTREE_PATH in "$PROJECT_DIRECTORY"/{review_worktree_directory}/dispatch-*; do
-    [ -e "$WORKTREE_PATH" ] || continue
-    if path_is_kept "$WORKTREE_PATH" "${{KEEP_WORKTREE_PATHS[@]}}"; then
-      continue
-    fi
-
-    remove_worktree_path "$WORKTREE_PATH"
-  done
-done
-
-printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
-  "$WORKTREES_REMOVED" \
-  "$RUN_DIRECTORIES_REMOVED"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            review_run_directory = REVIEW_RUN_DIRECTORY_NAME,
-            review_worktree_directory = REVIEW_WORKTREE_DIRECTORY_NAME,
-            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
-            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
-        );
-
-        let mut arguments = vec![workspace_root.to_owned()];
-        arguments.extend(kept_worktree_paths.iter().cloned());
-        arguments.push("--".to_owned());
-        arguments.extend(kept_run_directories.iter().cloned());
-        let report = self.run_script(&cleanup_script, &arguments)?;
-        parse_remote_cleanup_counts(&report)
+        let script = CleanupOrphanedRemoteArtifactsScript;
+        let arguments = script.arguments(workspace_root, kept_worktree_paths, kept_run_directories);
+        let report = self.run_script(&script.render(), &arguments)?;
+        script.parse_report(&report)
     }
 
     fn cleanup_review_workspace_caches(&self, checkout_paths: &[String]) -> Result<(), TrackError> {
@@ -4079,31 +3487,8 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
             return Ok(());
         }
 
-        let cleanup_script = format!(
-            r#"
-set -eu
-{path_helpers}
-
-for RAW_CHECKOUT_PATH in "$@"; do
-  CHECKOUT_PATH="$(expand_remote_path "$RAW_CHECKOUT_PATH")"
-  WORKSPACE_PATH="$(dirname "$CHECKOUT_PATH")"
-
-  if [ -d "$CHECKOUT_PATH/.git" ]; then
-    git -C "$CHECKOUT_PATH" worktree prune >&2 || true
-  fi
-
-  if [ -e "$CHECKOUT_PATH" ]; then
-    rm -rf "$CHECKOUT_PATH"
-  fi
-
-  if [ -d "$WORKSPACE_PATH" ]; then
-    rmdir "$WORKSPACE_PATH" 2>/dev/null || true
-  fi
-done
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        self.run_script(&cleanup_script, checkout_paths)?;
+        let script = CleanupReviewWorkspaceCachesScript;
+        self.run_script(&script.render(), checkout_paths)?;
 
         Ok(())
     }
@@ -4113,67 +3498,18 @@ done
         workspace_root: &str,
         projects_registry_path: &str,
     ) -> Result<RemoteResetSummary, TrackError> {
-        let reset_script = format!(
-            r#"
-set -eu
-{path_helpers}
-WORKSPACE_ROOT="$(expand_remote_path "$1")"
-REGISTRY_PATH="$(expand_remote_path "$2")"
-WORKSPACE_ENTRIES_REMOVED=0
-REGISTRY_REMOVED=false
-
-if [ -z "$WORKSPACE_ROOT" ] || [ "$WORKSPACE_ROOT" = "/" ] || [ "$WORKSPACE_ROOT" = "$HOME" ]; then
-  echo "Refusing to reset an unsafe remote workspace root at $WORKSPACE_ROOT." >&2
-  exit 1
-fi
-
-mkdir -p "$WORKSPACE_ROOT"
-
-for ENTRY in "$WORKSPACE_ROOT"/* "$WORKSPACE_ROOT"/.[!.]* "$WORKSPACE_ROOT"/..?*; do
-  [ -e "$ENTRY" ] || continue
-  rm -rf "$ENTRY"
-  if [ ! -e "$ENTRY" ]; then
-    WORKSPACE_ENTRIES_REMOVED=$((WORKSPACE_ENTRIES_REMOVED + 1))
-  fi
-done
-
-if [ -e "$REGISTRY_PATH" ]; then
-  rm -f "$REGISTRY_PATH"
-  if [ ! -e "$REGISTRY_PATH" ]; then
-    REGISTRY_REMOVED=true
-  fi
-fi
-
-printf '{{"workspaceEntriesRemoved":%s,"registryRemoved":%s}}\n' \
-  "$WORKSPACE_ENTRIES_REMOVED" \
-  "$REGISTRY_REMOVED"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        let report = self.run_script(
-            &reset_script,
-            &[workspace_root.to_owned(), projects_registry_path.to_owned()],
-        )?;
-        parse_remote_reset_summary(&report)
+        let script = ResetWorkspaceScript;
+        let arguments = script.arguments(workspace_root, projects_registry_path);
+        let report = self.run_script(&script.render(), &arguments)?;
+        script.parse_report(&report)
     }
 
     fn read_remote_file(&self, remote_path: &str) -> Result<Option<String>, TrackError> {
-        let read_remote_file_script = format!(
-            r#"
-set -eu
-{path_helpers}
-REMOTE_PATH="$(expand_remote_path "$1")"
-if [ -f "$REMOTE_PATH" ]; then
-  cat "$REMOTE_PATH"
-else
-  exit 3
-fi
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        match self.run_script_with_exit_code(&read_remote_file_script, &[remote_path.to_owned()])? {
+        let script = ReadRemoteFileScript;
+        let arguments = script.arguments(remote_path);
+        match self.run_script_with_exit_code(&script.render(), &arguments)? {
             ScriptOutput::Success(stdout) => Ok(Some(stdout)),
-            ScriptOutput::ExitCode(3) => Ok(None),
+            ScriptOutput::ExitCode(ReadRemoteFileScript::MISSING_FILE_EXIT_CODE) => Ok(None),
             ScriptOutput::ExitCode(code) => Err(TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
                 format!(
@@ -4188,16 +3524,9 @@ fi
     }
 
     fn upload_remote_file(&self, remote_path: &str, contents: &str) -> Result<(), TrackError> {
-        let upload_remote_file_script = format!(
-            r#"
-set -eu
-{path_helpers}
-REMOTE_PATH="$(expand_remote_path "$1")"
-mkdir -p "$(dirname "$REMOTE_PATH")"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-        );
-        self.run_script(&upload_remote_file_script, &[remote_path.to_owned()])?;
+        let script = PrepareRemoteUploadScript;
+        let arguments = script.arguments(remote_path);
+        self.run_script(&script.render(), &arguments)?;
 
         let local_temp_file = env::temp_dir().join(format!(
             "track-remote-upload-{}",
@@ -4247,43 +3576,10 @@ mkdir -p "$(dirname "$REMOTE_PATH")"
             return Ok(Vec::new());
         }
 
-        let snapshot_script = format!(
-            r#"
-set -eu
-{path_helpers}
+        let script = ReadDispatchSnapshotsScript;
+        let report = self.run_script(&script.render(), run_directories)?;
 
-emit_file() {{
-  LABEL="$1"
-  FILE_PATH="$(expand_remote_path "$2")"
-
-  printf '%s\t' "$LABEL"
-  if [ -f "$FILE_PATH" ]; then
-    printf 'present\t'
-    od -An -tx1 -v "$FILE_PATH" | tr -d ' \n'
-  else
-    printf 'missing\t'
-  fi
-  printf '\n'
-}}
-
-for RAW_RUN_DIR in "$@"; do
-  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
-  printf 'run\t%s\n' "$RAW_RUN_DIR"
-  emit_file "status" "$RUN_DIR/{status_file}"
-  emit_file "result" "$RUN_DIR/{result_file}"
-  emit_file "stderr" "$RUN_DIR/{stderr_file}"
-  emit_file "finished_at" "$RUN_DIR/{finished_at_file}"
-done
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            status_file = REMOTE_STATUS_FILE_NAME,
-            result_file = REMOTE_RESULT_FILE_NAME,
-            stderr_file = REMOTE_STDERR_FILE_NAME,
-            finished_at_file = REMOTE_FINISHED_AT_FILE_NAME,
-        );
-        let report = self.run_script(&snapshot_script, run_directories)?;
-
-        parse_dispatch_snapshot_report(&report)
+        script.parse_report(&report)
     }
 
     fn run_script(&self, script: &str, args: &[String]) -> Result<String, TrackError> {
@@ -4423,36 +3719,6 @@ enum ScriptOutput {
     Success(String),
     ExitCode(i32),
     Failure(String),
-}
-
-fn parse_remote_cleanup_counts(report: &str) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-    let parsed_report = serde_json::from_str::<RemoteArtifactCleanupReport>(report.trim())
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not parse the remote cleanup report: {error}"),
-            )
-        })?;
-
-    Ok(RemoteArtifactCleanupCounts {
-        worktrees_removed: parsed_report.worktrees_removed,
-        run_directories_removed: parsed_report.run_directories_removed,
-    })
-}
-
-fn parse_remote_reset_summary(report: &str) -> Result<RemoteResetSummary, TrackError> {
-    let parsed_report =
-        serde_json::from_str::<RemoteWorkspaceResetReport>(report.trim()).map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not parse the remote reset report: {error}"),
-            )
-        })?;
-
-    Ok(RemoteResetSummary {
-        workspace_entries_removed: parsed_report.workspace_entries_removed,
-        registry_removed: parsed_report.registry_removed,
-    })
 }
 
 #[cfg(test)]

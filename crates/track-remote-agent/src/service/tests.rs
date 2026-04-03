@@ -27,14 +27,17 @@ use track_types::types::{
     Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
 };
 
+use crate::scripts::{
+    remote_path_helpers_shell, render_remote_script_with_shell_prelude, CreateReviewWorktreeScript,
+    ReadDispatchSnapshotsScript, RemoteAgentLauncherScript,
+};
+
 use super::{
-    build_create_review_worktree_script, build_remote_agent_launcher, build_remote_dispatch_prompt,
-    build_remote_dispatch_schema, build_remote_review_prompt, build_remote_review_schema,
-    build_review_follow_up_request, build_review_workspace_key, describe_remote_reset_blockers,
-    latest_pull_request_for_branch, parse_dispatch_snapshot_report,
+    build_remote_dispatch_prompt, build_remote_dispatch_schema, build_remote_review_prompt,
+    build_remote_review_schema, build_review_follow_up_request, build_review_workspace_key,
+    describe_remote_reset_blockers, latest_pull_request_for_branch,
     parse_github_pull_request_reference, parse_github_repository_name,
-    refresh_dispatch_record_from_snapshot, remote_path_helpers_shell,
-    render_remote_script_with_shell_prelude, select_follow_up_base_dispatch,
+    refresh_dispatch_record_from_snapshot, select_follow_up_base_dispatch,
     select_previous_submitted_review_run, GithubPullRequestMetadata,
     RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig, RemoteDispatchService,
     RemoteDispatchSnapshot, RemoteReviewService, StaticRemoteAgentConfigService,
@@ -412,7 +415,7 @@ fn builds_remote_review_prompt_with_follow_up_guidance_and_saved_context() {
 
 #[test]
 fn review_worktree_script_pins_the_requested_commit_or_fails_explicitly() {
-    let script = build_create_review_worktree_script();
+    let script = CreateReviewWorktreeScript.render();
 
     assert!(script.contains("TARGET_HEAD_OID"));
     assert!(script.contains("fetch upstream \"$TARGET_HEAD_OID\""));
@@ -531,8 +534,9 @@ fn parses_batched_dispatch_snapshot_report() {
         "finished_at\tpresent\t323032362d30332d31385431303a33353a33315a0a\n",
     );
 
-    let snapshots =
-        parse_dispatch_snapshot_report(report).expect("dispatch snapshot report should parse");
+    let snapshots = ReadDispatchSnapshotsScript
+        .parse_report(report)
+        .expect("dispatch snapshot report should parse");
 
     assert_eq!(
         snapshots
@@ -616,10 +620,11 @@ expand_remote_path "$1"
 
 #[test]
 fn builds_codex_launcher_with_runner_shell_prelude() {
-    let launcher = build_remote_agent_launcher(
+    let launcher = RemoteAgentLauncherScript::new(
         RemoteAgentPreferredTool::Codex,
         "export NVM_DIR=\"$HOME/.nvm\"\n. \"$HOME/.cargo/env\"\n",
-    );
+    )
+    .render();
 
     assert!(launcher.starts_with("#!/usr/bin/env bash"));
     assert!(launcher.contains("export NVM_DIR=\"$HOME/.nvm\""));
@@ -634,10 +639,11 @@ fn builds_codex_launcher_with_runner_shell_prelude() {
 
 #[test]
 fn builds_claude_launcher_with_schema_validation_and_yolo_mode() {
-    let launcher = build_remote_agent_launcher(
+    let launcher = RemoteAgentLauncherScript::new(
         RemoteAgentPreferredTool::Claude,
         "export PATH=\"$HOME/.local/bin:$PATH\"\n",
-    );
+    )
+    .render();
 
     assert!(launcher.starts_with("#!/usr/bin/env bash"));
     assert!(launcher.contains("export PATH=\"$HOME/.local/bin:$PATH\""));

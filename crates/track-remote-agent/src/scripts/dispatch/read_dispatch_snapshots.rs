@@ -1,0 +1,155 @@
+use track_types::errors::{ErrorCode, TrackError};
+
+use crate::constants::{
+    REMOTE_FINISHED_AT_FILE_NAME, REMOTE_RESULT_FILE_NAME, REMOTE_STATUS_FILE_NAME,
+    REMOTE_STDERR_FILE_NAME,
+};
+use crate::scripts::remote_path_helpers_shell;
+use crate::types::RemoteDispatchSnapshot;
+
+/// Reads the status files for one or more remote run directories and decodes
+/// them into structured snapshots.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ReadDispatchSnapshotsScript;
+
+impl ReadDispatchSnapshotsScript {
+    pub(crate) fn render(&self) -> String {
+        format!(
+            r#"
+set -eu
+{path_helpers}
+
+emit_file() {{
+  LABEL="$1"
+  FILE_PATH="$(expand_remote_path "$2")"
+
+  printf '%s\t' "$LABEL"
+  if [ -f "$FILE_PATH" ]; then
+    printf 'present\t'
+    od -An -tx1 -v "$FILE_PATH" | tr -d ' \n'
+  else
+    printf 'missing\t'
+  fi
+  printf '\n'
+}}
+
+for RAW_RUN_DIR in "$@"; do
+  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
+  printf 'run\t%s\n' "$RAW_RUN_DIR"
+  emit_file "status" "$RUN_DIR/{status_file}"
+  emit_file "result" "$RUN_DIR/{result_file}"
+  emit_file "stderr" "$RUN_DIR/{stderr_file}"
+  emit_file "finished_at" "$RUN_DIR/{finished_at_file}"
+done
+"#,
+            path_helpers = remote_path_helpers_shell(),
+            status_file = REMOTE_STATUS_FILE_NAME,
+            result_file = REMOTE_RESULT_FILE_NAME,
+            stderr_file = REMOTE_STDERR_FILE_NAME,
+            finished_at_file = REMOTE_FINISHED_AT_FILE_NAME,
+        )
+    }
+
+    pub(crate) fn parse_report(
+        &self,
+        report: &str,
+    ) -> Result<Vec<RemoteDispatchSnapshot>, TrackError> {
+        let mut snapshots = Vec::new();
+        let mut current_snapshot: Option<RemoteDispatchSnapshot> = None;
+
+        for line in report.lines().filter(|line| !line.trim().is_empty()) {
+            let columns = line.splitn(3, '\t').collect::<Vec<_>>();
+            match columns.first().copied() {
+                Some("run") => {
+                    let _run_identifier = columns.get(1).ok_or_else(|| {
+                        TrackError::new(
+                            ErrorCode::RemoteDispatchFailed,
+                            "Remote dispatch refresh report is missing a run directory.",
+                        )
+                    })?;
+                    if let Some(snapshot) = current_snapshot.take() {
+                        snapshots.push(snapshot);
+                    }
+                    current_snapshot = Some(RemoteDispatchSnapshot::default());
+                }
+                Some("status") | Some("result") | Some("stderr") | Some("finished_at") => {
+                    let field_name = columns
+                        .first()
+                        .expect("field-tagged dispatch line should have a tag");
+                    let presence = columns.get(1).ok_or_else(|| {
+                        TrackError::new(
+                            ErrorCode::RemoteDispatchFailed,
+                            "Remote dispatch refresh report is missing a field state.",
+                        )
+                    })?;
+                    let value = match *presence {
+                        "missing" => None,
+                        "present" => {
+                            Some(decode_hex_string(columns.get(2).copied().unwrap_or(""))?)
+                        }
+                        _ => {
+                            return Err(TrackError::new(
+                                ErrorCode::RemoteDispatchFailed,
+                                "Remote dispatch refresh report has an unknown field state.",
+                            ));
+                        }
+                    };
+                    let Some(snapshot) = current_snapshot.as_mut() else {
+                        return Err(TrackError::new(
+                            ErrorCode::RemoteDispatchFailed,
+                            "Remote dispatch refresh report emitted a field before the run header.",
+                        ));
+                    };
+                    match *field_name {
+                        "status" => snapshot.status = value,
+                        "result" => snapshot.result = value,
+                        "stderr" => snapshot.stderr = value,
+                        "finished_at" => snapshot.finished_at = value,
+                        _ => {}
+                    }
+                }
+                _ => {
+                    return Err(TrackError::new(
+                        ErrorCode::RemoteDispatchFailed,
+                        "Remote dispatch refresh report contains an unexpected line.",
+                    ));
+                }
+            }
+        }
+
+        if let Some(snapshot) = current_snapshot {
+            snapshots.push(snapshot);
+        }
+
+        Ok(snapshots)
+    }
+}
+
+fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
+    if !hex.len().is_multiple_of(2) {
+        return Err(TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            "Remote dispatch refresh data is not valid hexadecimal.",
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    let mut index = 0;
+    while index < hex.len() {
+        let byte = u8::from_str_radix(&hex[index..index + 2], 16).map_err(|error| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Remote dispatch refresh data is not valid hexadecimal: {error}"),
+            )
+        })?;
+        bytes.push(byte);
+        index += 2;
+    }
+
+    String::from_utf8(bytes).map_err(|error| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Remote dispatch refresh data is not valid UTF-8: {error}"),
+        )
+    })
+}
