@@ -1,4 +1,4 @@
-import type { ComputedRef, Ref } from 'vue'
+import { ref, type ComputedRef, type Ref } from 'vue'
 
 import type {
   RemoteAgentPreferredTool,
@@ -7,18 +7,9 @@ import type {
   ReviewRunRecord,
   ReviewSummary,
 } from '../types/task'
+import { useReviewViewState } from './useReviewViewState'
 
 type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
-
-interface ReviewViewState {
-  closeReviewDrawer: () => void
-  isReviewDrawerOpen: Ref<boolean>
-  selectReview: (reviewId: string) => void
-  selectedReview: ComputedRef<ReviewRecord | null>
-  selectedReviewCanCancel: ComputedRef<boolean>
-  selectedReviewCanReReview: ComputedRef<boolean>
-  selectedReviewLatestRun: ComputedRef<ReviewRunRecord | null>
-}
 
 interface UseReviewsScreenControllerOptions {
   data: {
@@ -28,12 +19,6 @@ interface UseReviewsScreenControllerOptions {
     reviewRequestDisabledReason: ComputedRef<string | undefined>
     reviews: Ref<ReviewSummary[]>
     saving: Ref<boolean>
-    selectedReviewRuns: Ref<ReviewRunRecord[]>
-  }
-  overlays: {
-    creatingReview: Ref<boolean>
-    followingUpReview: Ref<ReviewRecord | null>
-    reviewPendingDeletion: Ref<ReviewRecord | null>
   }
   reviewRunBridge: {
     refreshAll: () => Promise<void>
@@ -48,46 +33,58 @@ interface UseReviewsScreenControllerOptions {
     errorMessage: Ref<string>
     setFriendlyError: (error: unknown) => void
   }
-  viewState: ReviewViewState
-  workflow: {
-    cancelingReviewId: Ref<string | null>
-    followingUpReviewId: Ref<string | null>
-  }
 }
 
 /**
- * Defines the review screen's dependency boundary in one place.
+ * Owns review-screen state while leaving data persistence in shared bridges.
  *
- * The review workflow now has its own screen, but App.vue still owns the raw
- * refs. This controller keeps the composition readable by naming the review
- * surface explicitly while the deeper ownership split remains a future step.
+ * The review workflow has enough local intent that borrowing each ref from the
+ * shell makes the screen harder to understand than the actual review behavior.
+ * This controller now creates the drawer and modal state itself, so App.vue
+ * can treat reviews as one domain boundary instead of one more prop bag.
  */
 export function useReviewsScreenController(options: UseReviewsScreenControllerOptions) {
+  const cancelingReviewId = ref<string | null>(null)
+  const followingUpReviewId = ref<string | null>(null)
+  const selectedReviewRuns = ref<ReviewRunRecord[]>([])
+
+  const creatingReview = ref(false)
+  const followingUpReview = ref<ReviewRecord | null>(null)
+  const reviewPendingDeletion = ref<ReviewRecord | null>(null)
+
+  const viewState = useReviewViewState({
+    currentPage: options.shell.currentPage,
+    followingUpReview,
+    reviews: options.data.reviews,
+    selectedReviewRuns,
+  })
+
   return {
-    cancelingReviewId: options.workflow.cancelingReviewId,
+    cancelingReviewId,
     canRequestReview: options.data.canRequestReview,
-    closeReviewDrawer: options.viewState.closeReviewDrawer,
-    creatingReview: options.overlays.creatingReview,
+    closeReviewDrawer: viewState.closeReviewDrawer,
+    creatingReview,
     currentPage: options.shell.currentPage,
     defaultRemoteAgentPreferredTool: options.data.defaultRemoteAgentPreferredTool,
     errorMessage: options.shell.errorMessage,
-    followingUpReview: options.overlays.followingUpReview,
-    followingUpReviewId: options.workflow.followingUpReviewId,
-    isReviewDrawerOpen: options.viewState.isReviewDrawerOpen,
+    followingUpReview,
+    followingUpReviewId,
+    isReviewDrawerOpen: viewState.isReviewDrawerOpen,
     refreshAll: options.reviewRunBridge.refreshAll,
     remoteAgentSettings: options.data.remoteAgentSettings,
     removeReview: options.reviewRunBridge.removeReview,
     replaceSelectedReviewRuns: options.reviewRunBridge.replaceSelectedReviewRuns,
-    reviewPendingDeletion: options.overlays.reviewPendingDeletion,
+    reviewPendingDeletion,
     reviewRequestDisabledReason: options.data.reviewRequestDisabledReason,
     reviews: options.data.reviews,
     saving: options.data.saving,
-    selectedReview: options.viewState.selectedReview,
-    selectedReviewCanCancel: options.viewState.selectedReviewCanCancel,
-    selectedReviewCanReReview: options.viewState.selectedReviewCanReReview,
-    selectedReviewLatestRun: options.viewState.selectedReviewLatestRun,
-    selectedReviewRuns: options.data.selectedReviewRuns,
-    selectReview: options.viewState.selectReview,
+    selectedReview: viewState.selectedReview,
+    selectedReviewCanCancel: viewState.selectedReviewCanCancel,
+    selectedReviewCanReReview: viewState.selectedReviewCanReReview,
+    selectedReviewId: viewState.selectedReviewId,
+    selectedReviewLatestRun: viewState.selectedReviewLatestRun,
+    selectedReviewRuns,
+    selectReview: viewState.selectReview,
     setFriendlyError: options.shell.setFriendlyError,
     upsertLatestReviewRun: options.reviewRunBridge.upsertLatestReviewRun,
     upsertReviewSummary: options.reviewRunBridge.upsertReviewSummary,

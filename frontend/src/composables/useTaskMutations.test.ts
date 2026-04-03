@@ -14,7 +14,6 @@ function createTaskMutationHarness() {
   const currentPage = ref<'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'>('tasks')
   const creatingTask = ref(false)
   const editingTask = ref<ReturnType<typeof buildTask> | null>(null)
-  const editingRemoteAgentSetup = ref(false)
   const errorMessage = ref('')
   const followingUpTask = ref<ReturnType<typeof buildTask> | null>(null)
   const followingUpTaskId = ref<string | null>(null)
@@ -45,10 +44,6 @@ function createTaskMutationHarness() {
   const taskLifecycleMutation = ref<'closing' | 'reopening' | 'deleting' | null>(null)
   const taskLifecycleMutationTaskId = ref<string | null>(null)
   const taskPendingDeletion = ref<ReturnType<typeof buildTask> | null>(null)
-  const taskPendingRunnerSetup = ref<{
-    task: ReturnType<typeof buildTask>
-    preferredTool: 'codex' | 'claude'
-  } | null>(null)
   const cancelingDispatchTaskId = ref<string | null>(null)
   const discardingDispatchTaskId = ref<string | null>(null)
   const dispatchingTaskId = ref<string | null>(null)
@@ -58,6 +53,14 @@ function createTaskMutationHarness() {
   const loadRuns = vi.fn(async () => undefined)
   const refreshAll = vi.fn(async () => undefined)
   const removeTaskRuns = vi.fn()
+  const requestRunnerSetup = vi.fn((queuedTask: ReturnType<typeof buildTask>, preferredTool: 'codex' | 'claude') => {
+    currentPage.value = 'settings'
+    runnerSetupRequests.value.push({ task: queuedTask, preferredTool })
+  })
+  const runnerSetupRequests = ref<Array<{
+    task: ReturnType<typeof buildTask>
+    preferredTool: 'codex' | 'claude'
+  }>>([])
   const setFriendlyError = vi.fn()
   const upsertLatestTaskDispatch = vi.fn()
   const upsertRunRecord = vi.fn()
@@ -69,17 +72,17 @@ function createTaskMutationHarness() {
     creatingTask,
     currentPage,
     dispatchingTaskId,
-    editingRemoteAgentSetup,
     loadRemoteAgentSettings,
     loadRuns,
     refreshAll,
     remoteAgentSettings,
+    requestRunnerSetup,
     runnerSetupReady,
+    runnerSetupRequests,
     selectedTaskId,
     taskLifecycleMutation,
     taskLifecycleMutationTaskId,
     taskPendingDeletion,
-    taskPendingRunnerSetup,
     removeTaskRuns,
     upsertLatestTaskDispatch,
     upsertRunRecord,
@@ -91,7 +94,6 @@ function createTaskMutationHarness() {
       currentPage,
       discardingDispatchTaskId,
       dispatchingTaskId,
-      editingRemoteAgentSetup,
       editingTask,
       errorMessage,
       followingUpTask,
@@ -103,6 +105,7 @@ function createTaskMutationHarness() {
       refreshAll,
       remoteAgentSettings,
       removeTaskRuns,
+      requestRunnerSetup,
       runnerSetupReady: computed(() => runnerSetupReady.value),
       saving,
       selectedProjectFilter,
@@ -116,7 +119,6 @@ function createTaskMutationHarness() {
       taskLifecycleMutation,
       taskLifecycleMutationTaskId,
       taskPendingDeletion,
-      taskPendingRunnerSetup,
       upsertLatestTaskDispatch,
       upsertRunRecord,
       upsertSelectedTaskRun,
@@ -133,11 +135,11 @@ describe('useTaskMutations', () => {
     await harness.mutations.startRemoteRun(harness.task, 'claude')
 
     expect(harness.currentPage.value).toBe('settings')
-    expect(harness.editingRemoteAgentSetup.value).toBe(true)
-    expect(harness.taskPendingRunnerSetup.value).toEqual({
+    expect(harness.requestRunnerSetup).toHaveBeenCalledTimes(1)
+    expect(harness.runnerSetupRequests.value).toEqual([{
       task: harness.task,
       preferredTool: 'claude',
-    })
+    }])
     expect(dispatchTaskSpy).not.toHaveBeenCalled()
   })
 

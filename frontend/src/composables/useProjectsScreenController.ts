@@ -15,11 +15,12 @@ interface UseProjectsScreenControllerOptions {
 }
 
 /**
- * Marks the project metadata page as its own composition boundary.
+ * Marks the project metadata page as its own named boundary.
  *
- * Project editing is simpler than task or review orchestration, but naming its
- * controller still keeps App.vue from drifting back toward hand-built page
- * dependency objects.
+ * Project editing is simpler than task or review orchestration, but keeping a
+ * dedicated controller still matters because project details are selected from
+ * one part of the shell and edited from another. Naming that boundary keeps the
+ * screen readable without pushing those coordination details back into App.vue.
  */
 export function useProjectsScreenController(options: UseProjectsScreenControllerOptions) {
   return {

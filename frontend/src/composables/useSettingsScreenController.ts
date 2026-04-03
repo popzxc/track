@@ -36,8 +36,11 @@ interface UseSettingsScreenControllerOptions {
 /**
  * Defines the settings screen as the owner of runner-setup and maintenance UI.
  *
- * The underlying refs still live in App.vue today, but this controller keeps
- * the screen's administrative actions grouped behind one named API.
+ * Settings is where infrastructure-facing actions become user-facing flows:
+ * runner setup can resume queued work, while cleanup and reset mutate
+ * backend-managed remote state. Keeping that surface behind one controller
+ * makes the screen read as one administrative workflow rather than a list of
+ * unrelated refs and modal flags.
  */
 export function useSettingsScreenController(options: UseSettingsScreenControllerOptions) {
   return {

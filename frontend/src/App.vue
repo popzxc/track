@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
-import { ApiClientError, dispatchTask } from './api/client'
+import { ApiClientError } from './api/client'
 import MigrationStatePanel from './components/MigrationStatePanel.vue'
 import ProjectsScreen from './components/ProjectsScreen.vue'
 import ReviewsScreen from './components/ReviewsScreen.vue'
@@ -11,39 +11,20 @@ import SettingsScreen from './components/SettingsScreen.vue'
 import TasksScreen from './components/TasksScreen.vue'
 import { useAppDataLoader } from './composables/useAppDataLoader'
 import { useBackgroundSync } from './composables/useBackgroundSync'
-import { useProjectsScreenController } from './composables/useProjectsScreenController'
-import { useProjectViewState } from './composables/useProjectViewState'
-import { useReviewsScreenController } from './composables/useReviewsScreenController'
-import { useReviewViewState } from './composables/useReviewViewState'
-import { useRunsScreenController } from './composables/useRunsScreenController'
-import { useRunState } from './composables/useRunState'
-import { useSettingsScreenController } from './composables/useSettingsScreenController'
-import { useSettingsMutations } from './composables/useSettingsMutations'
-import type { PendingRunnerSetupRequest } from './composables/useTaskMutations'
-import { useTasksScreenController } from './composables/useTasksScreenController'
-import { useTaskViewState } from './composables/useTaskViewState'
-import {
-  groupTasksByProject,
-  mergeProjects,
-} from './features/tasks/presentation'
+import { useWorkflowScreens } from './composables/useWorkflowScreens'
+import { mergeProjects } from './features/tasks/presentation'
 import type {
   MigrationImportSummary,
   MigrationStatus,
   ProjectInfo,
-  RemoteCleanupSummary,
-  RemoteResetSummary,
   RemoteAgentPreferredTool,
   RemoteAgentSettings,
-  ReviewRecord,
-  ReviewRunRecord,
   ReviewSummary,
   RunRecord,
   Task,
-  TaskDispatch,
 } from './types/task'
 
 type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
-type TaskLifecycleMutation = 'closing' | 'reopening' | 'deleting'
 
 // =============================================================================
 // App Shell State
@@ -61,39 +42,11 @@ const reviews = ref<ReviewSummary[]>([])
 const projects = ref<ProjectInfo[]>([])
 const taskProjectOptions = ref<ProjectInfo[]>([])
 const runs = ref<RunRecord[]>([])
-const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
-const selectedTaskRuns = ref<RunRecord[]>([])
-const selectedReviewRuns = ref<ReviewRunRecord[]>([])
 const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
 const loading = ref(true)
 const refreshing = ref(false)
 const saving = ref(false)
-const dispatchingTaskId = ref<string | null>(null)
-const cancelingDispatchTaskId = ref<string | null>(null)
-const cancelingReviewId = ref<string | null>(null)
-const discardingDispatchTaskId = ref<string | null>(null)
-const followingUpTaskId = ref<string | null>(null)
-const followingUpReviewId = ref<string | null>(null)
-const taskLifecycleMutationTaskId = ref<string | null>(null)
-const taskLifecycleMutation = ref<TaskLifecycleMutation | null>(null)
 const errorMessage = ref('')
-
-const creatingTask = ref(false)
-const creatingReview = ref(false)
-const editingTask = ref<Task | null>(null)
-const editingProject = ref<ProjectInfo | null>(null)
-const editingRemoteAgentSetup = ref(false)
-const followingUpTask = ref<Task | null>(null)
-const followingUpReview = ref<ReviewRecord | null>(null)
-const taskPendingDeletion = ref<Task | null>(null)
-const reviewPendingDeletion = ref<ReviewRecord | null>(null)
-const taskPendingRunnerSetup = ref<PendingRunnerSetupRequest | null>(null)
-const cleanupPendingConfirmation = ref(false)
-const cleaningUpRemoteArtifacts = ref(false)
-const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
-const resetPendingConfirmation = ref(false)
-const resettingRemoteWorkspace = ref(false)
-const resetSummary = ref<RemoteResetSummary | null>(null)
 const migrationStatus = ref<MigrationStatus | null>(null)
 const migrationImportSummary = ref<MigrationImportSummary | null>(null)
 const migrationImportPending = ref(false)
@@ -116,9 +69,6 @@ const defaultRemoteAgentPreferredTool = computed<RemoteAgentPreferredTool>(
 )
 
 const availableProjects = computed(() => mergeProjects(projects.value, taskProjectOptions.value))
-const latestDispatchByTaskId = computed<Record<string, TaskDispatch>>(
-  () => latestTaskDispatchesByTaskId.value,
-)
 const reviewRequestDisabledReason = computed(() => {
   if (remoteAgentSettings.value && !remoteAgentSettings.value.configured) {
     return 'Remote dispatch is not configured yet. Run `track remote-agent configure --host <host> --user <user> --identity-file ~/.ssh/track_remote_agent` locally first.'
@@ -137,127 +87,31 @@ const reviewRequestDisabledReason = computed(() => {
 const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
 const migrationRequired = computed(() => Boolean(migrationStatus.value?.requiresMigration))
 const migrationGateActive = computed(() => Boolean(migrationRequired.value && migrationStatus.value))
+const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
-const {
-  closeTaskDrawer,
-  isTaskDrawerOpen,
-  openTaskFromRun,
-  pendingSelectedTaskId,
-  selectTask,
-  selectedProjectFilter,
-  selectedTask,
-  selectedTaskCanContinue,
-  selectedTaskCanDiscardHistory,
-  selectedTaskCanStartFresh,
-  selectedTaskDispatchDisabledReason,
-  selectedTaskDispatchTool,
-  selectedTaskId,
-  selectedTaskLatestDispatch,
-  selectedTaskLatestReusablePullRequest,
-  selectedTaskLifecycleMessage,
-  selectedTaskLifecycleMutation,
-  selectedTaskPinnedTool,
-  selectedTaskPrimaryActionDisabled,
-  selectedTaskProject,
-  selectedTaskStartTool,
-  showClosed,
-} = useTaskViewState({
+// Tasks, reviews, and runs still share one legitimate integration cycle: user
+// selection drives history loading, and optimistic run writes feed back into
+// those same surfaces. Keeping that wiring behind one named composable makes
+// the shell read as composition again instead of a sequence of bridge vars.
+const workflowScreens = useWorkflowScreens({
   availableProjects,
-  cancelingDispatchTaskId,
+  canRequestReview,
   currentPage,
   defaultRemoteAgentPreferredTool,
-  dispatchingTaskId,
-  followingUpTaskId,
-  latestDispatchByTaskId,
+  errorMessage,
+  migrationImportPending,
+  migrationImportSummary,
+  migrationStatus,
   remoteAgentSettings,
-  selectedTaskRuns,
-  taskLifecycleMutation,
-  taskLifecycleMutationTaskId,
+  reviewRequestDisabledReason,
+  runnerSetupReady,
+  saving,
+  setFriendlyError,
+  shellPreludeHelpText,
   tasks,
-})
-
-const {
-  defaultCreateProject,
-  selectProjectDetails,
-  selectedProjectDetails,
-  selectedProjectDetailsId,
-} = useProjectViewState({
-  availableProjects,
-  closeTaskDrawer,
-  currentPage,
-  selectedProjectFilter,
-})
-
-const {
-  closeReviewDrawer,
-  isReviewDrawerOpen,
-  selectReview,
-  selectedReview,
-  selectedReviewCanCancel,
-  selectedReviewCanReReview,
-  selectedReviewId,
-  selectedReviewLatestRun,
-} = useReviewViewState({
-  currentPage,
-  followingUpReview,
-  reviews,
-  selectedReviewRuns,
-})
-
-const {
-  activeReviewRuns,
-  activeRuns,
-  loadLatestDispatchesForVisibleTasks,
-  loadReviews,
-  loadRuns,
-  loadSelectedReviewRunHistory,
-  loadSelectedTaskRunHistory,
-  recentReviewRuns,
-  recentRuns,
-  removeReview,
-  removeTaskRuns,
-  replaceSelectedReviewRuns,
-  upsertLatestReviewRun,
-  upsertLatestTaskDispatch,
-  upsertReviewSummary,
-  upsertRunRecord,
-  upsertSelectedReviewRun,
-  upsertSelectedTaskRun,
-} = useRunState({
-  closeReviewDrawer,
-  isReviewDrawerOpen,
-  isTaskDrawerOpen,
-  latestTaskDispatchesByTaskId,
   reviews,
   runs,
-  selectedReview,
-  selectedReviewId,
-  selectedReviewRuns,
-  selectedTask,
-  selectedTaskId,
-  selectedTaskRuns,
-  tasks,
 })
-
-// =============================================================================
-// Task Grouping
-// =============================================================================
-//
-// "All projects" becomes hard to scan once the queue grows. Instead of one long
-// mixed stream, the queue is grouped into project sections while keeping the
-// existing per-task sort order inside each section. This preserves the backend's
-// task ordering semantics without forcing the user to mentally re-cluster rows.
-const taskGroups = computed(() => {
-  return groupTasksByProject(tasks.value)
-})
-
-const activeRemoteWorkCount = computed(() => activeRuns.value.length + activeReviewRuns.value.length)
-
-const followingUpDispatch = computed(() =>
-  followingUpTask.value ? latestDispatchByTaskId.value[followingUpTask.value.id] ?? undefined : undefined,
-)
-
-const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
 function setFriendlyError(error: unknown) {
   if (error instanceof ApiClientError) {
@@ -269,32 +123,7 @@ function setFriendlyError(error: unknown) {
     error instanceof Error ? error.message : 'Something went wrong while talking to the API.'
 }
 
-function openSelectedTaskProjectDetails() {
-  if (!selectedTaskProject.value) {
-    return
-  }
-
-  selectProjectDetails(selectedTaskProject.value)
-}
-
 let syncTaskChangeVersion = async () => undefined
-
-async function resumeQueuedTaskDispatch(task: Task, preferredTool: RemoteAgentPreferredTool) {
-  dispatchingTaskId.value = task.id
-  errorMessage.value = ''
-
-  try {
-    const dispatch = await dispatchTask(task.id, { preferredTool })
-    upsertRunRecord(task, dispatch)
-    upsertLatestTaskDispatch(dispatch)
-    upsertSelectedTaskRun(task, dispatch)
-  } catch (error) {
-    await loadRuns().catch(() => undefined)
-    setFriendlyError(error)
-  } finally {
-    dispatchingTaskId.value = null
-  }
-}
 
 const {
   loadRemoteAgentSettings,
@@ -302,248 +131,62 @@ const {
   refreshAll,
 } = useAppDataLoader({
   errorMessage,
-  latestTaskDispatchesByTaskId,
+  latestTaskDispatchesByTaskId: workflowScreens.tasksScreen.latestTaskDispatchesByTaskId,
   loading,
-  loadLatestDispatchesForVisibleTasks,
-  loadReviews,
-  loadRuns,
-  loadSelectedReviewRunHistory,
-  loadSelectedTaskRunHistory,
+  loadLatestDispatchesForVisibleTasks: workflowScreens.loadLatestDispatchesForVisibleTasks,
+  loadReviews: workflowScreens.loadReviews,
+  loadRuns: workflowScreens.loadRuns,
+  loadSelectedReviewRunHistory: workflowScreens.loadSelectedReviewRunHistory,
+  loadSelectedTaskRunHistory: workflowScreens.loadSelectedTaskRunHistory,
   migrationStatus,
   projects,
   refreshing,
   remoteAgentSettings,
   reviews,
   runs,
-  selectedProjectFilter,
-  selectedReviewRuns,
-  selectedTaskRuns,
+  selectedProjectFilter: workflowScreens.tasksScreen.selectedProjectFilter,
+  selectedReviewRuns: workflowScreens.reviewsScreen.selectedReviewRuns,
+  selectedTaskRuns: workflowScreens.tasksScreen.selectedTaskRuns,
   setFriendlyError,
-  showClosed,
+  showClosed: workflowScreens.tasksScreen.showClosed,
   syncTaskChangeVersion: () => syncTaskChangeVersion(),
   taskProjectOptions,
   tasks,
 })
-
-const {
-  confirmRemoteCleanup,
-  confirmRemoteReset,
-  importLegacyTrackerData,
-  saveProjectEdits,
-  saveRemoteAgentSetup,
-} = useSettingsMutations({
-  cleaningUpRemoteArtifacts,
-  cleanupPendingConfirmation,
-  cleanupSummary,
-  editingProject,
-  editingRemoteAgentSetup,
-  errorMessage,
-  migrationImportPending,
-  migrationImportSummary,
-  migrationStatus,
+workflowScreens.connectDataLoader({
+  loadRemoteAgentSettings,
   refreshAll,
-  remoteAgentSettings,
-  resetPendingConfirmation,
-  resetSummary,
-  resettingRemoteWorkspace,
-  resumeQueuedTaskDispatch(task, preferredTool) {
-    // This callback still lives in the shell because runner setup is a
-    // cross-screen flow: task dispatch queues work from Tasks, then Settings
-    // resumes it after the shell prelude has been saved.
-    void resumeQueuedTaskDispatch(task, preferredTool)
-  },
-  saving,
-  setFriendlyError,
-  taskPendingRunnerSetup,
 })
 
 const backgroundSync = useBackgroundSync({
-  activeReviewRuns,
-  activeRuns,
-  cancelingDispatchTaskId,
-  cancelingReviewId,
-  dispatchingTaskId,
-  discardingDispatchTaskId,
-  followingUpTaskId,
-  isReviewDrawerOpen,
-  isTaskDrawerOpen,
+  activeReviewRuns: workflowScreens.activeReviewRuns,
+  activeRuns: workflowScreens.activeRuns,
+  cancelingDispatchTaskId: workflowScreens.tasksScreen.cancelingDispatchTaskId,
+  cancelingReviewId: workflowScreens.reviewsScreen.cancelingReviewId,
+  dispatchingTaskId: workflowScreens.tasksScreen.dispatchingTaskId,
+  discardingDispatchTaskId: workflowScreens.tasksScreen.discardingDispatchTaskId,
+  followingUpTaskId: workflowScreens.tasksScreen.followingUpTaskId,
+  isReviewDrawerOpen: workflowScreens.reviewsScreen.isReviewDrawerOpen,
+  isTaskDrawerOpen: workflowScreens.tasksScreen.isTaskDrawerOpen,
   loading,
-  loadLatestDispatchesForVisibleTasks,
-  loadReviews,
-  loadRuns,
-  loadSelectedReviewRunHistory,
-  loadSelectedTaskRunHistory,
+  loadLatestDispatchesForVisibleTasks: workflowScreens.loadLatestDispatchesForVisibleTasks,
+  loadReviews: workflowScreens.loadReviews,
+  loadRuns: workflowScreens.loadRuns,
+  loadSelectedReviewRunHistory: workflowScreens.loadSelectedReviewRunHistory,
+  loadSelectedTaskRunHistory: workflowScreens.loadSelectedTaskRunHistory,
   loadTasks,
   refreshAll,
   refreshing,
   saving,
-  selectedProjectFilter,
-  selectedReview,
-  selectedReviewRuns,
-  selectedTask,
-  selectedTaskRuns,
+  selectedProjectFilter: workflowScreens.tasksScreen.selectedProjectFilter,
+  selectedReview: workflowScreens.reviewsScreen.selectedReview,
+  selectedReviewRuns: workflowScreens.reviewsScreen.selectedReviewRuns,
+  selectedTask: workflowScreens.tasksScreen.selectedTask,
+  selectedTaskRuns: workflowScreens.tasksScreen.selectedTaskRuns,
   setFriendlyError,
-  showClosed,
+  showClosed: workflowScreens.tasksScreen.showClosed,
 })
 syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
-
-const tasksScreen = useTasksScreenController({
-  data: {
-    availableProjects,
-    defaultCreateProject,
-    followingUpDispatch,
-    latestTaskDispatchesByTaskId,
-    remoteAgentSettings,
-    runnerSetupReady,
-    saving,
-    selectedTaskRuns,
-    taskGroups,
-    tasks,
-  },
-  overlays: {
-    creatingTask,
-    editingTask,
-    followingUpTask,
-    taskPendingDeletion,
-    taskPendingRunnerSetup,
-  },
-  project: {
-    openSelectedTaskProjectDetails,
-  },
-  shell: {
-    currentPage,
-    editingRemoteAgentSetup,
-    errorMessage,
-    setFriendlyError,
-  },
-  taskRunBridge: {
-    loadRemoteAgentSettings,
-    loadRuns,
-    refreshAll,
-    removeTaskRuns,
-    upsertLatestTaskDispatch,
-    upsertRunRecord,
-    upsertSelectedTaskRun,
-  },
-  viewState: {
-    closeTaskDrawer,
-    isTaskDrawerOpen,
-    openTaskFromRun,
-    pendingSelectedTaskId,
-    selectTask,
-    selectedProjectFilter,
-    selectedTask,
-    selectedTaskCanContinue,
-    selectedTaskCanDiscardHistory,
-    selectedTaskCanStartFresh,
-    selectedTaskDispatchDisabledReason,
-    selectedTaskDispatchTool,
-    selectedTaskId,
-    selectedTaskLatestDispatch,
-    selectedTaskLatestReusablePullRequest,
-    selectedTaskLifecycleMessage,
-    selectedTaskLifecycleMutation,
-    selectedTaskPinnedTool,
-    selectedTaskPrimaryActionDisabled,
-    selectedTaskProject,
-    selectedTaskStartTool,
-    showClosed,
-  },
-  workflow: {
-    cancelingDispatchTaskId,
-    discardingDispatchTaskId,
-    dispatchingTaskId,
-    followingUpTaskId,
-    taskLifecycleMutation,
-    taskLifecycleMutationTaskId,
-  },
-})
-
-const reviewsScreen = useReviewsScreenController({
-  data: {
-    canRequestReview,
-    defaultRemoteAgentPreferredTool,
-    remoteAgentSettings,
-    reviewRequestDisabledReason,
-    reviews,
-    saving,
-    selectedReviewRuns,
-  },
-  overlays: {
-    creatingReview,
-    followingUpReview,
-    reviewPendingDeletion,
-  },
-  reviewRunBridge: {
-    refreshAll,
-    removeReview,
-    replaceSelectedReviewRuns,
-    upsertLatestReviewRun,
-    upsertReviewSummary,
-    upsertSelectedReviewRun,
-  },
-  shell: {
-    currentPage,
-    errorMessage,
-    setFriendlyError,
-  },
-  viewState: {
-    closeReviewDrawer,
-    isReviewDrawerOpen,
-    selectReview,
-    selectedReview,
-    selectedReviewCanCancel,
-    selectedReviewCanReReview,
-    selectedReviewLatestRun,
-  },
-  workflow: {
-    cancelingReviewId,
-    followingUpReviewId,
-  },
-})
-
-const runsScreen = useRunsScreenController({
-  activeReviewRuns,
-  activeRuns,
-  openTaskFromRun,
-  recentReviewRuns,
-  recentRuns,
-  selectReview,
-})
-
-const projectsScreen = useProjectsScreenController({
-  availableProjects,
-  editingProject,
-  saveProjectEdits,
-  saving,
-  selectedProjectDetails,
-  selectedProjectDetailsId,
-})
-
-const settingsScreen = useSettingsScreenController({
-  actions: {
-    confirmRemoteCleanup,
-    confirmRemoteReset,
-    saveRemoteAgentSetup,
-  },
-  data: {
-    activeRemoteWorkCount,
-    remoteAgentSettings,
-    runnerSetupReady,
-    shellPreludeHelpText,
-  },
-  state: {
-    cleaningUpRemoteArtifacts,
-    cleanupPendingConfirmation,
-    cleanupSummary,
-    editingRemoteAgentSetup,
-    resetPendingConfirmation,
-    resettingRemoteWorkspace,
-    resetSummary,
-    saving,
-    taskPendingRunnerSetup,
-  },
-})
 </script>
 
 <template>
@@ -552,7 +195,7 @@ const settingsScreen = useSettingsScreenController({
       <div class="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
         <ShellSidebar
           :active-page="currentPage"
-          :active-remote-work-count="activeRemoteWorkCount"
+          :active-remote-work-count="workflowScreens.activeRemoteWorkCount.value"
           :remote-agent-configured="Boolean(remoteAgentSettings?.configured)"
           :review-count="reviewCount"
           :runner-setup-ready="runnerSetupReady"
@@ -583,37 +226,37 @@ const settingsScreen = useSettingsScreenController({
               :migration-import-summary="migrationImportSummary"
               :migration-required="migrationRequired"
               :migration-status="migrationStatus"
-              @request-import-legacy-data="importLegacyTrackerData"
+              @request-import-legacy-data="workflowScreens.importLegacyTrackerData"
             />
 
             <TasksScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'tasks'"
-              :controller="tasksScreen"
+              :controller="workflowScreens.tasksScreen"
             />
 
             <ReviewsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'reviews'"
-              :controller="reviewsScreen"
+              :controller="workflowScreens.reviewsScreen"
             />
 
             <RunsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'runs'"
-              :controller="runsScreen"
+              :controller="workflowScreens.runsScreen"
             />
 
             <ProjectsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'projects'"
-              :controller="projectsScreen"
+              :controller="workflowScreens.projectsScreen"
             />
 
             <SettingsScreen
               v-if="!migrationGateActive"
               :active="currentPage === 'settings'"
-              :controller="settingsScreen"
+              :controller="workflowScreens.settingsScreen"
             />
           </template>
         </section>

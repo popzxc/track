@@ -33,7 +33,6 @@ interface UseTaskMutationsOptions {
   currentPage: Ref<AppPage>
   discardingDispatchTaskId: Ref<string | null>
   dispatchingTaskId: Ref<string | null>
-  editingRemoteAgentSetup: Ref<boolean>
   editingTask: Ref<Task | null>
   errorMessage: Ref<string>
   followingUpTask: Ref<Task | null>
@@ -45,6 +44,7 @@ interface UseTaskMutationsOptions {
   refreshAll: () => Promise<void>
   remoteAgentSettings: Ref<RemoteAgentSettings | null>
   removeTaskRuns: (taskId: string) => void
+  requestRunnerSetup: (task: Task, preferredTool: RemoteAgentPreferredTool) => void
   runnerSetupReady: ComputedRef<boolean>
   saving: Ref<boolean>
   selectedProjectFilter: Ref<string>
@@ -58,7 +58,6 @@ interface UseTaskMutationsOptions {
   taskLifecycleMutation: Ref<TaskLifecycleMutation | null>
   taskLifecycleMutationTaskId: Ref<string | null>
   taskPendingDeletion: Ref<Task | null>
-  taskPendingRunnerSetup: Ref<PendingRunnerSetupRequest | null>
   upsertLatestTaskDispatch: (dispatch: TaskDispatch) => void
   upsertRunRecord: (task: Task, dispatch: TaskDispatch) => void
   upsertSelectedTaskRun: (task: Task, dispatch: TaskDispatch) => void
@@ -210,9 +209,7 @@ export function useTaskMutations(options: UseTaskMutationsOptions) {
     }
 
     if (options.remoteAgentSettings.value && !options.runnerSetupReady.value) {
-      options.taskPendingRunnerSetup.value = { task, preferredTool }
-      options.editingRemoteAgentSetup.value = true
-      options.currentPage.value = 'settings'
+      options.requestRunnerSetup(task, preferredTool)
       return
     }
 
