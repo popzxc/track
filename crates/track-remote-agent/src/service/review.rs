@@ -287,21 +287,13 @@ impl<'a> RemoteReviewService<'a> {
                     }
                 }
 
-                dispatch_record.status = DispatchStatus::Running;
-                dispatch_record.updated_at = now_utc();
-                dispatch_record.finished_at = None;
-                dispatch_record.summary =
-                    Some("The remote agent is reviewing the prepared pull request.".to_owned());
-                dispatch_record.error_message = None;
+                let dispatch_record = dispatch_record.into_running();
                 self.review_dispatch_repository
                     .save_dispatch(&dispatch_record)?;
                 Ok(dispatch_record)
             }
             Err(error) => {
-                dispatch_record.status = DispatchStatus::Failed;
-                dispatch_record.updated_at = now_utc();
-                dispatch_record.finished_at = Some(dispatch_record.updated_at);
-                dispatch_record.error_message = Some(error.to_string());
+                let dispatch_record = dispatch_record.into_failed(error.to_string());
                 self.review_dispatch_repository
                     .save_dispatch(&dispatch_record)?;
                 Err(error)
@@ -364,12 +356,10 @@ impl<'a> RemoteReviewService<'a> {
             .latest_dispatches_for_reviews(&[review_id.to_owned()])?
             .into_iter()
             .next()
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::DispatchNotFound,
-                    format!("Review {review_id} does not have a remote run to cancel."),
-                )
-            })?;
+            .ok_or_else(review_dispatch_not_found(
+                review_id,
+                "does not have a remote run to cancel.",
+            ))?;
 
         if !latest_dispatch.status.is_active() {
             return Err(TrackError::new(
@@ -380,12 +370,7 @@ impl<'a> RemoteReviewService<'a> {
 
         self.cancel_remote_review_if_possible(&latest_dispatch)?;
 
-        latest_dispatch.status = DispatchStatus::Canceled;
-        latest_dispatch.updated_at = now_utc();
-        latest_dispatch.finished_at = Some(latest_dispatch.updated_at);
-        latest_dispatch.summary = Some("Canceled from the web UI.".to_owned());
-        latest_dispatch.notes = None;
-        latest_dispatch.error_message = None;
+        latest_dispatch = latest_dispatch.into_canceled_from_ui();
         self.review_dispatch_repository
             .save_dispatch(&latest_dispatch)?;
 
@@ -582,31 +567,10 @@ impl<'a> RemoteReviewService<'a> {
         follow_up_request: Option<&str>,
         target_head_oid: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
-        let mut dispatch_record = self.review_dispatch_repository.create_dispatch(
-            review,
-            &remote_agent.host,
-            review.preferred_tool,
-        )?;
-        dispatch_record.branch_name = Some(format!("track-review/{}", dispatch_record.dispatch_id));
-        dispatch_record.worktree_path = Some(format!(
-            "{}/{}/{}/{}",
-            remote_agent.workspace_root.trim_end_matches('/'),
-            review.workspace_key,
-            REVIEW_WORKTREE_DIRECTORY_NAME,
-            dispatch_record.dispatch_id
-        ));
-        dispatch_record.follow_up_request = follow_up_request.map(str::trim).map(ToOwned::to_owned);
-        dispatch_record.target_head_oid = target_head_oid
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned);
-        if let Some(follow_up_request) = dispatch_record.follow_up_request.as_deref() {
-            dispatch_record.summary = Some(format!(
-                "Re-review request: {}",
-                first_follow_up_line(follow_up_request)
-            ));
-        }
-        dispatch_record.updated_at = now_utc();
+        let dispatch_record = self
+            .review_dispatch_repository
+            .create_dispatch(review, &remote_agent.host, review.preferred_tool)?
+            .populated(remote_agent, review, follow_up_request, target_head_oid);
         self.review_dispatch_repository
             .save_dispatch(&dispatch_record)?;
 
@@ -647,11 +611,7 @@ impl<'a> RemoteReviewService<'a> {
             }
         }
 
-        dispatch_record.status = DispatchStatus::Preparing;
-        dispatch_record.summary = Some(summary.to_owned());
-        dispatch_record.updated_at = now_utc();
-        dispatch_record.finished_at = None;
-        dispatch_record.error_message = None;
+        *dispatch_record = dispatch_record.clone().into_preparing(summary);
         self.review_dispatch_repository
             .save_dispatch(dispatch_record)?;
 
@@ -698,14 +658,10 @@ impl<'a> RemoteReviewService<'a> {
         summary: &str,
         error_message: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
-        let mut updated_record = dispatch_record.clone();
-        let now = now_utc();
-        updated_record.status = status;
-        updated_record.updated_at = now;
-        updated_record.finished_at = Some(now);
-        updated_record.summary = Some(summary.to_owned());
-        updated_record.notes = None;
-        updated_record.error_message = error_message.map(ToOwned::to_owned);
+        let updated_record =
+            dispatch_record
+                .clone()
+                .into_locally_finalized(status, summary, error_message);
         self.review_dispatch_repository
             .save_dispatch(&updated_record)?;
 
@@ -845,6 +801,127 @@ impl<'a> RemoteReviewService<'a> {
         }
 
         Ok(remote_agent)
+    }
+}
+
+// =============================================================================
+// Review Run Record Transitions
+// =============================================================================
+//
+// Review runs have the same lifecycle shape as task dispatches, but the field
+// meanings are review-specific. Keeping these transitions as local extension
+// methods makes the service read in terms of review-state changes instead of
+// field-by-field mutation.
+trait ReviewRunRecordExt {
+    fn populated(
+        self,
+        remote_agent: &RemoteAgentRuntimeConfig,
+        review: &ReviewRecord,
+        follow_up_request: Option<&str>,
+        target_head_oid: Option<&str>,
+    ) -> Self;
+    fn into_preparing(self, summary: &str) -> Self;
+    fn into_running(self) -> Self;
+    fn into_failed(self, error_message: String) -> Self;
+    fn into_canceled_from_ui(self) -> Self;
+    fn into_locally_finalized(
+        self,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Self;
+}
+
+impl ReviewRunRecordExt for ReviewRunRecord {
+    fn populated(
+        mut self,
+        remote_agent: &RemoteAgentRuntimeConfig,
+        review: &ReviewRecord,
+        follow_up_request: Option<&str>,
+        target_head_oid: Option<&str>,
+    ) -> Self {
+        self.branch_name = Some(format!("track-review/{}", self.dispatch_id));
+        self.worktree_path = Some(format!(
+            "{}/{}/{}/{}",
+            remote_agent.workspace_root.trim_end_matches('/'),
+            review.workspace_key,
+            REVIEW_WORKTREE_DIRECTORY_NAME,
+            self.dispatch_id
+        ));
+        self.follow_up_request = follow_up_request
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        self.target_head_oid = target_head_oid
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if let Some(follow_up_request) = self.follow_up_request.as_deref() {
+            self.summary = Some(format!(
+                "Re-review request: {}",
+                first_follow_up_line(follow_up_request)
+            ));
+        }
+        self.updated_at = now_utc();
+        self
+    }
+
+    fn into_preparing(mut self, summary: &str) -> Self {
+        self.status = DispatchStatus::Preparing;
+        self.summary = Some(summary.to_owned());
+        self.updated_at = now_utc();
+        self.finished_at = None;
+        self.error_message = None;
+        self
+    }
+
+    fn into_running(mut self) -> Self {
+        self.status = DispatchStatus::Running;
+        self.updated_at = now_utc();
+        self.finished_at = None;
+        self.summary = Some("The remote agent is reviewing the prepared pull request.".to_owned());
+        self.error_message = None;
+        self
+    }
+
+    fn into_failed(mut self, error_message: String) -> Self {
+        self.status = DispatchStatus::Failed;
+        self.updated_at = now_utc();
+        self.finished_at = Some(self.updated_at);
+        self.error_message = Some(error_message);
+        self
+    }
+
+    fn into_canceled_from_ui(self) -> Self {
+        self.into_locally_finalized(DispatchStatus::Canceled, "Canceled from the web UI.", None)
+    }
+
+    fn into_locally_finalized(
+        mut self,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Self {
+        let finished_at = now_utc();
+        self.status = status;
+        self.updated_at = finished_at;
+        self.finished_at = Some(finished_at);
+        self.summary = Some(summary.to_owned());
+        self.notes = None;
+        self.error_message = error_message.map(ToOwned::to_owned);
+        self
+    }
+}
+
+fn review_dispatch_not_found<'a>(
+    review_id: &'a str,
+    detail: &'a str,
+) -> impl FnOnce() -> TrackError + 'a {
+    move || {
+        TrackError::new(
+            ErrorCode::DispatchNotFound,
+            format!("Review {review_id} {detail}"),
+        )
     }
 }
 
