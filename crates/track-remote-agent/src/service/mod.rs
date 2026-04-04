@@ -7,7 +7,4 @@ pub use self::remote_agent_services::{RemoteAgentConfigProvider, RemoteAgentServ
 pub use self::review::RemoteReviewService;
 
 #[cfg(test)]
-pub(crate) use self::remote_agent_services::StaticRemoteAgentConfigService;
-
-#[cfg(test)]
 mod tests;

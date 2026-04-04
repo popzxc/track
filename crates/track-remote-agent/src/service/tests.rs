@@ -19,7 +19,7 @@ use track_dal::review_dispatch_repository::ReviewDispatchRepository;
 use track_dal::review_repository::ReviewRepository;
 use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_metadata::ProjectMetadata;
-use track_types::errors::ErrorCode;
+use track_types::errors::{ErrorCode, TrackError};
 use track_types::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
 use track_types::time_utils::now_utc;
 use track_types::types::{
@@ -35,8 +35,27 @@ use super::dispatch::{
 };
 use super::review::select_previous_submitted_review_run;
 use super::{
-    RemoteAgentServices, RemoteDispatchService, RemoteReviewService, StaticRemoteAgentConfigService,
+    RemoteAgentConfigProvider, RemoteAgentServices, RemoteDispatchService, RemoteReviewService,
 };
+
+#[derive(Debug, Clone)]
+pub(crate) struct StaticRemoteAgentConfigService {
+    remote_agent: Option<RemoteAgentRuntimeConfig>,
+}
+
+impl StaticRemoteAgentConfigService {
+    pub(crate) fn new(remote_agent: Option<RemoteAgentRuntimeConfig>) -> Self {
+        Self { remote_agent }
+    }
+}
+
+impl RemoteAgentConfigProvider for StaticRemoteAgentConfigService {
+    fn load_remote_agent_runtime_config(
+        &self,
+    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
+        Ok(self.remote_agent.clone())
+    }
+}
 
 struct TestContext {
     _directory: TempDir,
@@ -506,7 +525,7 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
         },
     ];
 
-    let selected = select_follow_up_base_dispatch(&dispatch_history)
+    let selected = select_follow_up_base_dispatch("fake", &dispatch_history)
         .expect("a reusable dispatch should be selected");
     let pull_request_url = latest_pull_request_for_branch(
         &dispatch_history,

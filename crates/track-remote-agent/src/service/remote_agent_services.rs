@@ -53,28 +53,6 @@ impl<T: RemoteAgentConfigProvider + ?Sized> RemoteAgentConfigProvider for std::s
     }
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct StaticRemoteAgentConfigService {
-    remote_agent: Option<RemoteAgentRuntimeConfig>,
-}
-
-#[cfg(test)]
-impl StaticRemoteAgentConfigService {
-    pub(crate) fn new(remote_agent: Option<RemoteAgentRuntimeConfig>) -> Self {
-        Self { remote_agent }
-    }
-}
-
-#[cfg(test)]
-impl RemoteAgentConfigProvider for StaticRemoteAgentConfigService {
-    fn load_remote_agent_runtime_config(
-        &self,
-    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        Ok(self.remote_agent.clone())
-    }
-}
-
 pub struct RemoteAgentServices<'a> {
     config_service: &'a dyn RemoteAgentConfigProvider,
     dispatch_repository: &'a DispatchRepository,
@@ -546,16 +524,16 @@ impl<'a> RemoteAgentServices<'a> {
 // prompt files, launching runs, canceling them, and reading snapshots. These
 // helpers stay in the owner module because they are infrastructure, not either
 // domain's business policy.
-pub(in crate::service) struct RemoteRunOps<'a> {
+pub(super) struct RemoteRunOps<'a> {
     ssh_client: &'a SshClient,
 }
 
 impl<'a> RemoteRunOps<'a> {
-    pub(in crate::service) fn new(ssh_client: &'a SshClient) -> Self {
+    pub(super) fn new(ssh_client: &'a SshClient) -> Self {
         Self { ssh_client }
     }
 
-    pub(in crate::service) fn upload_prompt_and_schema(
+    pub(super) fn upload_prompt_and_schema(
         &self,
         prompt_path: &str,
         prompt: &str,
@@ -567,7 +545,7 @@ impl<'a> RemoteRunOps<'a> {
         Ok(())
     }
 
-    pub(in crate::service) fn launch(
+    pub(super) fn launch(
         &self,
         remote_run_directory: &str,
         worktree_path: &str,
@@ -582,11 +560,11 @@ impl<'a> RemoteRunOps<'a> {
         .execute()
     }
 
-    pub(in crate::service) fn cancel(&self, remote_run_directory: &str) -> Result<(), TrackError> {
+    pub(super) fn cancel(&self, remote_run_directory: &str) -> Result<(), TrackError> {
         CancelRemoteDispatchAction::new(self.ssh_client, remote_run_directory).execute()
     }
 
-    pub(in crate::service) fn read_snapshots(
+    pub(super) fn read_snapshots(
         &self,
         run_directories: &[String],
     ) -> Result<Vec<RemoteDispatchSnapshot>, TrackError> {
@@ -601,13 +579,13 @@ impl<'a> RemoteRunOps<'a> {
 // The remote registry and checkout layout are shared across task dispatches,
 // PR reviews, cleanup, and reset. Keeping that machinery here prevents the
 // domain services from mixing persistence concerns with shell-script details.
-pub(in crate::service) struct RemoteWorkspaceOps<'a> {
+pub(super) struct RemoteWorkspaceOps<'a> {
     ssh_client: &'a SshClient,
     remote_agent: &'a RemoteAgentRuntimeConfig,
 }
 
 impl<'a> RemoteWorkspaceOps<'a> {
-    pub(in crate::service) fn new(
+    pub(super) fn new(
         ssh_client: &'a SshClient,
         remote_agent: &'a RemoteAgentRuntimeConfig,
     ) -> Self {
@@ -617,7 +595,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         }
     }
 
-    pub(in crate::service) fn ensure_task_checkout(
+    pub(super) fn ensure_task_checkout(
         &self,
         project_name: &str,
         metadata: &ProjectMetadata,
@@ -649,7 +627,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         Ok(checkout_path)
     }
 
-    pub(in crate::service) fn ensure_review_checkout(
+    pub(super) fn ensure_review_checkout(
         &self,
         review: &ReviewRecord,
     ) -> Result<String, TrackError> {
@@ -682,7 +660,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         Ok(checkout_path)
     }
 
-    pub(in crate::service) fn prepare_task_worktree(
+    pub(super) fn prepare_task_worktree(
         &self,
         checkout_path: &str,
         base_branch: &str,
@@ -710,7 +688,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         }
     }
 
-    pub(in crate::service) fn prepare_review_worktree(
+    pub(super) fn prepare_review_worktree(
         &self,
         checkout_path: &str,
         pull_request_number: u64,
@@ -729,7 +707,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         .execute()
     }
 
-    pub(in crate::service) fn resolve_checkout_path(
+    pub(super) fn resolve_checkout_path(
         &self,
         workspace_key: &str,
     ) -> Result<String, TrackError> {
@@ -737,7 +715,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         Ok(self.checkout_path_from_registry_or_default(&remote_registry, workspace_key))
     }
 
-    pub(in crate::service) fn cleanup_task_artifacts(
+    pub(super) fn cleanup_task_artifacts(
         &self,
         checkout_path: &str,
         worktree_paths: &[String],
@@ -754,7 +732,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         .execute()
     }
 
-    pub(in crate::service) fn cleanup_review_artifacts(
+    pub(super) fn cleanup_review_artifacts(
         &self,
         checkout_path: &str,
         branch_names: &[String],
@@ -771,7 +749,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         .execute()
     }
 
-    pub(in crate::service) fn cleanup_orphaned_artifacts(
+    pub(super) fn cleanup_orphaned_artifacts(
         &self,
         kept_worktree_paths: &[String],
         kept_run_directories: &[String],
@@ -785,7 +763,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         .execute()
     }
 
-    pub(in crate::service) fn cleanup_reclaimable_review_workspaces(
+    pub(super) fn cleanup_reclaimable_review_workspaces(
         &self,
         workspace_keys: &[String],
     ) -> Result<(), TrackError> {
@@ -815,7 +793,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         Ok(())
     }
 
-    pub(in crate::service) fn reset_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
+    pub(super) fn reset_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
         ResetWorkspaceAction::new(
             self.ssh_client,
             &self.remote_agent.workspace_root,
@@ -863,12 +841,12 @@ impl<'a> RemoteWorkspaceOps<'a> {
     }
 }
 
-pub(in crate::service) enum RefreshRemoteClient {
+pub(super) enum RefreshRemoteClient {
     Available(SshClient),
     UnavailableLocally { error_message: String },
 }
 
-pub(in crate::service) fn load_refresh_ssh_client(
+pub(super) fn load_refresh_ssh_client(
     config_service: &dyn RemoteAgentConfigProvider,
 ) -> Result<RefreshRemoteClient, TrackError> {
     let remote_agent = match config_service.load_remote_agent_runtime_config() {

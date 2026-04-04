@@ -30,10 +30,10 @@ use super::remote_agent_services::{
 };
 
 pub struct RemoteReviewService<'a> {
-    pub(in crate::service) config_service: &'a dyn RemoteAgentConfigProvider,
-    pub(in crate::service) project_repository: &'a ProjectRepository,
-    pub(in crate::service) review_repository: &'a ReviewRepository,
-    pub(in crate::service) review_dispatch_repository: &'a ReviewDispatchRepository,
+    pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
+    pub(super) project_repository: &'a ProjectRepository,
+    pub(super) review_repository: &'a ReviewRepository,
+    pub(super) review_dispatch_repository: &'a ReviewDispatchRepository,
 }
 
 impl<'a> RemoteReviewService<'a> {
@@ -470,7 +470,7 @@ impl<'a> RemoteReviewService<'a> {
         Ok(refreshed_records)
     }
 
-    pub(in crate::service) fn refresh_review_dispatch_record_from_snapshot(
+    pub(super) fn refresh_review_dispatch_record_from_snapshot(
         &self,
         record: ReviewRunRecord,
         snapshot: &RemoteDispatchSnapshot,
@@ -934,7 +934,7 @@ fn first_follow_up_line(follow_up_request: &str) -> String {
         .to_owned()
 }
 
-pub(in crate::service) fn select_previous_submitted_review_run<'a>(
+pub(super) fn select_previous_submitted_review_run<'a>(
     dispatch_history: &'a [ReviewRunRecord],
     current_dispatch_id: &str,
 ) -> Option<&'a ReviewRunRecord> {

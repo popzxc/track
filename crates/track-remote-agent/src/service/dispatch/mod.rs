@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Condvar, Mutex, OnceLock};
 
 use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
@@ -29,6 +28,12 @@ use super::remote_agent_services::{
     load_refresh_ssh_client, RefreshRemoteClient, RemoteAgentConfigProvider, RemoteRunOps,
     RemoteWorkspaceOps,
 };
+
+pub(crate) use self::guard::TaskDispatchStartGuard;
+use self::record_ext::TaskDispatchRecordExt;
+
+mod guard;
+mod record_ext;
 
 pub struct RemoteDispatchService<'a> {
     pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
@@ -92,28 +97,19 @@ impl<'a> RemoteDispatchService<'a> {
         self.ensure_no_blocking_active_dispatch(task_id)?;
 
         let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
-        let previous_dispatch = select_follow_up_base_dispatch(&dispatch_history).ok_or_else(
-            task_dispatch_not_found(
+        let previous_dispatch = select_follow_up_base_dispatch(task_id, &dispatch_history)?;
+        let branch_name = previous_dispatch.branch_name.clone().ok_or_else(|| {
+            dispatch_not_found(
                 task_id,
-                "does not have a previous reusable remote dispatch to follow up on.",
-            ),
-        )?;
-        let branch_name =
-            previous_dispatch
-                .branch_name
-                .clone()
-                .ok_or_else(task_dispatch_not_found(
-                    task_id,
-                    "does not have a reusable branch from the previous remote dispatch.",
-                ))?;
-        let worktree_path =
-            previous_dispatch
-                .worktree_path
-                .clone()
-                .ok_or_else(task_dispatch_not_found(
-                    task_id,
-                    "does not have a reusable worktree from the previous remote dispatch.",
-                ))?;
+                "does not have a reusable branch from the previous remote dispatch.",
+            )
+        })?;
+        let worktree_path = previous_dispatch.worktree_path.clone().ok_or_else(|| {
+            dispatch_not_found(
+                task_id,
+                "does not have a reusable worktree from the previous remote dispatch.",
+            )
+        })?;
 
         let updated_task =
             self.append_follow_up_request_to_task(task_id, trimmed_follow_up_request)?;
@@ -278,10 +274,9 @@ impl<'a> RemoteDispatchService<'a> {
             .latest_dispatches_for_tasks(&[task_id.to_owned()])?
             .into_iter()
             .next()
-            .ok_or_else(task_dispatch_not_found(
-                task_id,
-                "does not have a remote dispatch to cancel.",
-            ))?;
+            .ok_or_else(|| {
+                dispatch_not_found(task_id, "does not have a remote dispatch to cancel.")
+            })?;
 
         if !latest_dispatch.status.is_active() {
             return Err(TrackError::new(
@@ -302,10 +297,9 @@ impl<'a> RemoteDispatchService<'a> {
         let latest_dispatch = self
             .dispatch_repository
             .latest_dispatch_for_task(task_id)?
-            .ok_or_else(task_dispatch_not_found(
-                task_id,
-                "does not have a remote dispatch to discard.",
-            ))?;
+            .ok_or_else(|| {
+                dispatch_not_found(task_id, "does not have a remote dispatch to discard.")
+            })?;
 
         if latest_dispatch.status.is_active() {
             return Err(TrackError::new(
@@ -571,7 +565,7 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(refreshed_records)
     }
 
-    pub(in crate::service) fn cleanup_task_remote_artifacts(
+    pub(super) fn cleanup_task_remote_artifacts(
         &self,
         task_id: &str,
         dispatch_history: &[TaskDispatchRecord],
@@ -581,7 +575,7 @@ impl<'a> RemoteDispatchService<'a> {
             return Ok(RemoteArtifactCleanupCounts::default());
         }
 
-        let remote_agent = self.load_remote_agent_for_cleanup(task_id)?;
+        let remote_agent = self.load_remote_agent(task_id)?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
         let checkout_path = workspace.resolve_checkout_path(&dispatch_history[0].project)?;
@@ -596,7 +590,7 @@ impl<'a> RemoteDispatchService<'a> {
         )
     }
 
-    pub(in crate::service) fn finalize_active_dispatches_locally(
+    pub(super) fn finalize_active_dispatches_locally(
         &self,
         dispatch_history: &[TaskDispatchRecord],
         status: DispatchStatus,
@@ -672,25 +666,7 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<(), TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
+        let remote_agent = self.load_remote_agent(&dispatch_record.task_id)?;
 
         let Some(worktree_path) = dispatch_record.worktree_path.as_deref() else {
             return Ok(());
@@ -745,25 +721,7 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         task_id: &str,
     ) -> Result<(RemoteAgentRuntimeConfig, Task, ProjectMetadata), TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
+        let remote_agent = self.load_remote_agent(task_id)?;
 
         if remote_agent
             .shell_prelude
@@ -785,19 +743,14 @@ impl<'a> RemoteDispatchService<'a> {
         Ok((remote_agent, task, project.metadata))
     }
 
-    fn load_remote_agent_for_cleanup(
-        &self,
-        task_id: &str,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
+    fn load_remote_agent(&self, task_id: &str) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
             .load_remote_agent_runtime_config()?
             .ok_or_else(|| {
                 TrackError::new(
                     ErrorCode::RemoteAgentNotConfigured,
-                    format!(
-                        "Task {task_id} has remote dispatch history, but remote-agent configuration is missing so cleanup cannot run."
-                    ),
+                    format!("Task {task_id}: Remote agent configuration is missing."),
                 )
             })?;
 
@@ -805,7 +758,7 @@ impl<'a> RemoteDispatchService<'a> {
             return Err(TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task {task_id}.",
+                    "Task {task_id}: Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task.",
                     collapse_home_path(&remote_agent.managed_key_path)
                 ),
             ));
@@ -830,142 +783,17 @@ fn validate_project_metadata_for_dispatch(metadata: &ProjectMetadata) -> Result<
     Ok(())
 }
 
-// =============================================================================
-// Task Dispatch Record Transitions
-// =============================================================================
-//
-// `TaskDispatchRecord` lives in shared types, but this file owns the dispatch-
-// specific meaning of "queued", "follow-up", "preparing", and similar states.
-// A local extension trait keeps those transitions readable without pretending
-// the shared type should expose these domain rules everywhere.
-trait TaskDispatchRecordExt {
-    fn populated(self, remote_agent: &RemoteAgentRuntimeConfig, task: &Task) -> Self;
-    fn populated_follow_up(
-        self,
-        branch_name: String,
-        worktree_path: String,
-        pull_request_url: Option<String>,
-        follow_up_request: &str,
-        previous_dispatch: &TaskDispatchRecord,
-    ) -> Self;
-    fn into_preparing(self, summary: &str) -> Self;
-    fn into_running(self) -> Self;
-    fn into_failed(self, error_message: String) -> Self;
-    fn into_canceled_from_ui(self) -> Self;
-    fn into_locally_finalized(
-        self,
-        status: DispatchStatus,
-        summary: &str,
-        error_message: Option<&str>,
-    ) -> Self;
+fn dispatch_not_found(task_id: &str, detail: &str) -> TrackError {
+    TrackError::new(
+        ErrorCode::DispatchNotFound,
+        format!("Task {task_id} {detail}"),
+    )
 }
 
-impl TaskDispatchRecordExt for TaskDispatchRecord {
-    fn populated(mut self, remote_agent: &RemoteAgentRuntimeConfig, task: &Task) -> Self {
-        self.branch_name = Some(format!("track/{}", self.dispatch_id));
-        self.worktree_path = Some(format!(
-            "{}/{}/worktrees/{}",
-            remote_agent.workspace_root.trim_end_matches('/'),
-            task.project,
-            self.dispatch_id
-        ));
-        self.updated_at = now_utc();
-        self
-    }
-
-    fn populated_follow_up(
-        mut self,
-        branch_name: String,
-        worktree_path: String,
-        pull_request_url: Option<String>,
-        follow_up_request: &str,
-        previous_dispatch: &TaskDispatchRecord,
-    ) -> Self {
-        self.branch_name = Some(branch_name);
-        self.worktree_path = Some(worktree_path);
-        self.pull_request_url = pull_request_url;
-        self.follow_up_request = Some(follow_up_request.to_owned());
-        self.review_request_head_oid = previous_dispatch.review_request_head_oid.clone();
-        self.review_request_user = previous_dispatch.review_request_user.clone();
-        self.summary = Some(format!(
-            "Follow-up request: {}",
-            first_follow_up_line(follow_up_request)
-        ));
-        self.updated_at = now_utc();
-        self
-    }
-
-    fn into_preparing(mut self, summary: &str) -> Self {
-        self.status = DispatchStatus::Preparing;
-        self.summary = Some(summary.to_owned());
-        self.updated_at = now_utc();
-        self.finished_at = None;
-        self.error_message = None;
-        self
-    }
-
-    fn into_running(mut self) -> Self {
-        self.status = DispatchStatus::Running;
-        self.updated_at = now_utc();
-        self.finished_at = None;
-        self.summary = Some("The remote agent is working in the prepared environment.".to_owned());
-        self.error_message = None;
-        self
-    }
-
-    fn into_failed(mut self, error_message: String) -> Self {
-        self.status = DispatchStatus::Failed;
-        self.updated_at = now_utc();
-        self.finished_at = Some(self.updated_at);
-        self.error_message = Some(error_message);
-        self
-    }
-
-    fn into_canceled_from_ui(self) -> Self {
-        self.into_locally_finalized(DispatchStatus::Canceled, "Canceled from the web UI.", None)
-    }
-
-    fn into_locally_finalized(
-        mut self,
-        status: DispatchStatus,
-        summary: &str,
-        error_message: Option<&str>,
-    ) -> Self {
-        let finished_at = now_utc();
-        self.status = status;
-        self.updated_at = finished_at;
-        self.finished_at = Some(finished_at);
-        self.summary = Some(summary.to_owned());
-        self.notes = None;
-        self.error_message = error_message.map(ToOwned::to_owned);
-        self
-    }
-}
-
-fn task_dispatch_not_found<'a>(
-    task_id: &'a str,
-    detail: &'a str,
-) -> impl FnOnce() -> TrackError + 'a {
-    move || {
-        TrackError::new(
-            ErrorCode::DispatchNotFound,
-            format!("Task {task_id} {detail}"),
-        )
-    }
-}
-
-fn first_follow_up_line(follow_up_request: &str) -> String {
-    follow_up_request
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("Continue the previous remote task.")
-        .to_owned()
-}
-
-pub(in crate::service) fn select_follow_up_base_dispatch(
+pub(super) fn select_follow_up_base_dispatch(
+    task_id: &str,
     dispatch_history: &[TaskDispatchRecord],
-) -> Option<TaskDispatchRecord> {
+) -> Result<TaskDispatchRecord, TrackError> {
     dispatch_history
         .iter()
         .find(|record| {
@@ -974,9 +802,15 @@ pub(in crate::service) fn select_follow_up_base_dispatch(
                 && record.worktree_path.is_some()
         })
         .cloned()
+        .ok_or_else(|| {
+            dispatch_not_found(
+                task_id,
+                "does not have a previous reusable remote dispatch to follow up on.",
+            )
+        })
 }
 
-pub(in crate::service) fn latest_pull_request_for_branch(
+pub(super) fn latest_pull_request_for_branch(
     dispatch_history: &[TaskDispatchRecord],
     branch_name: &str,
 ) -> Option<String> {
@@ -1063,7 +897,7 @@ fn derive_remote_run_directory_for_record(
     ))
 }
 
-pub(in crate::service) fn refresh_dispatch_record_from_snapshot(
+pub(super) fn refresh_dispatch_record_from_snapshot(
     record: TaskDispatchRecord,
     snapshot: &RemoteDispatchSnapshot,
 ) -> Result<TaskDispatchRecord, TrackError> {
@@ -1108,9 +942,7 @@ pub(in crate::service) fn refresh_dispatch_record_from_snapshot(
     ))
 }
 
-pub(in crate::service) fn unique_worktree_paths(
-    dispatch_history: &[TaskDispatchRecord],
-) -> Vec<String> {
+pub(super) fn unique_worktree_paths(dispatch_history: &[TaskDispatchRecord]) -> Vec<String> {
     dispatch_history
         .iter()
         .filter_map(|record| record.worktree_path.as_deref())
@@ -1122,7 +954,7 @@ pub(in crate::service) fn unique_worktree_paths(
         .collect()
 }
 
-pub(in crate::service) fn unique_run_directories(
+pub(super) fn unique_run_directories(
     dispatch_history: &[TaskDispatchRecord],
     remote_agent: &RemoteAgentRuntimeConfig,
 ) -> Vec<String> {
@@ -1132,61 +964,4 @@ pub(in crate::service) fn unique_run_directories(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-#[derive(Debug, Default)]
-struct TaskDispatchStartGate {
-    active_task_ids: Mutex<BTreeSet<String>>,
-    wake_waiters: Condvar,
-}
-
-#[derive(Debug)]
-pub(crate) struct TaskDispatchStartGuard {
-    task_id: String,
-}
-
-impl TaskDispatchStartGuard {
-    pub(crate) fn acquire(task_id: &str) -> Self {
-        let gate = task_dispatch_start_gate();
-        let mut active_task_ids = gate
-            .active_task_ids
-            .lock()
-            .expect("dispatch start gate should not be poisoned");
-
-        while active_task_ids.contains(task_id) {
-            active_task_ids = gate
-                .wake_waiters
-                .wait(active_task_ids)
-                .expect("dispatch start gate should not be poisoned");
-        }
-
-        active_task_ids.insert(task_id.to_owned());
-
-        Self {
-            task_id: task_id.to_owned(),
-        }
-    }
-}
-
-impl Drop for TaskDispatchStartGuard {
-    fn drop(&mut self) {
-        let gate = task_dispatch_start_gate();
-        let mut active_task_ids = gate
-            .active_task_ids
-            .lock()
-            .expect("dispatch start gate should not be poisoned");
-        active_task_ids.remove(&self.task_id);
-        gate.wake_waiters.notify_all();
-    }
-}
-
-fn task_dispatch_start_gate() -> &'static TaskDispatchStartGate {
-    static GATE: OnceLock<TaskDispatchStartGate> = OnceLock::new();
-
-    // Dispatch start requests are handled by one long-lived API process in the
-    // deployed shape, so a process-local gate is enough to close the race
-    // between "no active dispatch exists" and "persist a new preparing record".
-    // This keeps the fix lightweight and avoids inventing filesystem locks for
-    // a code path that only needs in-process serialization.
-    GATE.get_or_init(TaskDispatchStartGate::default)
 }
