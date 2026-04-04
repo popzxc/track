@@ -104,6 +104,8 @@ fn should_color() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::IsTerminal as _;
+
     use super::{format_note, format_prompt_label, format_summary, SummaryTone, ValueTone};
 
     #[test]
@@ -114,32 +116,53 @@ mod tests {
         );
     }
 
+    // TODO: Tests that depend on this are questionable, do we want them?
+    fn ensure_no_terminal<F: FnOnce() -> ()>(test: F) {
+        static GUARD: std::sync::LazyLock<std::sync::Mutex<()>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+        let _lock = GUARD.lock().unwrap();
+
+        // Make test pass if it's actually runs from a terminal
+        if std::io::stdout().is_terminal() {
+            unsafe { std::env::set_var("NO_COLOR", "1") };
+        }
+
+        test();
+
+        if std::io::stdout().is_terminal() {
+            unsafe { std::env::remove_var("NO_COLOR") };
+        }
+    }
+
     #[test]
     fn renders_plain_note_without_a_terminal() {
-        assert_eq!(
-            format_note("Enter", "keep current values"),
-            "  Enter     keep current values"
-        );
+        ensure_no_terminal(|| {
+            assert_eq!(
+                format_note("Enter", "keep current values"),
+                "  Enter     keep current values"
+            );
+        });
     }
 
     #[test]
     fn renders_plain_summary_without_a_terminal() {
-        let rendered = format_summary(
-            "Created task",
-            SummaryTone::Success,
-            &[
-                ("Project", "project-x".to_owned(), ValueTone::Plain),
-                (
-                    "File",
-                    "~/.track/issues/project-x/open/task.md".to_owned(),
-                    ValueTone::Path,
-                ),
-            ],
-        );
+        ensure_no_terminal(|| {
+            let rendered = format_summary(
+                "Created task",
+                SummaryTone::Success,
+                &[
+                    ("Project", "project-x".to_owned(), ValueTone::Plain),
+                    (
+                        "File",
+                        "~/.track/issues/project-x/open/task.md".to_owned(),
+                        ValueTone::Path,
+                    ),
+                ],
+            );
 
-        assert_eq!(
-            rendered,
-            "Created task\n  Project  project-x\n  File     ~/.track/issues/project-x/open/task.md"
-        );
+            assert_eq!(
+                rendered,
+                "Created task\n  Project  project-x\n  File     ~/.track/issues/project-x/open/task.md"
+            );
+        });
     }
 }

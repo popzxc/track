@@ -25,6 +25,20 @@ They are not intended to replace the fast frontend unit/component suite.
 
 ## Running
 
+Before running, you need to install chromium:
+
+```sh
+cd frontend
+bunx playwright install chromium
+```
+
+Or (CI variant):
+
+```sh
+cd frontend
+bunx playwright install --with-deps chromium
+```
+
 From `frontend/`:
 
 - `bun run test` for the fast unit/component suite
