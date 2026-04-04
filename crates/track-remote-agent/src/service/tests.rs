@@ -660,7 +660,7 @@ fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
     assert!(updated_dispatch
         .error_message
         .as_deref()
-        .is_some_and(|message| message.contains("remote-agent configuration is missing")));
+        .is_some_and(|message| message.contains("Remote agent configuration is missing")));
 }
 
 #[test]
