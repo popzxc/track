@@ -129,17 +129,19 @@ Important implication:
 
 From the repo root:
 
-- `cargo test --workspace`
-- `cargo build --release -p track-cli`
-- `cargo build --release -p track-api`
-- `cargo run -p track-api`
-- `RUN_TRACK_INTEGRATION_TESTS=true cargo test -p track-integration-tests --test remote_dispatch -- --nocapture`
-- `cd frontend && bun install`
-- `cd frontend && bun run dev`
-- `cd frontend && bun run typecheck`
-- `cd frontend && bun run build`
+- `just test-rust`
+- `just build-rust`
+- `just run-api`
+- `just test-int`
+- `just run-fe`
+- `just test-fe`
+- `just build-fe`
+- `just build-docs`
+- `just run-docs`
 
-Use Cargo for backend work. Use Bun only inside `frontend/`.
+Prefer the repository `justfile` for routine development tasks. The `just`
+recipes are the canonical shortcuts for the underlying Cargo, Bun, and Docker
+commands.
 
 ## Testing Guidance
 

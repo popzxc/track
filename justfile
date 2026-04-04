@@ -31,6 +31,13 @@ build-all: build-rust build-fe build-docs
 run-docs: build-docs
   {{bun}} run dev
 
+[working-directory: "frontend"]
+run-fe: build-fe
+  {{bun}} run dev
+
+run-api:
+  {{cargo}} run -p track-api
+
 # Install the CLI from the current checkout.
 install-cli:
   {{cargo}} install --path crates/track-cli --force --locked
@@ -64,10 +71,17 @@ test-e2e:
 # Run all local test suites.
 test-all: test-rust test-fe test-int test-e2e
 
-# Check formatting and deny Clippy warnings.
-lint:
+# Rust lints
+lint-rust:
   {{cargo}} fmt --all -- --check
   {{cargo}} clippy --workspace -- -D warnings
+
+# TypeScript lints
+lint-ts:
+  {{bun}} run typecheck
+
+# Check lints in the project.
+lint: lint-rust lint-ts
 
 # Run lint and every local test suite.
 pr-ready: lint test-all

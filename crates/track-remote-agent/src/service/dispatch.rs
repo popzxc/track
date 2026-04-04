@@ -31,10 +31,10 @@ use super::remote_agent_services::{
 };
 
 pub struct RemoteDispatchService<'a> {
-    pub(in crate::service) config_service: &'a dyn RemoteAgentConfigProvider,
-    pub(in crate::service) dispatch_repository: &'a DispatchRepository,
-    pub(in crate::service) project_repository: &'a ProjectRepository,
-    pub(in crate::service) task_repository: &'a FileTaskRepository,
+    pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
+    pub(super) dispatch_repository: &'a DispatchRepository,
+    pub(super) project_repository: &'a ProjectRepository,
+    pub(super) task_repository: &'a FileTaskRepository,
 }
 
 impl<'a> RemoteDispatchService<'a> {
