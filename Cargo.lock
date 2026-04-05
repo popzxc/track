@@ -2713,9 +2713,9 @@ name = "track-projects"
 version = "0.3.0"
 dependencies = [
  "serde",
+ "tempfile",
  "track-config",
  "track-types",
- "walkdir",
 ]
 
 [[package]]

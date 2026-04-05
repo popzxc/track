@@ -475,11 +475,11 @@ fn merge_discovered_legacy_projects(
     legacy_config_path: &Path,
     legacy_home_dir: &Path,
 ) -> Result<(), TrackError> {
-    // Legacy CLI capture could target any discovered repository under the
-    // configured project roots, even before that project had task files on
-    // disk. The SQLite backend now owns the project registry, so we must
-    // carry that discovered set forward or those repositories disappear until
-    // the user re-registers them manually.
+    // Legacy CLI capture could target any repository discovered directly under
+    // the configured project roots, even before that project had task files on
+    // disk. The SQLite backend now owns the project registry, so we must carry
+    // that discovered set forward or those repositories disappear until the
+    // user re-registers them manually.
     let project_roots = config
         .project_roots
         .iter()

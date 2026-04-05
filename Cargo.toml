@@ -52,4 +52,3 @@ track-remote-agent = { version = "0.3.0", path = "crates/track-remote-agent" } #
 track-types = { version = "0.3.0", path = "crates/track-types" } # x-release-please-version
 ureq = "3.2.0"
 url = "2.5.4"
-walkdir = "2.5.0"

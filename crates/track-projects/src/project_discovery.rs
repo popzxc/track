@@ -1,32 +1,12 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use track_config::runtime::TrackRuntimeConfig;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::ProjectId;
-use walkdir::{DirEntry, WalkDir};
 
 use crate::project_catalog::{ProjectCatalog, ProjectInfo};
-
-const IGNORED_DIRECTORIES: &[&str] = &[
-    ".git",
-    "node_modules",
-    "dist",
-    "target",
-    ".next",
-    ".turbo",
-    ".venv",
-];
-
-fn is_ignored_directory(entry: &DirEntry) -> bool {
-    entry.depth() > 0
-        && entry.file_type().is_dir()
-        && entry
-            .file_name()
-            .to_str()
-            .map(|name| IGNORED_DIRECTORIES.contains(&name))
-            .unwrap_or(false)
-}
 
 fn has_git_marker(path: &Path) -> bool {
     path.join(".git").exists()
@@ -42,24 +22,28 @@ pub fn discover_projects_from_roots(
 ) -> Result<ProjectCatalog, TrackError> {
     let mut discovered_projects = BTreeMap::<String, ProjectInfo>::new();
 
-    // We discover canonical project names from the filesystem first and only
-    // then layer aliases on top. That keeps aliases from inventing projects.
+    // Project roots are directories that directly contain repositories. We do
+    // not recurse because recursive discovery makes project registration
+    // implicit and surprising:
+    // - nested repositories become visible without being named as roots
+    // - git submodules get misclassified as first-class projects
+    // - ignore lists become an unbounded policy surface
+    //
+    // Requiring each nesting level to be an explicit configured root keeps the
+    // discovery contract predictable and cheap to evaluate.
     for root in project_roots {
         if !root.exists() {
             continue;
         }
 
-        // Once we have identified a repository root, deeper files inside that
-        // repository cannot produce a second canonical project name. We stop
-        // descending there so scan cost tracks repository count rather than
-        // repository size.
-        //
-        // TODO: If nested repositories become an intentional first-class use
-        // case, revisit this pruning strategy and add an explicit opt-in for
-        // them instead of walking every working tree recursively by default.
-        let mut walker = WalkDir::new(root).follow_links(false).into_iter();
+        let entries = fs::read_dir(root).map_err(|error| {
+            TrackError::new(
+                ErrorCode::InvalidConfig,
+                format!("Could not scan configured project roots: {error}"),
+            )
+        })?;
 
-        while let Some(entry) = walker.next() {
+        for entry in entries {
             let entry = entry.map_err(|error| {
                 TrackError::new(
                     ErrorCode::InvalidConfig,
@@ -67,23 +51,22 @@ pub fn discover_projects_from_roots(
                 )
             })?;
 
-            if is_ignored_directory(&entry) {
-                walker.skip_current_dir();
+            let file_type = entry.file_type().map_err(|error| {
+                TrackError::new(
+                    ErrorCode::InvalidConfig,
+                    format!("Could not scan configured project roots: {error}"),
+                )
+            })?;
+            if !file_type.is_dir() {
                 continue;
             }
 
-            if !entry.file_type().is_dir() {
+            let path = entry.path();
+            if !has_git_marker(&path) {
                 continue;
             }
 
-            if !has_git_marker(entry.path()) {
-                continue;
-            }
-
-            walker.skip_current_dir();
-
-            let canonical_name = entry
-                .path()
+            let canonical_name = path
                 .file_name()
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -97,7 +80,7 @@ pub fn discover_projects_from_roots(
                 .entry(key)
                 .or_insert_with(|| ProjectInfo {
                     canonical_name,
-                    path: entry.path().to_path_buf(),
+                    path,
                     aliases: Vec::new(),
                 });
         }
@@ -112,4 +95,98 @@ pub fn discover_projects_from_roots(
     let mut projects = discovered_projects.into_values().collect::<Vec<_>>();
     projects.sort_by(|left, right| left.canonical_name.cmp(&right.canonical_name));
     Ok(ProjectCatalog::new(projects))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::Path;
+
+    use tempfile::TempDir;
+
+    use super::discover_projects_from_roots;
+
+    fn create_git_project(path: &Path) {
+        fs::create_dir_all(path.join(".git")).expect("fixture git directory should be created");
+    }
+
+    #[test]
+    fn discovers_immediate_child_repositories_from_each_root() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let workspace_root = directory.path().join("workspace");
+        fs::create_dir_all(&workspace_root).expect("workspace root should exist");
+        create_git_project(&workspace_root.join("project-a"));
+        create_git_project(&workspace_root.join("project-b"));
+
+        let catalog =
+            discover_projects_from_roots(&[workspace_root], &BTreeMap::new()).expect("should scan");
+
+        let project_names = catalog
+            .projects()
+            .iter()
+            .map(|project| project.canonical_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(project_names, vec!["project-a", "project-b"]);
+    }
+
+    #[test]
+    fn does_not_recurse_into_nested_directories_or_submodules() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let workspace_root = directory.path().join("workspace");
+        fs::create_dir_all(&workspace_root).expect("workspace root should exist");
+
+        let parent = workspace_root.join("container");
+        fs::create_dir_all(&parent).expect("parent directory should exist");
+        create_git_project(&parent.join("nested-project"));
+        create_git_project(&workspace_root.join("actual-project"));
+
+        let catalog =
+            discover_projects_from_roots(&[workspace_root], &BTreeMap::new()).expect("should scan");
+
+        let project_names = catalog
+            .projects()
+            .iter()
+            .map(|project| project.canonical_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(project_names, vec!["actual-project"]);
+    }
+
+    #[test]
+    fn does_not_treat_the_root_directory_itself_as_a_project() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        create_git_project(directory.path());
+
+        let catalog =
+            discover_projects_from_roots(&[directory.path().to_path_buf()], &BTreeMap::new())
+                .expect("should scan");
+
+        assert!(catalog.projects().is_empty());
+    }
+
+    #[test]
+    fn attaches_aliases_only_to_directly_discovered_projects() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let workspace_root = directory.path().join("workspace");
+        fs::create_dir_all(&workspace_root).expect("workspace root should exist");
+        create_git_project(&workspace_root.join("project-a"));
+
+        let aliases = BTreeMap::from([(String::from("proj-a"), String::from("project-a"))]);
+        let catalog =
+            discover_projects_from_roots(&[workspace_root], &aliases).expect("should scan");
+
+        let project = catalog
+            .projects()
+            .first()
+            .expect("one project should be discovered");
+        assert_eq!(project.canonical_name, "project-a");
+        assert_eq!(
+            project
+                .aliases
+                .iter()
+                .map(|alias| alias.as_str())
+                .collect::<Vec<_>>(),
+            vec!["proj-a"],
+        );
+    }
 }

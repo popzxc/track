@@ -179,7 +179,7 @@ fn prompt_project_roots(
     loop {
         let response = prompt_with_default(
             prompter,
-            "Project roots (comma-separated)",
+            "Project roots (directories containing project folders, comma-separated)",
             Some(&format_project_roots_display(defaults)),
             false,
         )?;

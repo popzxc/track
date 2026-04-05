@@ -13,5 +13,6 @@ readme = "../../README.md"
 serde = { workspace = true, features = ["derive"] }
 track-config = { workspace = true }
 track-types = { workspace = true }
-walkdir = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -28,6 +28,10 @@ pub struct ProjectInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectCatalog {
     projects: Vec<ProjectInfo>,
+    // TODO: Lookup currently contains more permissive strings, e.g. model output can
+    // return `Project-X` and lookup will resolve it even if it's in fact
+    // `project-x`, since it is case-insensitive. This works because we normalize
+    // lookup keys, but it's not clear if that's the behavior we want to keep.
     lookup_by_name: BTreeMap<String, usize>,
 }
 
