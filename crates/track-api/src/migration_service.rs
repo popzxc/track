@@ -11,7 +11,7 @@ use track_config::paths::{
     get_backend_managed_remote_agent_known_hosts_path, get_legacy_config_path, get_legacy_root_dir,
     path_to_string,
 };
-use track_dal::database::DatabaseContext;
+use track_dal::database::{DatabaseContext, DatabaseResultExt};
 use track_dal::dispatch_repository::DispatchRepository;
 use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
@@ -130,89 +130,92 @@ impl MigrationService {
         let summary = snapshot.summary.clone();
         let legacy_root = self.legacy_root.clone();
 
-        self.database
-            .transaction(move |connection| {
-                Box::pin(async move {
-                    let mut copied_secret_files = Vec::new();
-                    let import_result = async {
-                        for project in &imported_projects {
-                            let aliases = imported_aliases
-                                .get(&project.canonical_name)
-                                .cloned()
-                                .unwrap_or_default();
-                            import_project(connection, project, aliases).await?;
-                        }
+        let mut transaction = self.database.begin().await?;
+        let mut copied_secret_files = Vec::new();
+        let import_result = async {
+            for project in &imported_projects {
+                let aliases = imported_aliases
+                    .get(&project.canonical_name)
+                    .cloned()
+                    .unwrap_or_default();
+                import_project(&mut *transaction, project, aliases).await?;
+            }
 
-                        for task in &imported_tasks {
-                            import_task(connection, task).await?;
-                        }
+            for task in &imported_tasks {
+                import_task(&mut *transaction, task).await?;
+            }
 
-                        for review in &imported_reviews {
-                            import_review(connection, review).await?;
-                        }
+            for review in &imported_reviews {
+                import_review(&mut *transaction, review).await?;
+            }
 
-                        for dispatch in &imported_task_dispatches {
-                            import_task_dispatch(connection, dispatch).await?;
-                        }
+            for dispatch in &imported_task_dispatches {
+                import_task_dispatch(&mut *transaction, dispatch).await?;
+            }
 
-                        for review_run in &imported_review_runs {
-                            import_review_run(connection, review_run).await?;
-                        }
+            for review_run in &imported_review_runs {
+                import_review_run(&mut *transaction, review_run).await?;
+            }
 
-                        if let Some(remote_agent) = imported_remote_agent_config.as_ref() {
-                            save_backend_setting_json(
-                                connection,
-                                REMOTE_AGENT_SETTING_KEY,
-                                remote_agent,
-                            )
-                            .await?;
-                        }
+            if let Some(remote_agent) = imported_remote_agent_config.as_ref() {
+                save_backend_setting_json(
+                    &mut *transaction,
+                    REMOTE_AGENT_SETTING_KEY,
+                    remote_agent,
+                )
+                .await?;
+            }
 
-                        copied_secret_files = copy_remote_agent_secret_files(&legacy_root)?;
+            copied_secret_files = copy_remote_agent_secret_files(&legacy_root)?;
 
-                        let imported_summary = MigrationImportSummary {
-                            imported_projects: imported_projects.len(),
-                            imported_aliases: imported_aliases.values().map(Vec::len).sum(),
-                            imported_tasks: imported_tasks.len(),
-                            imported_task_dispatches: imported_task_dispatches.len(),
-                            imported_reviews: imported_reviews.len(),
-                            imported_review_runs: imported_review_runs.len(),
-                            remote_agent_config_imported: imported_remote_agent_config.is_some(),
-                            copied_secret_files: copied_secret_files
-                                .iter()
-                                .map(|path| path_to_string(path))
-                                .collect(),
-                            skipped_records: skipped_records.clone(),
-                            cleanup_candidates: cleanup_candidates.clone(),
-                        };
+            let imported_summary = MigrationImportSummary {
+                imported_projects: imported_projects.len(),
+                imported_aliases: imported_aliases.values().map(Vec::len).sum(),
+                imported_tasks: imported_tasks.len(),
+                imported_task_dispatches: imported_task_dispatches.len(),
+                imported_reviews: imported_reviews.len(),
+                imported_review_runs: imported_review_runs.len(),
+                remote_agent_config_imported: imported_remote_agent_config.is_some(),
+                copied_secret_files: copied_secret_files
+                    .iter()
+                    .map(|path| path_to_string(path))
+                    .collect(),
+                skipped_records: skipped_records.clone(),
+                cleanup_candidates: cleanup_candidates.clone(),
+            };
 
-                        save_backend_setting_json(
-                            connection,
-                            MIGRATION_STATUS_SETTING_KEY,
-                            &MigrationStatus {
-                                state: MigrationState::Imported,
-                                requires_migration: false,
-                                can_import: false,
-                                legacy_detected: true,
-                                summary,
-                                skipped_records: imported_summary.skipped_records.clone(),
-                                cleanup_candidates: imported_summary.cleanup_candidates.clone(),
-                            },
-                        )
-                        .await?;
+            save_backend_setting_json(
+                &mut *transaction,
+                MIGRATION_STATUS_SETTING_KEY,
+                &MigrationStatus {
+                    state: MigrationState::Imported,
+                    requires_migration: false,
+                    can_import: false,
+                    legacy_detected: true,
+                    summary,
+                    skipped_records: imported_summary.skipped_records.clone(),
+                    cleanup_candidates: imported_summary.cleanup_candidates.clone(),
+                },
+            )
+            .await?;
 
-                        Ok(imported_summary)
-                    }
-                    .await;
+            Ok(imported_summary)
+        }
+        .await;
 
-                    if import_result.is_err() {
-                        cleanup_copied_secret_files(&copied_secret_files);
-                    }
-
-                    import_result
-                })
-            })
-            .await
+        match import_result {
+            Ok(summary) => {
+                transaction
+                    .commit()
+                    .await
+                    .database_error_with("Could not commit the legacy import transaction")?;
+                Ok(summary)
+            }
+            Err(error) => {
+                cleanup_copied_secret_files(&copied_secret_files);
+                Err(error)
+            }
+        }
     }
 
     async fn database_is_empty(&self) -> Result<bool, TrackError> {
@@ -747,23 +750,15 @@ async fn import_project(
     .bind(project.metadata.description.as_deref())
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::ProjectWriteFailed,
-            format!("Could not import project {canonical_name}: {error}"),
-        )
-    })?;
+    .database_error_with(format!("Could not import project {canonical_name}"))?;
 
     sqlx::query("DELETE FROM project_aliases WHERE canonical_name = ?1")
         .bind(&canonical_name)
         .execute(&mut *connection)
         .await
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!("Could not replace project aliases for {canonical_name}: {error}"),
-            )
-        })?;
+        .database_error_with(format!(
+            "Could not replace project aliases for {canonical_name}"
+        ))?;
 
     for alias in aliases {
         sqlx::query(
@@ -776,12 +771,9 @@ async fn import_project(
         .bind(&alias)
         .execute(&mut *connection)
         .await
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!("Could not save the alias {alias} for project {canonical_name}: {error}"),
-            )
-        })?;
+        .database_error_with(format!(
+            "Could not save the alias {alias} for project {canonical_name}"
+        ))?;
     }
 
     Ok(())
@@ -812,12 +804,7 @@ async fn import_task(connection: &mut SqliteConnection, task: &Task) -> Result<(
     .bind(task.source.map(task_source_as_str))
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Could not import task {}: {error}", task.id),
-        )
-    })?;
+    .database_error_with(format!("Could not import task {}", task.id))?;
 
     Ok(())
 }
@@ -869,12 +856,7 @@ async fn import_review(
     .bind(format_iso_8601_millis(review.updated_at))
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Could not import review {}: {error}", review.id),
-        )
-    })?;
+    .database_error_with(format!("Could not import review {}", review.id))?;
 
     Ok(())
 }
@@ -940,15 +922,10 @@ async fn import_task_dispatch(
     .bind(dispatch.review_request_user.as_deref())
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::DispatchWriteFailed,
-            format!(
-                "Could not import the dispatch record for task {}: {error}",
-                dispatch.task_id
-            ),
-        )
-    })?;
+    .database_error_with(format!(
+        "Could not import the dispatch record for task {}",
+        dispatch.task_id
+    ))?;
 
     Ok(())
 }
@@ -1022,15 +999,10 @@ async fn import_review_run(
     .bind(review_run.error_message.as_deref())
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::DispatchWriteFailed,
-            format!(
-                "Could not import the review run record for review {}: {error}",
-                review_run.review_id
-            ),
-        )
-    })?;
+    .database_error_with(format!(
+        "Could not import the review run record for review {}",
+        review_run.review_id
+    ))?;
 
     Ok(())
 }
@@ -1061,12 +1033,7 @@ where
     .bind(&serialized)
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Could not save backend setting `{key}`: {error}"),
-        )
-    })?;
+    .database_error_with(format!("Could not save backend setting `{key}`"))?;
 
     Ok(())
 }

@@ -8,7 +8,7 @@ use track_projects::project_metadata::{
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 
-use crate::database::DatabaseContext;
+use crate::database::{DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct ProjectRepository {
@@ -17,7 +17,7 @@ pub struct ProjectRepository {
 
 impl ProjectRepository {
     pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path)?;
+        let database = DatabaseContext::new(database_path).await?;
         database.initialize().await?;
 
         Ok(Self { database })
@@ -34,44 +34,34 @@ impl ProjectRepository {
     }
 
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, TrackError> {
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let rows = sqlx::query(
-                        r#"
-                    SELECT canonical_name, repo_url, git_url, base_branch, description
-                    FROM projects
-                    ORDER BY canonical_name ASC
-                    "#,
-                    )
-                    .fetch_all(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::ProjectWriteFailed,
-                            format!("Could not load projects from SQLite: {error}"),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT canonical_name, repo_url, git_url, base_branch, description
+            FROM projects
+            ORDER BY canonical_name ASC
+            "#,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .database_error_with("Could not load projects from SQLite")?;
 
-                    let mut records = Vec::with_capacity(rows.len());
-                    for row in rows {
-                        let canonical_name = row.get::<String, _>("canonical_name");
-                        records.push(ProjectRecord {
-                            aliases: load_aliases(connection, &canonical_name).await?,
-                            metadata: ProjectMetadata {
-                                repo_url: row.get::<String, _>("repo_url"),
-                                git_url: row.get::<String, _>("git_url"),
-                                base_branch: row.get::<String, _>("base_branch"),
-                                description: row.get::<Option<String>, _>("description"),
-                            },
-                            canonical_name,
-                        });
-                    }
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let canonical_name = row.get::<String, _>("canonical_name");
+            records.push(ProjectRecord {
+                aliases: load_aliases(&mut connection, &canonical_name).await?,
+                metadata: ProjectMetadata {
+                    repo_url: row.get::<String, _>("repo_url"),
+                    git_url: row.get::<String, _>("git_url"),
+                    base_branch: row.get::<String, _>("base_branch"),
+                    description: row.get::<Option<String>, _>("description"),
+                },
+                canonical_name,
+            });
+        }
 
-                    Ok(records)
-                })
-            })
-            .await
+        Ok(records)
     }
 
     pub async fn get_project_by_name(
@@ -84,45 +74,37 @@ impl ProjectRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row = sqlx::query(
-                        r#"
-                    SELECT canonical_name, repo_url, git_url, base_branch, description
-                    FROM projects
-                    WHERE canonical_name = ?1
-                    "#,
-                    )
-                    .bind(&canonical_name)
-                    .fetch_optional(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::ProjectWriteFailed,
-                            format!("Could not load project {canonical_name} from SQLite: {error}"),
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        TrackError::new(
-                            ErrorCode::ProjectNotFound,
-                            format!("Project {canonical_name} was not found."),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT canonical_name, repo_url, git_url, base_branch, description
+            FROM projects
+            WHERE canonical_name = ?1
+            "#,
+        )
+        .bind(&canonical_name)
+        .fetch_optional(&mut *connection)
+        .await
+        .database_error_with(format!(
+            "Could not load project {canonical_name} from SQLite"
+        ))?
+        .ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::ProjectNotFound,
+                format!("Project {canonical_name} was not found."),
+            )
+        })?;
 
-                    Ok(ProjectRecord {
-                        aliases: load_aliases(connection, &canonical_name).await?,
-                        metadata: ProjectMetadata {
-                            repo_url: row.get::<String, _>("repo_url"),
-                            git_url: row.get::<String, _>("git_url"),
-                            base_branch: row.get::<String, _>("base_branch"),
-                            description: row.get::<Option<String>, _>("description"),
-                        },
-                        canonical_name,
-                    })
-                })
-            })
-            .await
+        Ok(ProjectRecord {
+            aliases: load_aliases(&mut connection, &canonical_name).await?,
+            metadata: ProjectMetadata {
+                repo_url: row.get::<String, _>("repo_url"),
+                git_url: row.get::<String, _>("git_url"),
+                base_branch: row.get::<String, _>("base_branch"),
+                description: row.get::<Option<String>, _>("description"),
+            },
+            canonical_name,
+        })
     }
 
     pub async fn update_project_by_name(
@@ -156,77 +138,70 @@ impl ProjectRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.transaction(move |connection| {
-            Box::pin(async move {
-                // Project registration is intentionally additive by default so
-                // a routine re-registration cannot silently discard aliases
-                // that were migrated from legacy state or added earlier.
-                let mut merged_aliases = load_aliases(connection, &canonical_name).await?;
-                merged_aliases.extend(aliases);
-                merged_aliases.retain(|alias| alias != &canonical_name);
-                merged_aliases.sort();
-                merged_aliases.dedup();
+        let mut transaction = self.database.begin().await?;
 
-                // Alias registration is part of the same logical write as the
-                // project metadata update. We therefore reject conflicts before
-                // mutating anything so callers never observe a half-applied
-                // registration when another project already owns an alias.
-                ensure_aliases_are_available(connection, &canonical_name, &merged_aliases).await?;
+        // Project registration is intentionally additive by default so a
+        // routine re-registration cannot silently discard aliases that were
+        // migrated from legacy state or added earlier.
+        let mut merged_aliases = load_aliases(&mut *transaction, &canonical_name).await?;
+        merged_aliases.extend(aliases);
+        merged_aliases.retain(|alias| alias != &canonical_name);
+        merged_aliases.sort();
+        merged_aliases.dedup();
 
-                sqlx::query(
-                    r#"
-                    INSERT INTO projects (canonical_name, repo_url, git_url, base_branch, description)
-                    VALUES (?1, ?2, ?3, ?4, ?5)
-                    ON CONFLICT(canonical_name) DO UPDATE SET
-                        repo_url = excluded.repo_url,
-                        git_url = excluded.git_url,
-                        base_branch = excluded.base_branch,
-                        description = excluded.description
-                    "#,
-                )
-                .bind(&canonical_name)
-                .bind(&metadata.repo_url)
-                .bind(&metadata.git_url)
-                .bind(&metadata.base_branch)
-                .bind(metadata.description.as_deref())
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::ProjectWriteFailed,
-                        format!("Could not save project {canonical_name}: {error}"),
-                    )
-                })?;
+        // Alias registration is part of the same logical write as the project
+        // metadata update. We therefore reject conflicts before mutating
+        // anything so callers never observe a half-applied registration when
+        // another project already owns an alias.
+        ensure_aliases_are_available(&mut *transaction, &canonical_name, &merged_aliases).await?;
 
-                for alias in &merged_aliases {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO project_aliases (canonical_name, alias)
-                        VALUES (?1, ?2)
-                        ON CONFLICT(canonical_name, alias) DO NOTHING
-                        "#,
-                    )
-                    .bind(&canonical_name)
-                    .bind(alias)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::ProjectWriteFailed,
-                            format!(
-                                "Could not save the alias {alias} for project {canonical_name}: {error}"
-                            ),
-                        )
-                    })?;
-                }
+        sqlx::query(
+            r#"
+            INSERT INTO projects (canonical_name, repo_url, git_url, base_branch, description)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(canonical_name) DO UPDATE SET
+                repo_url = excluded.repo_url,
+                git_url = excluded.git_url,
+                base_branch = excluded.base_branch,
+                description = excluded.description
+            "#,
+        )
+        .bind(&canonical_name)
+        .bind(&metadata.repo_url)
+        .bind(&metadata.git_url)
+        .bind(&metadata.base_branch)
+        .bind(metadata.description.as_deref())
+        .execute(&mut *transaction)
+        .await
+        .database_error_with(format!("Could not save project {canonical_name}"))?;
 
-                Ok(ProjectRecord {
-                    canonical_name,
-                    aliases: merged_aliases,
-                    metadata,
-                })
-            })
-        }).await
+        for alias in &merged_aliases {
+            sqlx::query(
+                r#"
+                INSERT INTO project_aliases (canonical_name, alias)
+                VALUES (?1, ?2)
+                ON CONFLICT(canonical_name, alias) DO NOTHING
+                "#,
+            )
+            .bind(&canonical_name)
+            .bind(alias)
+            .execute(&mut *transaction)
+            .await
+            .database_error_with(format!(
+                "Could not save the alias {alias} for project {canonical_name}"
+            ))?;
+        }
+
+        transaction
+            .commit()
+            .await
+            .database_error_with("Could not commit the project transaction")?;
+
+        Ok(ProjectRecord {
+            canonical_name,
+            aliases: merged_aliases,
+            metadata,
+        })
     }
 }
 
@@ -245,12 +220,9 @@ async fn load_aliases(
     .bind(canonical_name)
     .fetch_all(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::ProjectWriteFailed,
-            format!("Could not load project aliases for {canonical_name}: {error}"),
-        )
-    })?;
+    .database_error_with(format!(
+        "Could not load project aliases for {canonical_name}"
+    ))?;
 
     Ok(rows
         .into_iter()
@@ -274,12 +246,9 @@ async fn ensure_aliases_are_available(
         .bind(alias)
         .fetch_optional(&mut *connection)
         .await
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::ProjectWriteFailed,
-                format!("Could not verify whether alias {alias} is available: {error}"),
-            )
-        })?;
+        .database_error_with(format!(
+            "Could not verify whether alias {alias} is available"
+        ))?;
 
         if let Some(row) = row {
             let claimed_by = row.get::<String, _>("canonical_name");

@@ -305,6 +305,7 @@ mod tests {
     async fn repository() -> (TempDir, BackendConfigRepository) {
         let directory = TempDir::new().expect("tempdir should be created");
         let database = DatabaseContext::new(Some(directory.path().join("track.sqlite")))
+            .await
             .expect("database should resolve");
         let settings = SettingsRepository::new(Some(database))
             .await

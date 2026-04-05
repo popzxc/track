@@ -2,7 +2,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use sqlx::Row;
 use track_types::errors::{ErrorCode, TrackError};
 
-use crate::database::DatabaseContext;
+use crate::database::{DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct SettingsRepository {
@@ -13,7 +13,7 @@ impl SettingsRepository {
     pub async fn new(database: Option<DatabaseContext>) -> Result<Self, TrackError> {
         let database = match database {
             Some(database) => database,
-            None => DatabaseContext::new(None)?,
+            None => DatabaseContext::new(None).await?,
         };
         database.initialize().await?;
 
@@ -25,35 +25,24 @@ impl SettingsRepository {
         T: DeserializeOwned + Send + 'static,
     {
         let key = key.to_owned();
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row = sqlx::query(
-                        "SELECT setting_json FROM backend_settings WHERE setting_key = ?1",
-                    )
-                    .bind(&key)
-                    .fetch_optional(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not load backend setting `{key}`: {error}"),
-                        )
-                    })?;
-
-                    row.map(|row| {
-                        serde_json::from_str::<T>(row.get::<String, _>("setting_json").as_str())
-                            .map_err(|error| {
-                                TrackError::new(
-                                    ErrorCode::InvalidConfig,
-                                    format!("Backend setting `{key}` is not valid JSON: {error}"),
-                                )
-                            })
-                    })
-                    .transpose()
-                })
-            })
+        let mut connection = self.database.connect().await?;
+        let row = sqlx::query("SELECT setting_json FROM backend_settings WHERE setting_key = ?1")
+            .bind(&key)
+            .fetch_optional(&mut *connection)
             .await
+            .database_error_with(format!("Could not load backend setting `{key}`"))?;
+
+        row.map(|row| {
+            serde_json::from_str::<T>(row.get::<String, _>("setting_json").as_str()).map_err(
+                |error| {
+                    TrackError::new(
+                        ErrorCode::InvalidConfig,
+                        format!("Backend setting `{key}` is not valid JSON: {error}"),
+                    )
+                },
+            )
+        })
+        .transpose()
     }
 
     pub async fn save_json<T>(&self, key: &str, value: &T) -> Result<(), TrackError>
@@ -68,53 +57,33 @@ impl SettingsRepository {
             )
         })?;
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query(
-                        r#"
-                    INSERT INTO backend_settings (setting_key, setting_json)
-                    VALUES (?1, ?2)
-                    ON CONFLICT(setting_key) DO UPDATE SET setting_json = excluded.setting_json
-                    "#,
-                    )
-                    .bind(&key)
-                    .bind(&serialized)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not save backend setting `{key}`: {error}"),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO backend_settings (setting_key, setting_json)
+            VALUES (?1, ?2)
+            ON CONFLICT(setting_key) DO UPDATE SET setting_json = excluded.setting_json
+            "#,
+        )
+        .bind(&key)
+        .bind(&serialized)
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!("Could not save backend setting `{key}`"))?;
 
-                    Ok(())
-                })
-            })
-            .await
+        Ok(())
     }
 
     pub async fn delete(&self, key: &str) -> Result<(), TrackError> {
         let key = key.to_owned();
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query("DELETE FROM backend_settings WHERE setting_key = ?1")
-                        .bind(&key)
-                        .execute(&mut *connection)
-                        .await
-                        .map_err(|error| {
-                            TrackError::new(
-                                ErrorCode::TaskWriteFailed,
-                                format!("Could not delete backend setting `{key}`: {error}"),
-                            )
-                        })?;
-
-                    Ok(())
-                })
-            })
+        let mut connection = self.database.connect().await?;
+        sqlx::query("DELETE FROM backend_settings WHERE setting_key = ?1")
+            .bind(&key)
+            .execute(&mut *connection)
             .await
+            .database_error_with(format!("Could not delete backend setting `{key}`"))?;
+
+        Ok(())
     }
 }
 
@@ -136,7 +105,9 @@ mod tests {
     #[tokio::test]
     async fn save_load_and_delete_json_round_trip() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::new(Some(database_path)).expect("database should resolve");
+        let database = DatabaseContext::new(Some(database_path))
+            .await
+            .expect("database should resolve");
         let repository = SettingsRepository::new(Some(database))
             .await
             .expect("settings repository should resolve");
@@ -179,7 +150,9 @@ mod tests {
     #[tokio::test]
     async fn save_json_overwrites_existing_value_for_the_same_key() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::new(Some(database_path)).expect("database should resolve");
+        let database = DatabaseContext::new(Some(database_path))
+            .await
+            .expect("database should resolve");
         let repository = SettingsRepository::new(Some(database))
             .await
             .expect("settings repository should resolve");
@@ -221,28 +194,29 @@ mod tests {
     #[tokio::test]
     async fn load_json_rejects_invalid_json_payloads() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::new(Some(database_path)).expect("database should resolve");
+        let database = DatabaseContext::new(Some(database_path))
+            .await
+            .expect("database should resolve");
         database
             .initialize()
             .await
             .expect("database schema should initialize");
-        database
-            .run(|connection| {
-                Box::pin(async move {
-                    sqlx::query(
-                        "INSERT INTO backend_settings (setting_key, setting_json) VALUES (?1, ?2)",
-                    )
-                    .bind("remote-agent")
-                    .bind("{not-json")
-                    .execute(&mut *connection)
-                    .await
-                    .expect("invalid fixture should insert");
 
-                    Ok(())
-                })
-            })
-            .await
-            .expect("fixture setup should succeed");
+        // The DAL pool is intentionally single-connection. Seed the invalid
+        // fixture row in a narrow scope so repository construction can acquire
+        // that same pooled connection again during initialization.
+        {
+            let mut connection = database
+                .connect()
+                .await
+                .expect("fixture connection should open");
+            sqlx::query("INSERT INTO backend_settings (setting_key, setting_json) VALUES (?1, ?2)")
+                .bind("remote-agent")
+                .bind("{not-json")
+                .execute(&mut *connection)
+                .await
+                .expect("invalid fixture should insert");
+        }
 
         let repository = SettingsRepository::new(Some(database))
             .await

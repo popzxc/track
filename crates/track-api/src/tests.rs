@@ -79,6 +79,7 @@ impl TestEnvironment {
 
 async fn config_service(directory: &TempDir) -> Arc<RemoteAgentConfigService> {
     let database = DatabaseContext::new(Some(database_path(directory)))
+        .await
         .expect("database context should resolve");
     let settings = SettingsRepository::new(Some(database))
         .await

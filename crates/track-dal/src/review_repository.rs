@@ -6,116 +6,101 @@ use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
 use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
 
-use crate::database::DatabaseContext;
+use crate::database::{resolve_database_path, DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct ReviewRepository {
     database: DatabaseContext,
+    reviews_dir: PathBuf,
 }
 
 impl ReviewRepository {
     pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path)?;
+        let reviews_dir = resolve_database_path(database_path)?;
+        let database = DatabaseContext::new(Some(reviews_dir.clone())).await?;
         database.initialize().await?;
 
-        Ok(Self { database })
+        Ok(Self {
+            database,
+            reviews_dir,
+        })
     }
 
     pub fn reviews_dir(&self) -> &std::path::Path {
-        self.database.database_path()
+        &self.reviews_dir
     }
 
     pub async fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
         let review = review.clone();
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query(
-                        r#"
-                    INSERT INTO reviews (
-                        id, pull_request_url, pull_request_number, pull_request_title,
-                        repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                        preferred_tool, project, main_user, default_review_prompt,
-                        extra_instructions, created_at, updated_at
-                    )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-                    ON CONFLICT(id) DO UPDATE SET
-                        pull_request_url = excluded.pull_request_url,
-                        pull_request_number = excluded.pull_request_number,
-                        pull_request_title = excluded.pull_request_title,
-                        repository_full_name = excluded.repository_full_name,
-                        repo_url = excluded.repo_url,
-                        git_url = excluded.git_url,
-                        base_branch = excluded.base_branch,
-                        workspace_key = excluded.workspace_key,
-                        preferred_tool = excluded.preferred_tool,
-                        project = excluded.project,
-                        main_user = excluded.main_user,
-                        default_review_prompt = excluded.default_review_prompt,
-                        extra_instructions = excluded.extra_instructions,
-                        created_at = excluded.created_at,
-                        updated_at = excluded.updated_at
-                    "#,
-                    )
-                    .bind(&review.id)
-                    .bind(&review.pull_request_url)
-                    .bind(review.pull_request_number as i64)
-                    .bind(&review.pull_request_title)
-                    .bind(&review.repository_full_name)
-                    .bind(&review.repo_url)
-                    .bind(&review.git_url)
-                    .bind(&review.base_branch)
-                    .bind(&review.workspace_key)
-                    .bind(review.preferred_tool.as_str())
-                    .bind(review.project.as_deref())
-                    .bind(&review.main_user)
-                    .bind(review.default_review_prompt.as_deref())
-                    .bind(review.extra_instructions.as_deref())
-                    .bind(format_iso_8601_millis(review.created_at))
-                    .bind(format_iso_8601_millis(review.updated_at))
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not save review {}: {error}", review.id),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO reviews (
+                id, pull_request_url, pull_request_number, pull_request_title,
+                repository_full_name, repo_url, git_url, base_branch, workspace_key,
+                preferred_tool, project, main_user, default_review_prompt,
+                extra_instructions, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            ON CONFLICT(id) DO UPDATE SET
+                pull_request_url = excluded.pull_request_url,
+                pull_request_number = excluded.pull_request_number,
+                pull_request_title = excluded.pull_request_title,
+                repository_full_name = excluded.repository_full_name,
+                repo_url = excluded.repo_url,
+                git_url = excluded.git_url,
+                base_branch = excluded.base_branch,
+                workspace_key = excluded.workspace_key,
+                preferred_tool = excluded.preferred_tool,
+                project = excluded.project,
+                main_user = excluded.main_user,
+                default_review_prompt = excluded.default_review_prompt,
+                extra_instructions = excluded.extra_instructions,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&review.id)
+        .bind(&review.pull_request_url)
+        .bind(review.pull_request_number as i64)
+        .bind(&review.pull_request_title)
+        .bind(&review.repository_full_name)
+        .bind(&review.repo_url)
+        .bind(&review.git_url)
+        .bind(&review.base_branch)
+        .bind(&review.workspace_key)
+        .bind(review.preferred_tool.as_str())
+        .bind(review.project.as_deref())
+        .bind(&review.main_user)
+        .bind(review.default_review_prompt.as_deref())
+        .bind(review.extra_instructions.as_deref())
+        .bind(format_iso_8601_millis(review.created_at))
+        .bind(format_iso_8601_millis(review.updated_at))
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!("Could not save review {}", review.id))?;
 
-                    Ok(())
-                })
-            })
-            .await
+        Ok(())
     }
 
     pub async fn list_reviews(&self) -> Result<Vec<ReviewRecord>, TrackError> {
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let rows = sqlx::query(
-                        r#"
-                    SELECT
-                        id, pull_request_url, pull_request_number, pull_request_title,
-                        repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                        preferred_tool, project, main_user, default_review_prompt,
-                        extra_instructions, created_at, updated_at
-                    FROM reviews
-                    ORDER BY updated_at DESC
-                    "#,
-                    )
-                    .fetch_all(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not list reviews from SQLite: {error}"),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, pull_request_url, pull_request_number, pull_request_title,
+                repository_full_name, repo_url, git_url, base_branch, workspace_key,
+                preferred_tool, project, main_user, default_review_prompt,
+                extra_instructions, created_at, updated_at
+            FROM reviews
+            ORDER BY updated_at DESC
+            "#,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .database_error_with("Could not list reviews from SQLite")?;
 
-                    rows.into_iter().map(review_from_row).collect()
-                })
-            })
-            .await
+        rows.into_iter().map(review_from_row).collect()
     }
 
     pub async fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
@@ -125,40 +110,30 @@ impl ReviewRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row = sqlx::query(
-                        r#"
-                    SELECT
-                        id, pull_request_url, pull_request_number, pull_request_title,
-                        repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                        preferred_tool, project, main_user, default_review_prompt,
-                        extra_instructions, created_at, updated_at
-                    FROM reviews
-                    WHERE id = ?1
-                    "#,
-                    )
-                    .bind(&review_id)
-                    .fetch_optional(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not load review {review_id}: {error}"),
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        TrackError::new(
-                            ErrorCode::TaskNotFound,
-                            format!("Review {review_id} was not found."),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT
+                id, pull_request_url, pull_request_number, pull_request_title,
+                repository_full_name, repo_url, git_url, base_branch, workspace_key,
+                preferred_tool, project, main_user, default_review_prompt,
+                extra_instructions, created_at, updated_at
+            FROM reviews
+            WHERE id = ?1
+            "#,
+        )
+        .bind(&review_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .database_error_with(format!("Could not load review {review_id}"))?
+        .ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::TaskNotFound,
+                format!("Review {review_id} was not found."),
+            )
+        })?;
 
-                    review_from_row(row)
-                })
-            })
-            .await
+        review_from_row(row)
     }
 
     pub async fn delete_review(&self, id: &str) -> Result<(), TrackError> {
@@ -168,24 +143,14 @@ impl ReviewRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query("DELETE FROM reviews WHERE id = ?1")
-                        .bind(&review_id)
-                        .execute(&mut *connection)
-                        .await
-                        .map_err(|error| {
-                            TrackError::new(
-                                ErrorCode::TaskWriteFailed,
-                                format!("Could not delete review {review_id}: {error}"),
-                            )
-                        })?;
-
-                    Ok(())
-                })
-            })
+        let mut connection = self.database.connect().await?;
+        sqlx::query("DELETE FROM reviews WHERE id = ?1")
+            .bind(&review_id)
+            .execute(&mut *connection)
             .await
+            .database_error_with(format!("Could not delete review {review_id}"))?;
+
+        Ok(())
     }
 }
 

@@ -321,6 +321,7 @@ fn map_api_error_code(code: &str) -> ErrorCode {
         "TASK_NOT_FOUND" => ErrorCode::TaskNotFound,
         "INVALID_CONFIG" => ErrorCode::InvalidConfig,
         "INVALID_CONFIG_INPUT" => ErrorCode::InvalidConfigInput,
+        "INTERNAL_ERROR" => ErrorCode::InternalError,
         "REMOTE_AGENT_NOT_CONFIGURED" => ErrorCode::RemoteAgentNotConfigured,
         _ => ErrorCode::InvalidConfigInput,
     }

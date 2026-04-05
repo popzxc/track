@@ -9,19 +9,24 @@ use track_types::types::{
     Priority, Status, StoredTask, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
 };
 
-use crate::database::DatabaseContext;
+use crate::database::{resolve_database_path, DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct FileTaskRepository {
     database: DatabaseContext,
+    storage_path: PathBuf,
 }
 
 impl FileTaskRepository {
     pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path)?;
+        let storage_path = resolve_database_path(database_path)?;
+        let database = DatabaseContext::new(Some(storage_path.clone())).await?;
         database.initialize().await?;
 
-        Ok(Self { database })
+        Ok(Self {
+            database,
+            storage_path,
+        })
     }
 
     pub async fn create_task(&self, input: TaskCreateInput) -> Result<StoredTask, TrackError> {
@@ -56,81 +61,63 @@ impl FileTaskRepository {
             updated_at: timestamp,
             source: input.source,
         };
-        let storage_path = self.database.database_path().to_path_buf();
+        let mut connection = self.database.connect().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO tasks (id, project, priority, status, description, created_at, updated_at, source)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(&task.id)
+        .bind(&task.project)
+        .bind(task.priority.as_str())
+        .bind(task.status.as_str())
+        .bind(&task.description)
+        .bind(format_iso_8601_millis(task.created_at))
+        .bind(format_iso_8601_millis(task.updated_at))
+        .bind(task.source.map(task_source_as_str))
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!("Could not save task {}", task.id))?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    r#"
-                    INSERT INTO tasks (id, project, priority, status, description, created_at, updated_at, source)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                    "#,
-                )
-                .bind(&task.id)
-                .bind(&task.project)
-                .bind(task.priority.as_str())
-                .bind(task.status.as_str())
-                .bind(&task.description)
-                .bind(format_iso_8601_millis(task.created_at))
-                .bind(format_iso_8601_millis(task.updated_at))
-                .bind(task.source.map(task_source_as_str))
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not save task {}: {error}", task.id),
-                    )
-                })?;
-
-                Ok(StoredTask {
-                    file_path: storage_path,
-                    task,
-                })
-            })
-        }).await
+        Ok(StoredTask {
+            file_path: self.storage_path.clone(),
+            task,
+        })
     }
 
     pub async fn save_task(&self, task: &Task) -> Result<(), TrackError> {
         self.ensure_project_exists(&task.project).await?;
         let task = task.clone();
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    r#"
-                    INSERT INTO tasks (id, project, priority, status, description, created_at, updated_at, source)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                    ON CONFLICT(id) DO UPDATE SET
-                        project = excluded.project,
-                        priority = excluded.priority,
-                        status = excluded.status,
-                        description = excluded.description,
-                        created_at = excluded.created_at,
-                        updated_at = excluded.updated_at,
-                        source = excluded.source
-                    "#,
-                )
-                .bind(&task.id)
-                .bind(&task.project)
-                .bind(task.priority.as_str())
-                .bind(task.status.as_str())
-                .bind(&task.description)
-                .bind(format_iso_8601_millis(task.created_at))
-                .bind(format_iso_8601_millis(task.updated_at))
-                .bind(task.source.map(task_source_as_str))
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not import task {}: {error}", task.id),
-                    )
-                })?;
+        let mut connection = self.database.connect().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO tasks (id, project, priority, status, description, created_at, updated_at, source)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(id) DO UPDATE SET
+                project = excluded.project,
+                priority = excluded.priority,
+                status = excluded.status,
+                description = excluded.description,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                source = excluded.source
+            "#,
+        )
+        .bind(&task.id)
+        .bind(&task.project)
+        .bind(task.priority.as_str())
+        .bind(task.status.as_str())
+        .bind(&task.description)
+        .bind(format_iso_8601_millis(task.created_at))
+        .bind(format_iso_8601_millis(task.updated_at))
+        .bind(task.source.map(task_source_as_str))
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!("Could not import task {}", task.id))?;
 
-                Ok(())
-            })
-        }).await
+        Ok(())
     }
 
     pub async fn list_tasks(
@@ -149,44 +136,36 @@ impl FileTaskRepository {
             .transpose()?;
         let include_closed_flag = include_closed;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = if let Some(project) = project {
-                    sqlx::query(
-                        r#"
-                        SELECT id, project, priority, status, description, created_at, updated_at, source
-                        FROM tasks
-                        WHERE project = ?1 AND (?2 = 1 OR status = 'open')
-                        ORDER BY created_at DESC
-                        "#,
-                    )
-                    .bind(project)
-                    .bind(include_closed_flag as i64)
-                    .fetch_all(&mut *connection)
-                    .await
-                } else {
-                    sqlx::query(
-                        r#"
-                        SELECT id, project, priority, status, description, created_at, updated_at, source
-                        FROM tasks
-                        WHERE (?1 = 1 OR status = 'open')
-                        ORDER BY created_at DESC
-                        "#,
-                    )
-                    .bind(include_closed_flag as i64)
-                    .fetch_all(&mut *connection)
-                    .await
-                }
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not list tasks from SQLite: {error}"),
-                    )
-                })?;
+        let mut connection = self.database.connect().await?;
+        let rows = if let Some(project) = project {
+            sqlx::query(
+                r#"
+                SELECT id, project, priority, status, description, created_at, updated_at, source
+                FROM tasks
+                WHERE project = ?1 AND (?2 = 1 OR status = 'open')
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(project)
+            .bind(include_closed_flag as i64)
+            .fetch_all(&mut *connection)
+            .await
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, project, priority, status, description, created_at, updated_at, source
+                FROM tasks
+                WHERE (?1 = 1 OR status = 'open')
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(include_closed_flag as i64)
+            .fetch_all(&mut *connection)
+            .await
+        }
+        .database_error_with("Could not list tasks from SQLite")?;
 
-                rows.into_iter().map(task_from_row).collect()
-            })
-        }).await
+        rows.into_iter().map(task_from_row).collect()
     }
 
     pub async fn get_task(&self, id: &str) -> Result<Task, TrackError> {
@@ -211,59 +190,39 @@ impl FileTaskRepository {
             ..existing_record.task
         };
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query(
-                        r#"
-                    UPDATE tasks
-                    SET priority = ?2, status = ?3, description = ?4, updated_at = ?5, source = ?6
-                    WHERE id = ?1
-                    "#,
-                    )
-                    .bind(&updated_task.id)
-                    .bind(updated_task.priority.as_str())
-                    .bind(updated_task.status.as_str())
-                    .bind(&updated_task.description)
-                    .bind(format_iso_8601_millis(updated_task.updated_at))
-                    .bind(updated_task.source.map(task_source_as_str))
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not update task {}: {error}", updated_task.id),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        sqlx::query(
+            r#"
+            UPDATE tasks
+            SET priority = ?2, status = ?3, description = ?4, updated_at = ?5, source = ?6
+            WHERE id = ?1
+            "#,
+        )
+        .bind(&updated_task.id)
+        .bind(updated_task.priority.as_str())
+        .bind(updated_task.status.as_str())
+        .bind(&updated_task.description)
+        .bind(format_iso_8601_millis(updated_task.updated_at))
+        .bind(updated_task.source.map(task_source_as_str))
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!("Could not update task {}", updated_task.id))?;
 
-                    Ok(updated_task)
-                })
-            })
-            .await
+        Ok(updated_task)
     }
 
     pub async fn delete_task(&self, id: &str) -> Result<(), TrackError> {
         let existing = self.find_task_by_id(id).await?;
         let task_id = existing.task.id;
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query("DELETE FROM tasks WHERE id = ?1")
-                        .bind(&task_id)
-                        .execute(&mut *connection)
-                        .await
-                        .map_err(|error| {
-                            TrackError::new(
-                                ErrorCode::TaskWriteFailed,
-                                format!("Could not delete task {task_id}: {error}"),
-                            )
-                        })?;
-
-                    Ok(())
-                })
-            })
+        let mut connection = self.database.connect().await?;
+        sqlx::query("DELETE FROM tasks WHERE id = ?1")
+            .bind(&task_id)
+            .execute(&mut *connection)
             .await
+            .database_error_with(format!("Could not delete task {task_id}"))?;
+
+        Ok(())
     }
 
     async fn ensure_project_exists(&self, project: &str) -> Result<(), TrackError> {
@@ -274,26 +233,13 @@ impl FileTaskRepository {
         )?;
 
         let missing_project_name = project.clone();
-        let exists = self
-            .database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row =
-                        sqlx::query("SELECT 1 AS found FROM projects WHERE canonical_name = ?1")
-                            .bind(&project)
-                            .fetch_optional(&mut *connection)
-                            .await
-                            .map_err(|error| {
-                                TrackError::new(
-                                    ErrorCode::ProjectWriteFailed,
-                                    format!("Could not verify project {project}: {error}"),
-                                )
-                            })?;
-
-                    Ok(row.is_some())
-                })
-            })
-            .await?;
+        let mut connection = self.database.connect().await?;
+        let exists = sqlx::query("SELECT 1 AS found FROM projects WHERE canonical_name = ?1")
+            .bind(&project)
+            .fetch_optional(&mut *connection)
+            .await
+            .database_error_with(format!("Could not verify project {project}"))?
+            .is_some();
 
         if exists {
             Ok(())
@@ -308,62 +254,42 @@ impl FileTaskRepository {
     async fn task_exists(&self, id: &str) -> Result<bool, TrackError> {
         let task_id =
             validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row = sqlx::query("SELECT 1 AS found FROM tasks WHERE id = ?1")
-                        .bind(&task_id)
-                        .fetch_optional(&mut *connection)
-                        .await
-                        .map_err(|error| {
-                            TrackError::new(
-                                ErrorCode::TaskWriteFailed,
-                                format!("Could not check task id {task_id}: {error}"),
-                            )
-                        })?;
-
-                    Ok(row.is_some())
-                })
-            })
+        let mut connection = self.database.connect().await?;
+        let row = sqlx::query("SELECT 1 AS found FROM tasks WHERE id = ?1")
+            .bind(&task_id)
+            .fetch_optional(&mut *connection)
             .await
+            .database_error_with(format!("Could not check task id {task_id}"))?;
+
+        Ok(row.is_some())
     }
 
     async fn find_task_by_id(&self, id: &str) -> Result<StoredTask, TrackError> {
         let task_id =
             validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
-        let storage_path = self.database.database_path().to_path_buf();
+        let mut connection = self.database.connect().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT id, project, priority, status, description, created_at, updated_at, source
+            FROM tasks
+            WHERE id = ?1
+            "#,
+        )
+        .bind(&task_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .database_error_with(format!("Could not load task {task_id}"))?
+        .ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::TaskNotFound,
+                format!("Task {task_id} was not found."),
+            )
+        })?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let row = sqlx::query(
-                    r#"
-                    SELECT id, project, priority, status, description, created_at, updated_at, source
-                    FROM tasks
-                    WHERE id = ?1
-                    "#,
-                )
-                .bind(&task_id)
-                .fetch_optional(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not load task {task_id}: {error}"),
-                    )
-                })?
-                .ok_or_else(|| {
-                    TrackError::new(
-                        ErrorCode::TaskNotFound,
-                        format!("Task {task_id} was not found."),
-                    )
-                })?;
-
-                Ok(StoredTask {
-                    file_path: storage_path,
-                    task: task_from_row(row)?,
-                })
-            })
-        }).await
+        Ok(StoredTask {
+            file_path: self.storage_path.clone(),
+            task: task_from_row(row)?,
+        })
     }
 }
 
@@ -506,7 +432,7 @@ mod tests {
         assert_eq!(stored.task.status, Status::Open);
         assert_eq!(stored.task.description, "First line\n\nMore context");
         assert_eq!(stored.task.source, Some(TaskSource::Cli));
-        assert_eq!(stored.file_path, repository.database.database_path());
+        assert_eq!(stored.file_path, repository.storage_path);
 
         let loaded = repository
             .get_task(&stored.task.id)

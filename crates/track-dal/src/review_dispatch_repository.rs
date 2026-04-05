@@ -6,7 +6,7 @@ use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord};
 
-use crate::database::DatabaseContext;
+use crate::database::{DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct ReviewDispatchRepository {
@@ -15,7 +15,7 @@ pub struct ReviewDispatchRepository {
 
 impl ReviewDispatchRepository {
     pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path)?;
+        let database = DatabaseContext::new(database_path).await?;
         database.initialize().await?;
 
         Ok(Self { database })
@@ -72,77 +72,69 @@ impl ReviewDispatchRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    r#"
-                    INSERT INTO review_runs (
-                        dispatch_id, review_id, pull_request_url, repository_full_name,
-                        workspace_key, preferred_tool, status, created_at, updated_at,
-                        finished_at, remote_host, branch_name, worktree_path,
-                        follow_up_request, target_head_oid, summary, review_submitted,
-                        github_review_id, github_review_url, notes, error_message
-                    )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
-                    ON CONFLICT(dispatch_id) DO UPDATE SET
-                        review_id = excluded.review_id,
-                        pull_request_url = excluded.pull_request_url,
-                        repository_full_name = excluded.repository_full_name,
-                        workspace_key = excluded.workspace_key,
-                        preferred_tool = excluded.preferred_tool,
-                        status = excluded.status,
-                        created_at = excluded.created_at,
-                        updated_at = excluded.updated_at,
-                        finished_at = excluded.finished_at,
-                        remote_host = excluded.remote_host,
-                        branch_name = excluded.branch_name,
-                        worktree_path = excluded.worktree_path,
-                        follow_up_request = excluded.follow_up_request,
-                        target_head_oid = excluded.target_head_oid,
-                        summary = excluded.summary,
-                        review_submitted = excluded.review_submitted,
-                        github_review_id = excluded.github_review_id,
-                        github_review_url = excluded.github_review_url,
-                        notes = excluded.notes,
-                        error_message = excluded.error_message
-                    "#,
-                )
-                .bind(&record.dispatch_id)
-                .bind(&record.review_id)
-                .bind(&record.pull_request_url)
-                .bind(&record.repository_full_name)
-                .bind(&record.workspace_key)
-                .bind(record.preferred_tool.as_str())
-                .bind(record.status.as_str())
-                .bind(format_iso_8601_millis(record.created_at))
-                .bind(format_iso_8601_millis(record.updated_at))
-                .bind(record.finished_at.map(format_iso_8601_millis))
-                .bind(&record.remote_host)
-                .bind(record.branch_name.as_deref())
-                .bind(record.worktree_path.as_deref())
-                .bind(record.follow_up_request.as_deref())
-                .bind(record.target_head_oid.as_deref())
-                .bind(record.summary.as_deref())
-                .bind(record.review_submitted as i64)
-                .bind(record.github_review_id.as_deref())
-                .bind(record.github_review_url.as_deref())
-                .bind(record.notes.as_deref())
-                .bind(record.error_message.as_deref())
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!(
-                            "Could not save the review run record for review {}: {error}",
-                            record.review_id
-                        ),
-                    )
-                })?;
+        let mut connection = self.database.connect().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO review_runs (
+                dispatch_id, review_id, pull_request_url, repository_full_name,
+                workspace_key, preferred_tool, status, created_at, updated_at,
+                finished_at, remote_host, branch_name, worktree_path,
+                follow_up_request, target_head_oid, summary, review_submitted,
+                github_review_id, github_review_url, notes, error_message
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            ON CONFLICT(dispatch_id) DO UPDATE SET
+                review_id = excluded.review_id,
+                pull_request_url = excluded.pull_request_url,
+                repository_full_name = excluded.repository_full_name,
+                workspace_key = excluded.workspace_key,
+                preferred_tool = excluded.preferred_tool,
+                status = excluded.status,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                finished_at = excluded.finished_at,
+                remote_host = excluded.remote_host,
+                branch_name = excluded.branch_name,
+                worktree_path = excluded.worktree_path,
+                follow_up_request = excluded.follow_up_request,
+                target_head_oid = excluded.target_head_oid,
+                summary = excluded.summary,
+                review_submitted = excluded.review_submitted,
+                github_review_id = excluded.github_review_id,
+                github_review_url = excluded.github_review_url,
+                notes = excluded.notes,
+                error_message = excluded.error_message
+            "#,
+        )
+        .bind(&record.dispatch_id)
+        .bind(&record.review_id)
+        .bind(&record.pull_request_url)
+        .bind(&record.repository_full_name)
+        .bind(&record.workspace_key)
+        .bind(record.preferred_tool.as_str())
+        .bind(record.status.as_str())
+        .bind(format_iso_8601_millis(record.created_at))
+        .bind(format_iso_8601_millis(record.updated_at))
+        .bind(record.finished_at.map(format_iso_8601_millis))
+        .bind(&record.remote_host)
+        .bind(record.branch_name.as_deref())
+        .bind(record.worktree_path.as_deref())
+        .bind(record.follow_up_request.as_deref())
+        .bind(record.target_head_oid.as_deref())
+        .bind(record.summary.as_deref())
+        .bind(record.review_submitted as i64)
+        .bind(record.github_review_id.as_deref())
+        .bind(record.github_review_url.as_deref())
+        .bind(record.notes.as_deref())
+        .bind(record.error_message.as_deref())
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!(
+            "Could not save the review run record for review {}",
+            record.review_id
+        ))?;
 
-                Ok(())
-            })
-        }).await
+        Ok(())
     }
 
     pub async fn latest_dispatch_for_review(
@@ -166,31 +158,21 @@ impl ReviewDispatchRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let rows = sqlx::query(
-                        r#"
-                    SELECT *
-                    FROM review_runs
-                    WHERE review_id = ?1
-                    ORDER BY created_at DESC
-                    "#,
-                    )
-                    .bind(&review_id)
-                    .fetch_all(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::DispatchWriteFailed,
-                            format!("Could not load review runs for {review_id}: {error}"),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT *
+            FROM review_runs
+            WHERE review_id = ?1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(&review_id)
+        .fetch_all(&mut *connection)
+        .await
+        .database_error_with(format!("Could not load review runs for {review_id}"))?;
 
-                    rows.into_iter().map(review_run_from_row).collect()
-                })
-            })
-            .await
+        rows.into_iter().map(review_run_from_row).collect()
     }
 
     pub async fn list_dispatches(
@@ -198,72 +180,52 @@ impl ReviewDispatchRepository {
         limit: Option<usize>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
         let limit = limit.map(|value| value as i64);
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let rows = if let Some(limit) = limit {
-                        sqlx::query(
-                            r#"
-                        SELECT *
-                        FROM review_runs
-                        ORDER BY created_at DESC
-                        LIMIT ?1
-                        "#,
-                        )
-                        .bind(limit)
-                        .fetch_all(&mut *connection)
-                        .await
-                    } else {
-                        sqlx::query(
-                            r#"
-                        SELECT *
-                        FROM review_runs
-                        ORDER BY created_at DESC
-                        "#,
-                        )
-                        .fetch_all(&mut *connection)
-                        .await
-                    }
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::DispatchWriteFailed,
-                            format!("Could not list review run records: {error}"),
-                        )
-                    })?;
-
-                    rows.into_iter().map(review_run_from_row).collect()
-                })
-            })
+        let mut connection = self.database.connect().await?;
+        let rows = if let Some(limit) = limit {
+            sqlx::query(
+                r#"
+                SELECT *
+                FROM review_runs
+                ORDER BY created_at DESC
+                LIMIT ?1
+                "#,
+            )
+            .bind(limit)
+            .fetch_all(&mut *connection)
             .await
+        } else {
+            sqlx::query(
+                r#"
+                SELECT *
+                FROM review_runs
+                ORDER BY created_at DESC
+                "#,
+            )
+            .fetch_all(&mut *connection)
+            .await
+        }
+        .database_error_with("Could not list review run records")?;
+
+        rows.into_iter().map(review_run_from_row).collect()
     }
 
     pub async fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
-        self.database
-            .run(move |connection| {
-                Box::pin(async move {
-                    let rows = sqlx::query(
-                        r#"
-                    SELECT DISTINCT review_id
-                    FROM review_runs
-                    ORDER BY review_id ASC
-                    "#,
-                    )
-                    .fetch_all(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::DispatchWriteFailed,
-                            format!("Could not load review ids with run history: {error}"),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT review_id
+            FROM review_runs
+            ORDER BY review_id ASC
+            "#,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .database_error_with("Could not load review ids with run history")?;
 
-                    Ok(rows
-                        .into_iter()
-                        .map(|row| row.get::<String, _>("review_id"))
-                        .collect())
-                })
-            })
-            .await
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("review_id"))
+            .collect())
     }
 
     pub async fn get_dispatch(
@@ -282,31 +244,23 @@ impl ReviewDispatchRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let row = sqlx::query(
-                    r#"
-                    SELECT *
-                    FROM review_runs
-                    WHERE review_id = ?1 AND dispatch_id = ?2
-                    "#,
-                )
-                .bind(&review_id)
-                .bind(&dispatch_id)
-                .fetch_optional(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!(
-                            "Could not load the review run {dispatch_id} for review {review_id}: {error}"
-                        ),
-                    )
-                })?;
+        let mut connection = self.database.connect().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT *
+            FROM review_runs
+            WHERE review_id = ?1 AND dispatch_id = ?2
+            "#,
+        )
+        .bind(&review_id)
+        .bind(&dispatch_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .database_error_with(format!(
+            "Could not load the review run {dispatch_id} for review {review_id}"
+        ))?;
 
-                row.map(review_run_from_row).transpose()
-            })
-        }).await
+        row.map(review_run_from_row).transpose()
     }
 
     pub async fn delete_dispatch_history_for_review(
@@ -319,24 +273,16 @@ impl ReviewDispatchRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query("DELETE FROM review_runs WHERE review_id = ?1")
-                    .bind(&review_id)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::DispatchWriteFailed,
-                            format!(
-                                "Could not remove the review dispatch history for {review_id}: {error}"
-                            ),
-                        )
-                    })?;
+        let mut connection = self.database.connect().await?;
+        sqlx::query("DELETE FROM review_runs WHERE review_id = ?1")
+            .bind(&review_id)
+            .execute(&mut *connection)
+            .await
+            .database_error_with(format!(
+                "Could not remove the review dispatch history for {review_id}"
+            ))?;
 
-                Ok(())
-            })
-        }).await
+        Ok(())
     }
 }
 

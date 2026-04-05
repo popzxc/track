@@ -7,6 +7,8 @@ use sqlx::migrate::{Migrate, Migrator};
 use sqlx::SqliteConnection;
 use track_types::errors::{ErrorCode, TrackError};
 
+use super::DatabaseResultExt;
+
 const APPLICATION_TABLES: &[&str] = &[
     "projects",
     "project_aliases",
@@ -38,16 +40,12 @@ pub(super) async fn baseline_existing_schema_if_needed(
     connection
         .ensure_migrations_table()
         .await
-        .map_err(|error| {
-            migration_track_error("Could not prepare the SQLx migration table", error)
-        })?;
+        .database_error_with("Could not prepare the SQLx migration table")?;
 
     let applied_migrations = connection
         .list_applied_migrations()
         .await
-        .map_err(|error| {
-            migration_track_error("Could not inspect applied SQLx migrations", error)
-        })?;
+        .database_error_with("Could not inspect applied SQLx migrations")?;
     if !applied_migrations.is_empty() {
         return Ok(());
     }
@@ -80,12 +78,7 @@ pub(super) async fn baseline_existing_schema_if_needed(
     .bind(initial_migration.checksum.as_ref())
     .execute(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Could not baseline the existing SQLite schema into SQLx migrations: {error}"),
-        )
-    })?;
+    .database_error_with("Could not baseline the existing SQLite schema into SQLx migrations")?;
 
     Ok(())
 }
@@ -118,24 +111,16 @@ async fn sqlite_table_exists(
     .bind(table_name)
     .fetch_optional(&mut *connection)
     .await
-    .map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Could not inspect the SQLite schema for table {table_name}: {error}"),
-        )
-    })?;
+    .database_error_with(format!(
+        "Could not inspect the SQLite schema for table {table_name}"
+    ))?;
 
     Ok(row.is_some())
-}
-
-fn migration_track_error(context: &str, error: sqlx::migrate::MigrateError) -> TrackError {
-    TrackError::new(ErrorCode::TaskWriteFailed, format!("{context}: {error}"))
 }
 
 #[cfg(test)]
 mod tests {
     use sqlx::Row;
-    use sqlx::{Connection, SqliteConnection};
     use tempfile::TempDir;
 
     use crate::database::DatabaseContext;
@@ -145,16 +130,15 @@ mod tests {
     async fn baseline_existing_schema_marks_a_complete_pre_sqlx_schema_as_applied() {
         let directory = TempDir::new().expect("tempdir should be created");
         let database = DatabaseContext::new(Some(directory.path().join("track.sqlite")))
+            .await
             .expect("database context should resolve");
 
-        let connect_options = database
-            .connect_options()
-            .expect("database connect options should resolve");
-        let mut connection = SqliteConnection::connect_with(&connect_options)
+        let mut connection = database
+            .connect()
             .await
             .expect("sqlite connection should open");
         sqlx::raw_sql(include_str!("../../migrations/0001_initial_schema.sql"))
-            .execute(&mut connection)
+            .execute(&mut *connection)
             .await
             .expect("initial schema SQL should execute");
         super::baseline_existing_schema_if_needed(&mut connection, &MIGRATOR)
@@ -164,7 +148,7 @@ mod tests {
         let row = sqlx::query(
             "SELECT version, success FROM _sqlx_migrations ORDER BY version ASC LIMIT 1",
         )
-        .fetch_one(&mut connection)
+        .fetch_one(&mut *connection)
         .await
         .expect("migration row query should succeed");
         let migration_row = (row.get::<i64, _>("version"), row.get::<i64, _>("success"));
