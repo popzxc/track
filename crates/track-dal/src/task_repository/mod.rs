@@ -1,7 +1,5 @@
 mod records;
 
-use std::path::PathBuf;
-
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::task_id::build_unique_task_id;
@@ -10,17 +8,14 @@ use track_types::types::{Status, StoredTask, Task, TaskCreateInput, TaskSource, 
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
-#[derive(Debug, Clone)]
-pub struct FileTaskRepository {
-    database: DatabaseContext,
+#[derive(Debug, Clone, Copy)]
+pub struct FileTaskRepository<'a> {
+    database: &'a DatabaseContext,
 }
 
-impl FileTaskRepository {
-    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path).await?;
-        database.initialize().await?;
-
-        Ok(Self { database })
+impl<'a> FileTaskRepository<'a> {
+    pub(crate) fn new(database: &'a DatabaseContext) -> Self {
+        Self { database }
     }
 
     pub async fn create_task(&self, input: TaskCreateInput) -> Result<StoredTask, TrackError> {
@@ -377,15 +372,15 @@ mod tests {
     use track_types::time_utils::format_iso_8601_millis;
     use track_types::types::{Priority, Status, TaskCreateInput, TaskSource, TaskUpdateInput};
 
-    use super::FileTaskRepository;
-    use crate::project_repository::ProjectRepository;
+    use crate::database::DatabaseContext;
     use crate::test_support::{project_metadata, sample_task, temporary_database_path};
 
-    async fn repository_with_projects(projects: &[&str]) -> (TempDir, FileTaskRepository) {
+    async fn database_with_projects(projects: &[&str]) -> (TempDir, DatabaseContext) {
         let (directory, database_path) = temporary_database_path();
-        let project_repository = ProjectRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let project_repository = database.project_repository();
 
         for project in projects {
             project_repository
@@ -394,15 +389,13 @@ mod tests {
                 .expect("project should save");
         }
 
-        let repository = FileTaskRepository::new(Some(database_path))
-            .await
-            .expect("task repository should resolve");
-        (directory, repository)
+        (directory, database)
     }
 
     #[tokio::test]
     async fn create_task_persists_generated_task_for_existing_project() {
-        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+        let (_directory, database) = database_with_projects(&["project-a"]).await;
+        let repository = database.task_repository();
 
         let stored = repository
             .create_task(TaskCreateInput {
@@ -443,9 +436,10 @@ mod tests {
     #[tokio::test]
     async fn create_task_rejects_missing_project() {
         let (directory, database_path) = temporary_database_path();
-        let repository = FileTaskRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("task repository should resolve");
+            .expect("database should resolve");
+        let repository = database.task_repository();
 
         let error = repository
             .create_task(TaskCreateInput {
@@ -463,7 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn save_task_upserts_existing_rows() {
-        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+        let (_directory, database) = database_with_projects(&["project-a"]).await;
+        let repository = database.task_repository();
 
         let original = sample_task(
             "20260405-120000-upsert-task",
@@ -504,7 +499,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_tasks_filters_by_project_and_closed_state() {
-        let (_directory, repository) = repository_with_projects(&["project-a", "project-b"]).await;
+        let (_directory, database) = database_with_projects(&["project-a", "project-b"]).await;
+        let repository = database.task_repository();
 
         let project_a_open = sample_task(
             "20260405-120000-project-a-open",
@@ -583,7 +579,8 @@ mod tests {
 
     #[tokio::test]
     async fn update_task_persists_mutable_fields() {
-        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+        let (_directory, database) = database_with_projects(&["project-a"]).await;
+        let repository = database.task_repository();
 
         let original = sample_task(
             "20260405-120000-update-task",
@@ -641,7 +638,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_task_removes_the_row() {
-        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+        let (_directory, database) = database_with_projects(&["project-a"]).await;
+        let repository = database.task_repository();
 
         let task = sample_task(
             "20260405-120000-delete-task",

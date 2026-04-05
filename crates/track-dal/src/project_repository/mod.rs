@@ -1,7 +1,5 @@
 mod records;
 
-use std::path::PathBuf;
-
 use track_projects::project_catalog::ProjectInfo;
 use track_projects::project_metadata::{
     infer_project_metadata, ProjectMetadata, ProjectRecord, ProjectUpsertInput,
@@ -11,17 +9,14 @@ use track_types::path_component::validate_single_normal_path_component;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
-#[derive(Debug, Clone)]
-pub struct ProjectRepository {
-    database: DatabaseContext,
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectRepository<'a> {
+    database: &'a DatabaseContext,
 }
 
-impl ProjectRepository {
-    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path).await?;
-        database.initialize().await?;
-
-        Ok(Self { database })
+impl<'a> ProjectRepository<'a> {
+    pub(crate) fn new(database: &'a DatabaseContext) -> Self {
+        Self { database }
     }
 
     pub async fn ensure_project(&self, project: &ProjectInfo) -> Result<ProjectRecord, TrackError> {
@@ -29,11 +24,6 @@ impl ProjectRepository {
         self.upsert_project_by_name(&project.canonical_name, metadata, project.aliases.clone())
             .await
     }
-
-    pub fn database_context(&self) -> DatabaseContext {
-        self.database.clone()
-    }
-
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, TrackError> {
         let mut connection = self.database.connect().await?;
         let rows = sqlx::query_as!(
@@ -291,7 +281,7 @@ mod tests {
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
 
-    use super::ProjectRepository;
+    use crate::database::DatabaseContext;
     use crate::test_support::project_metadata;
     use track_projects::project_catalog::ProjectInfo;
     use track_projects::project_metadata::ProjectUpsertInput;
@@ -299,9 +289,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_project_preserves_existing_aliases_when_no_new_aliases_are_provided() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         repository
             .upsert_project_by_name(
@@ -326,9 +317,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_project_unions_new_aliases_with_existing_aliases() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         repository
             .upsert_project_by_name(
@@ -356,9 +348,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_project_rejects_conflicting_alias_without_partial_writes() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         repository
             .upsert_project_by_name(
@@ -397,9 +390,10 @@ mod tests {
     #[tokio::test]
     async fn list_projects_returns_canonical_order_with_aliases() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         repository
             .upsert_project_by_name(
@@ -436,9 +430,10 @@ mod tests {
     #[tokio::test]
     async fn update_project_by_name_keeps_aliases_while_replacing_metadata() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         repository
             .upsert_project_by_name(
@@ -467,9 +462,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_project_validates_and_persists_aliases() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         let saved = repository
             .upsert_project(ProjectUpsertInput {
@@ -506,9 +502,10 @@ mod tests {
     #[tokio::test]
     async fn ensure_project_infers_metadata_from_project_info() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
-            .expect("project repository should resolve");
+            .expect("database should resolve");
+        let repository = database.project_repository();
 
         let project = repository
             .ensure_project(&ProjectInfo {

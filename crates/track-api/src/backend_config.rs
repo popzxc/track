@@ -8,7 +8,7 @@ use track_config::paths::{
     get_backend_managed_remote_agent_known_hosts_path,
 };
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
-use track_dal::settings_repository::SettingsRepository;
+use track_dal::database::DatabaseContext;
 use track_remote_agent::RemoteAgentConfigProvider;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::migration::{MigrationStatus, MIGRATION_STATUS_SETTING_KEY};
@@ -18,23 +18,26 @@ pub(crate) const REMOTE_AGENT_SETTING_KEY: &str = "remote_agent_config";
 
 #[derive(Debug, Clone)]
 pub struct BackendConfigRepository {
-    settings: SettingsRepository,
+    database: DatabaseContext,
 }
 
 impl BackendConfigRepository {
-    pub async fn new(settings: Option<SettingsRepository>) -> Result<Self, TrackError> {
-        let settings = match settings {
-            Some(settings) => settings,
-            None => SettingsRepository::new(None).await?,
+    pub async fn new(database: Option<DatabaseContext>) -> Result<Self, TrackError> {
+        let database = match database {
+            Some(database) => database,
+            None => DatabaseContext::initialized(None).await?,
         };
 
-        Ok(Self { settings })
+        Ok(Self { database })
     }
 
     pub async fn load_remote_agent_config(
         &self,
     ) -> Result<Option<RemoteAgentConfigFile>, TrackError> {
-        self.settings.load_json(REMOTE_AGENT_SETTING_KEY).await
+        self.database
+            .settings_repository()
+            .load_json(REMOTE_AGENT_SETTING_KEY)
+            .await
     }
 
     pub async fn save_remote_agent_config(
@@ -44,11 +47,17 @@ impl BackendConfigRepository {
         match config {
             Some(config) => {
                 let canonical = canonicalize_remote_agent_config(config.clone())?;
-                self.settings
+                self.database
+                    .settings_repository()
                     .save_json(REMOTE_AGENT_SETTING_KEY, &canonical)
                     .await
             }
-            None => self.settings.delete(REMOTE_AGENT_SETTING_KEY).await,
+            None => {
+                self.database
+                    .settings_repository()
+                    .delete(REMOTE_AGENT_SETTING_KEY)
+                    .await
+            }
         }
     }
 
@@ -60,7 +69,8 @@ impl BackendConfigRepository {
     ) -> Result<RemoteAgentConfigFile, TrackError> {
         let canonical = canonicalize_remote_agent_config(config)?;
         install_backend_remote_agent_secrets(ssh_private_key, known_hosts)?;
-        self.settings
+        self.database
+            .settings_repository()
             .save_json(REMOTE_AGENT_SETTING_KEY, &canonical)
             .await?;
         Ok(canonical)
@@ -91,14 +101,16 @@ impl BackendConfigRepository {
 
     pub async fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
         Ok(self
-            .settings
+            .database
+            .settings_repository()
             .load_json(MIGRATION_STATUS_SETTING_KEY)
             .await?
             .unwrap_or_else(MigrationStatus::ready))
     }
 
     pub async fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
-        self.settings
+        self.database
+            .settings_repository()
             .save_json(MIGRATION_STATUS_SETTING_KEY, status)
             .await
     }
@@ -299,21 +311,17 @@ mod tests {
 
     use super::BackendConfigRepository;
     use track_dal::database::DatabaseContext;
-    use track_dal::settings_repository::SettingsRepository;
     use track_types::migration::{LegacyScanSummary, MigrationState, MigrationStatus};
 
     async fn repository() -> (TempDir, BackendConfigRepository) {
         let directory = TempDir::new().expect("tempdir should be created");
-        let database = DatabaseContext::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
             .await
             .expect("database should resolve");
-        let settings = SettingsRepository::new(Some(database))
-            .await
-            .expect("settings repository should resolve");
 
         (
             directory,
-            BackendConfigRepository::new(Some(settings))
+            BackendConfigRepository::new(Some(database))
                 .await
                 .expect("backend config repository should resolve"),
         )

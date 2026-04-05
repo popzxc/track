@@ -45,7 +45,8 @@ pub(crate) async fn list_tasks(
     Query(query): Query<TaskListQuery>,
 ) -> Result<Json<TasksResponse>, ApiError> {
     let tasks = state
-        .task_repository
+        .database
+        .task_repository()
         .list_tasks(
             query.include_closed.unwrap_or(false),
             query.project.as_deref(),
@@ -63,7 +64,8 @@ pub(crate) async fn list_task_runs(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<super::runs::RunsResponse>, ApiError> {
     let task = state
-        .task_repository
+        .database
+        .task_repository()
         .get_task(&id)
         .await
         .map_err(ApiError::from_track_error)?;
@@ -106,7 +108,8 @@ pub(crate) async fn create_task(
     .map_err(ApiError::from_track_error)?;
 
     let created_task = state
-        .task_repository
+        .database
+        .task_repository()
         .create_task(validated_input)
         .await
         .map_err(ApiError::from_track_error)?;
@@ -234,7 +237,8 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
 
         if let Err(join_error) = launch_result {
             if let Some(mut saved_dispatch) = state
-                .dispatch_repository
+                .database
+                .dispatch_repository()
                 .get_dispatch(&queued_dispatch.task_id, &queued_dispatch.dispatch_id)
                 .await
                 .ok()
@@ -248,7 +252,8 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
                         "Background dispatch task stopped unexpectedly: {join_error}"
                     ));
                     let _ = state
-                        .dispatch_repository
+                        .database
+                        .dispatch_repository()
                         .save_dispatch(&saved_dispatch)
                         .await;
                 }

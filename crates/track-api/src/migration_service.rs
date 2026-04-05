@@ -14,11 +14,6 @@ use track_config::paths::{
     path_to_string,
 };
 use track_dal::database::{DatabaseContext, DatabaseResultExt};
-use track_dal::dispatch_repository::DispatchRepository;
-use track_dal::project_repository::ProjectRepository;
-use track_dal::review_dispatch_repository::ReviewDispatchRepository;
-use track_dal::review_repository::ReviewRepository;
-use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_discovery::discover_projects_from_roots;
 use track_projects::project_metadata::{infer_project_metadata, ProjectMetadata};
 use track_types::errors::{ErrorCode, TrackError};
@@ -44,32 +39,18 @@ pub struct MigrationService {
     remote_agent_config_service: RemoteAgentConfigService,
     legacy_config_service: ConfigService,
     legacy_root: PathBuf,
-    project_repository: ProjectRepository,
-    task_repository: FileTaskRepository,
-    dispatch_repository: DispatchRepository,
-    review_repository: ReviewRepository,
-    review_dispatch_repository: ReviewDispatchRepository,
 }
 
 impl MigrationService {
     pub fn new(
         remote_agent_config_service: RemoteAgentConfigService,
-        project_repository: ProjectRepository,
-        task_repository: FileTaskRepository,
-        dispatch_repository: DispatchRepository,
-        review_repository: ReviewRepository,
-        review_dispatch_repository: ReviewDispatchRepository,
+        database: DatabaseContext,
     ) -> Result<Self, TrackError> {
         Ok(Self {
-            database: project_repository.database_context(),
+            database,
             remote_agent_config_service,
             legacy_config_service: ConfigService::new(Some(get_legacy_config_path()?))?,
             legacy_root: get_legacy_root_dir()?,
-            project_repository,
-            task_repository,
-            dispatch_repository,
-            review_repository,
-            review_dispatch_repository,
         })
     }
 
@@ -221,20 +202,33 @@ impl MigrationService {
     }
 
     async fn database_is_empty(&self) -> Result<bool, TrackError> {
-        Ok(self.project_repository.list_projects().await?.is_empty()
+        Ok(self
+            .database
+            .project_repository()
+            .list_projects()
+            .await?
+            .is_empty()
             && self
-                .task_repository
+                .database
+                .task_repository()
                 .list_tasks(true, None)
                 .await?
                 .is_empty()
-            && self.review_repository.list_reviews().await?.is_empty()
             && self
-                .dispatch_repository
+                .database
+                .review_repository()
+                .list_reviews()
+                .await?
+                .is_empty()
+            && self
+                .database
+                .dispatch_repository()
                 .list_dispatches(Some(1))
                 .await?
                 .is_empty()
             && self
-                .review_dispatch_repository
+                .database
+                .review_dispatch_repository()
                 .list_dispatches(Some(1))
                 .await?
                 .is_empty()
@@ -1501,11 +1495,7 @@ mod tests {
     use crate::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
     use track_config::config::{ConfigService, TrackConfigFile};
     use track_config::paths::get_backend_database_path;
-    use track_dal::dispatch_repository::DispatchRepository;
-    use track_dal::project_repository::ProjectRepository;
-    use track_dal::review_dispatch_repository::ReviewDispatchRepository;
-    use track_dal::review_repository::ReviewRepository;
-    use track_dal::task_repository::FileTaskRepository;
+    use track_dal::database::DatabaseContext;
     use track_types::migration::MigrationState;
 
     struct TestEnvironment {
@@ -1540,25 +1530,14 @@ mod tests {
     }
 
     async fn migration_service() -> MigrationService {
+        let database = DatabaseContext::initialized(None)
+            .await
+            .expect("database should resolve");
         MigrationService::new(
             RemoteAgentConfigService::new(None)
                 .await
                 .expect("remote-agent config service should resolve"),
-            ProjectRepository::new(None)
-                .await
-                .expect("project repository should resolve"),
-            FileTaskRepository::new(None)
-                .await
-                .expect("task repository should resolve"),
-            DispatchRepository::new(None)
-                .await
-                .expect("dispatch repository should resolve"),
-            ReviewRepository::new(None)
-                .await
-                .expect("review repository should resolve"),
-            ReviewDispatchRepository::new(None)
-                .await
-                .expect("review dispatch repository should resolve"),
+            database,
         )
         .expect("migration service should resolve")
     }
@@ -1718,24 +1697,23 @@ mod tests {
             .iter()
             .any(|candidate| candidate.path.ends_with("legacy-root/issues")));
 
-        let dispatches = DispatchRepository::new(Some(
+        let database = DatabaseContext::initialized(Some(
             get_backend_database_path().expect("database path should resolve"),
         ))
         .await
-        .expect("dispatch repository should resolve")
-        .list_dispatches(None)
-        .await
-        .expect("dispatches should list");
+        .expect("database should resolve");
+        let dispatches = database
+            .dispatch_repository()
+            .list_dispatches(None)
+            .await
+            .expect("dispatches should list");
         assert_eq!(dispatches.len(), 1);
 
-        let review_runs = ReviewDispatchRepository::new(Some(
-            get_backend_database_path().expect("database path should resolve"),
-        ))
-        .await
-        .expect("review dispatch repository should resolve")
-        .list_dispatches(None)
-        .await
-        .expect("review runs should list");
+        let review_runs = database
+            .review_dispatch_repository()
+            .list_dispatches(None)
+            .await
+            .expect("review runs should list");
         assert_eq!(review_runs.len(), 1);
 
         let post_import_status = service
@@ -1796,14 +1774,16 @@ mod tests {
             .any(|record| record.kind == "project_alias"
                 && record.path == "ghost -> project-missing"));
 
-        let imported_projects = ProjectRepository::new(Some(
+        let database = DatabaseContext::initialized(Some(
             get_backend_database_path().expect("database path should resolve"),
         ))
         .await
-        .expect("project repository should resolve")
-        .list_projects()
-        .await
-        .expect("projects should list");
+        .expect("database should resolve");
+        let imported_projects = database
+            .project_repository()
+            .list_projects()
+            .await
+            .expect("projects should list");
         assert_eq!(imported_projects.len(), 2);
         assert_eq!(imported_projects[0].canonical_name, "project-a");
         assert_eq!(imported_projects[0].aliases, vec!["proj-a".to_owned()]);

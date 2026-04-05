@@ -1,7 +1,5 @@
 mod records;
 
-use std::path::PathBuf;
-
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
@@ -9,17 +7,14 @@ use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRecord,
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
-#[derive(Debug, Clone)]
-pub struct ReviewDispatchRepository {
-    database: DatabaseContext,
+#[derive(Debug, Clone, Copy)]
+pub struct ReviewDispatchRepository<'a> {
+    database: &'a DatabaseContext,
 }
 
-impl ReviewDispatchRepository {
-    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path).await?;
-        database.initialize().await?;
-
-        Ok(Self { database })
+impl<'a> ReviewDispatchRepository<'a> {
+    pub(crate) fn new(database: &'a DatabaseContext) -> Self {
+        Self { database }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -413,19 +408,17 @@ mod tests {
     use track_types::time_utils::now_utc;
     use track_types::types::{DispatchStatus, RemoteAgentPreferredTool};
 
-    use super::ReviewDispatchRepository;
-    use crate::review_repository::ReviewRepository;
+    use crate::database::DatabaseContext;
     use crate::test_support::{sample_review, sample_review_run, temporary_database_path};
 
     #[tokio::test]
     async fn create_dispatch_persists_queued_review_run_with_launch_context() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
-        let review_repository = ReviewRepository::new(Some(database_path))
-            .await
-            .expect("review repository should open");
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
 
         let timestamp = now_utc();
         let review = track_types::types::ReviewRecord {
@@ -474,12 +467,11 @@ mod tests {
     #[tokio::test]
     async fn save_dispatch_upserts_and_get_dispatch_returns_latest_fields() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
-        let review_repository = ReviewRepository::new(Some(database_path))
-            .await
-            .expect("review repository should open");
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
 
         let review = sample_review(
             "review-42",
@@ -535,12 +527,11 @@ mod tests {
     #[tokio::test]
     async fn dispatches_for_review_and_latest_dispatch_order_by_created_at_desc() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
-        let review_repository = ReviewRepository::new(Some(database_path))
-            .await
-            .expect("review repository should open");
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
 
         let review = sample_review(
             "review-42",
@@ -602,12 +593,11 @@ mod tests {
     #[tokio::test]
     async fn list_dispatches_honors_optional_limit() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
-        let review_repository = ReviewRepository::new(Some(database_path))
-            .await
-            .expect("review repository should open");
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
 
         let review_a = sample_review(
             "review-41",
@@ -696,12 +686,11 @@ mod tests {
     #[tokio::test]
     async fn review_ids_with_history_returns_sorted_unique_ids() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
-        let review_repository = ReviewRepository::new(Some(database_path))
-            .await
-            .expect("review repository should open");
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
 
         let review_a = sample_review(
             "review-a",
@@ -769,12 +758,11 @@ mod tests {
     #[tokio::test]
     async fn delete_dispatch_history_for_review_removes_only_target_rows() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
-        let review_repository = ReviewRepository::new(Some(database_path))
-            .await
-            .expect("review repository should open");
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
 
         let review_a = sample_review(
             "review-a",

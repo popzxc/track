@@ -35,7 +35,8 @@ pub(crate) async fn list_reviews(
     State(state): State<AppState>,
 ) -> Result<Json<ReviewsResponse>, ApiError> {
     let reviews = state
-        .review_repository
+        .database
+        .review_repository()
         .list_reviews()
         .await
         .map_err(ApiError::from_track_error)?;
@@ -169,7 +170,8 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
 
         if let Err(join_error) = launch_result {
             if let Some(mut saved_dispatch) = state
-                .review_dispatch_repository
+                .database
+                .review_dispatch_repository()
                 .get_dispatch(&queued_dispatch.review_id, &queued_dispatch.dispatch_id)
                 .await
                 .ok()
@@ -183,7 +185,8 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
                         "Background review task stopped unexpectedly: {join_error}"
                     ));
                     let _ = state
-                        .review_dispatch_repository
+                        .database
+                        .review_dispatch_repository()
                         .save_dispatch(&saved_dispatch)
                         .await;
                 }

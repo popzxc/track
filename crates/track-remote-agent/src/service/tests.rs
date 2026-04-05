@@ -13,11 +13,7 @@ use track_config::config::{
     ApiConfigFile, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
 };
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
-use track_dal::dispatch_repository::DispatchRepository;
-use track_dal::project_repository::ProjectRepository;
-use track_dal::review_dispatch_repository::ReviewDispatchRepository;
-use track_dal::review_repository::ReviewRepository;
-use track_dal::task_repository::FileTaskRepository;
+use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
@@ -64,11 +60,7 @@ struct TestContext {
     _track_state_dir_guard: EnvVarGuard,
     data_dir: PathBuf,
     config_service: StaticRemoteAgentConfigService,
-    dispatch_repository: DispatchRepository,
-    project_repository: ProjectRepository,
-    review_dispatch_repository: ReviewDispatchRepository,
-    review_repository: ReviewRepository,
-    task_repository: FileTaskRepository,
+    database: DatabaseContext,
 }
 
 impl TestContext {
@@ -111,33 +103,14 @@ impl TestContext {
             _track_state_dir_guard: track_state_dir_guard,
             data_dir: data_dir.clone(),
             config_service,
-            dispatch_repository: DispatchRepository::new(Some(database_path.clone()))
+            database: DatabaseContext::initialized(Some(database_path))
                 .await
-                .expect("dispatch repository should resolve"),
-            project_repository: ProjectRepository::new(Some(database_path.clone()))
-                .await
-                .expect("project repository should resolve"),
-            review_dispatch_repository: ReviewDispatchRepository::new(Some(database_path.clone()))
-                .await
-                .expect("review dispatch repository should resolve"),
-            review_repository: ReviewRepository::new(Some(database_path.clone()))
-                .await
-                .expect("review repository should resolve"),
-            task_repository: FileTaskRepository::new(Some(database_path))
-                .await
-                .expect("task repository should resolve"),
+                .expect("database should resolve"),
         }
     }
 
     fn remote_agent_services(&self) -> RemoteAgentServices<'_> {
-        RemoteAgentServices::new(
-            &self.config_service,
-            &self.dispatch_repository,
-            &self.project_repository,
-            &self.task_repository,
-            &self.review_repository,
-            &self.review_dispatch_repository,
-        )
+        RemoteAgentServices::new(&self.config_service, &self.database)
     }
 
     fn service(&self) -> RemoteDispatchService<'_> {
@@ -149,7 +122,8 @@ impl TestContext {
     }
 
     async fn create_task(&self, project: &str, description: &str) -> Task {
-        self.project_repository
+        self.database
+            .project_repository()
             .upsert_project_by_name(
                 project,
                 ProjectMetadata {
@@ -162,7 +136,8 @@ impl TestContext {
             )
             .await
             .expect("project should save");
-        self.task_repository
+        self.database
+            .task_repository()
             .create_task(TaskCreateInput {
                 project: project.to_owned(),
                 priority: Priority::High,
@@ -175,7 +150,8 @@ impl TestContext {
     }
 
     async fn write_project_metadata(&self, project: &str) {
-        self.project_repository
+        self.database
+            .project_repository()
             .upsert_project_by_name(
                 project,
                 ProjectMetadata {
@@ -192,7 +168,8 @@ impl TestContext {
 
     async fn create_running_dispatch(&self, task: &Task) -> TaskDispatchRecord {
         let mut dispatch = self
-            .dispatch_repository
+            .database
+            .dispatch_repository()
             .create_dispatch(
                 task,
                 &format!("dispatch-{}-running", task.id),
@@ -215,7 +192,8 @@ impl TestContext {
         dispatch.summary =
             Some("The remote agent is working in the prepared environment.".to_owned());
         dispatch.updated_at = now_utc();
-        self.dispatch_repository
+        self.database
+            .dispatch_repository()
             .save_dispatch(&dispatch)
             .await
             .expect("dispatch should save");
@@ -224,7 +202,8 @@ impl TestContext {
 
     async fn create_review(&self) -> ReviewRecord {
         let review = sample_review_record();
-        self.review_repository
+        self.database
+            .review_repository()
             .save_review(&review)
             .await
             .expect("review should save");
@@ -673,7 +652,8 @@ async fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
         .expect("closing should still succeed locally");
 
     let updated_dispatch = context
-        .dispatch_repository
+        .database
+        .dispatch_repository()
         .get_dispatch(&task.id, &existing_dispatch.dispatch_id)
         .await
         .expect("dispatch lookup should succeed")
@@ -706,13 +686,15 @@ async fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
         .expect("delete should still succeed locally");
 
     let task_error = context
-        .task_repository
+        .database
+        .task_repository()
         .get_task(&task.id)
         .await
         .expect_err("deleted task should be gone");
     assert_eq!(task_error.code, ErrorCode::TaskNotFound);
     assert!(context
-        .dispatch_repository
+        .database
+        .dispatch_repository()
         .dispatches_for_task(&task.id)
         .await
         .expect("dispatch lookup should succeed")
@@ -776,7 +758,8 @@ async fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails
         .await
         .expect("queueing should release the stale active dispatch first");
     let released_dispatch = context
-        .dispatch_repository
+        .database
+        .dispatch_repository()
         .get_dispatch(&task.id, &existing_dispatch.dispatch_id)
         .await
         .expect("dispatch lookup should succeed")
@@ -822,7 +805,8 @@ async fn follow_up_dispatch_keeps_the_original_runner_tool() {
     first_dispatch.status = DispatchStatus::Succeeded;
     first_dispatch.finished_at = Some(first_dispatch.updated_at);
     context
-        .dispatch_repository
+        .database
+        .dispatch_repository()
         .save_dispatch(&first_dispatch)
         .await
         .expect("initial dispatch should save as terminal");

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
+use track_dal::database::DatabaseContext;
 use track_dal::dispatch_repository::DispatchRepository;
 use track_dal::project_repository::ProjectRepository;
 use track_dal::task_repository::FileTaskRepository;
@@ -37,12 +38,22 @@ mod record_ext;
 
 pub struct RemoteDispatchService<'a> {
     pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
-    pub(super) dispatch_repository: &'a DispatchRepository,
-    pub(super) project_repository: &'a ProjectRepository,
-    pub(super) task_repository: &'a FileTaskRepository,
+    pub(super) database: &'a DatabaseContext,
 }
 
 impl<'a> RemoteDispatchService<'a> {
+    fn dispatch_repository(&self) -> DispatchRepository<'a> {
+        self.database.dispatch_repository()
+    }
+
+    fn project_repository(&self) -> ProjectRepository<'a> {
+        self.database.project_repository()
+    }
+
+    fn task_repository(&self) -> FileTaskRepository<'a> {
+        self.database.task_repository()
+    }
+
     // =============================================================================
     // Remote Dispatch Entry Points
     // =============================================================================
@@ -67,7 +78,7 @@ impl<'a> RemoteDispatchService<'a> {
             queued_dispatch_worktree_path(&remote_agent, &task.project, &dispatch_id);
 
         let dispatch_record = self
-            .dispatch_repository
+            .dispatch_repository()
             .create_dispatch(
                 &task,
                 &dispatch_id,
@@ -114,7 +125,7 @@ impl<'a> RemoteDispatchService<'a> {
         self.ensure_no_blocking_active_dispatch(task_id).await?;
 
         let dispatch_history = self
-            .dispatch_repository
+            .dispatch_repository()
             .dispatches_for_task(task_id)
             .await?;
         let previous_dispatch = select_follow_up_base_dispatch(task_id, &dispatch_history)?;
@@ -142,7 +153,7 @@ impl<'a> RemoteDispatchService<'a> {
             first_follow_up_line(trimmed_follow_up_request)
         );
         let dispatch_record = self
-            .dispatch_repository
+            .dispatch_repository()
             .create_dispatch(
                 &updated_task,
                 &dispatch_id,
@@ -292,14 +303,14 @@ impl<'a> RemoteDispatchService<'a> {
                 }
 
                 let dispatch_record = dispatch_record.into_running();
-                self.dispatch_repository
+                self.dispatch_repository()
                     .save_dispatch(&dispatch_record)
                     .await?;
                 Ok(dispatch_record)
             }
             Err(error) => {
                 let dispatch_record = dispatch_record.into_failed(error.to_string());
-                self.dispatch_repository
+                self.dispatch_repository()
                     .save_dispatch(&dispatch_record)
                     .await?;
                 Err(error)
@@ -340,7 +351,7 @@ impl<'a> RemoteDispatchService<'a> {
             .await?;
 
         latest_dispatch = latest_dispatch.into_canceled_from_ui();
-        self.dispatch_repository
+        self.dispatch_repository()
             .save_dispatch(&latest_dispatch)
             .await?;
 
@@ -349,7 +360,7 @@ impl<'a> RemoteDispatchService<'a> {
 
     pub async fn discard_dispatch_history(&self, task_id: &str) -> Result<(), TrackError> {
         let latest_dispatch = self
-            .dispatch_repository
+            .dispatch_repository()
             .latest_dispatch_for_task(task_id)
             .await?
             .ok_or_else(|| {
@@ -372,7 +383,7 @@ impl<'a> RemoteDispatchService<'a> {
         // TODO: If users later want audit history, replace this hard delete
         // with an explicit archived-history concept instead of reviving older
         // dispatch records automatically.
-        self.dispatch_repository
+        self.dispatch_repository()
             .delete_dispatch_history_for_task(task_id)
             .await
     }
@@ -382,7 +393,7 @@ impl<'a> RemoteDispatchService<'a> {
         task_ids: &[String],
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let records = self
-            .dispatch_repository
+            .dispatch_repository()
             .latest_dispatches_for_tasks(task_ids)
             .await?;
         self.refresh_active_dispatch_records(records).await
@@ -401,7 +412,7 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let records = self.dispatch_repository.list_dispatches(limit).await?;
+        let records = self.dispatch_repository().list_dispatches(limit).await?;
         self.refresh_active_dispatch_records(records).await
     }
 
@@ -415,7 +426,7 @@ impl<'a> RemoteDispatchService<'a> {
         task_id: &str,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let mut records = self
-            .dispatch_repository
+            .dispatch_repository()
             .dispatches_for_task(task_id)
             .await?;
 
@@ -458,7 +469,7 @@ impl<'a> RemoteDispatchService<'a> {
 
         if validated_input.status == Some(Status::Closed) {
             let dispatch_history = self
-                .dispatch_repository
+                .dispatch_repository()
                 .dispatches_for_task(task_id)
                 .await?;
             if !dispatch_history.is_empty() {
@@ -498,14 +509,14 @@ impl<'a> RemoteDispatchService<'a> {
             }
         }
 
-        self.task_repository
+        self.task_repository()
             .update_task(task_id, validated_input)
             .await
     }
 
     pub async fn delete_task(&self, task_id: &str) -> Result<(), TrackError> {
         let dispatch_history = self
-            .dispatch_repository
+            .dispatch_repository()
             .dispatches_for_task(task_id)
             .await?;
         if !dispatch_history.is_empty() {
@@ -528,12 +539,12 @@ impl<'a> RemoteDispatchService<'a> {
             // task file itself. If the final file delete fails, the user still
             // sees the task and can retry, rather than ending up with invisible
             // orphaned runs in the UI.
-            self.dispatch_repository
+            self.dispatch_repository()
                 .delete_dispatch_history_for_task(task_id)
                 .await?;
         }
 
-        self.task_repository.delete_task(task_id).await
+        self.task_repository().delete_task(task_id).await
     }
 
     async fn refresh_active_dispatch_records(
@@ -580,7 +591,7 @@ impl<'a> RemoteDispatchService<'a> {
                     .clone()
                     .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
                 {
-                    self.dispatch_repository.save_dispatch(&updated).await?;
+                    self.dispatch_repository().save_dispatch(&updated).await?;
                     refreshed_records.push(updated);
                 } else {
                     let updated = self.finalize_dispatch_locally(
@@ -598,7 +609,7 @@ impl<'a> RemoteDispatchService<'a> {
             match refresh_dispatch_record_from_snapshot(record.clone(), snapshot) {
                 Ok(updated) => {
                     if updated != record {
-                        self.dispatch_repository.save_dispatch(&updated).await?;
+                        self.dispatch_repository().save_dispatch(&updated).await?;
                     }
                     refreshed_records.push(updated);
                 }
@@ -611,7 +622,7 @@ impl<'a> RemoteDispatchService<'a> {
                             finished_at,
                             error.to_string(),
                         );
-                        self.dispatch_repository.save_dispatch(&updated).await?;
+                        self.dispatch_repository().save_dispatch(&updated).await?;
                         refreshed_records.push(updated);
                     } else {
                         let error_message = error.to_string();
@@ -712,7 +723,7 @@ impl<'a> RemoteDispatchService<'a> {
             dispatch_record
                 .clone()
                 .into_locally_finalized(status, summary, error_message);
-        self.dispatch_repository
+        self.dispatch_repository()
             .save_dispatch(&updated_record)
             .await?;
 
@@ -756,7 +767,7 @@ impl<'a> RemoteDispatchService<'a> {
         task_id: &str,
         dispatch_id: &str,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
-        self.dispatch_repository
+        self.dispatch_repository()
             .get_dispatch(task_id, dispatch_id)
             .await
     }
@@ -792,7 +803,7 @@ impl<'a> RemoteDispatchService<'a> {
         }
 
         *dispatch_record = dispatch_record.clone().into_preparing(summary);
-        self.dispatch_repository
+        self.dispatch_repository()
             .save_dispatch(dispatch_record)
             .await?;
 
@@ -804,12 +815,12 @@ impl<'a> RemoteDispatchService<'a> {
         task_id: &str,
         follow_up_request: &str,
     ) -> Result<Task, TrackError> {
-        let task = self.task_repository.get_task(task_id).await?;
+        let task = self.task_repository().get_task(task_id).await?;
         let timestamp_label = format_iso_8601_millis(now_utc());
         let next_description =
             append_follow_up_request(&task.description, &timestamp_label, follow_up_request);
 
-        self.task_repository
+        self.task_repository()
             .update_task(
                 task_id,
                 TaskUpdateInput {
@@ -840,9 +851,9 @@ impl<'a> RemoteDispatchService<'a> {
             ));
         }
 
-        let task = self.task_repository.get_task(task_id).await?;
+        let task = self.task_repository().get_task(task_id).await?;
         let project = self
-            .project_repository
+            .project_repository()
             .get_project_by_name(&task.project)
             .await?;
         validate_project_metadata_for_dispatch(&project.metadata)?;

@@ -18,7 +18,8 @@ pub(crate) async fn list_projects(
     State(state): State<AppState>,
 ) -> Result<Json<ProjectsResponse>, ApiError> {
     let projects = state
-        .project_repository
+        .database
+        .project_repository()
         .list_projects()
         .await
         .map_err(ApiError::from_track_error)?;
@@ -35,7 +36,8 @@ pub(crate) async fn patch_project(
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
     let project = state
-        .project_repository
+        .database
+        .project_repository()
         .update_project_by_name(
             &canonical_name,
             input.validate().map_err(ApiError::from_track_error)?,
@@ -63,7 +65,8 @@ pub(crate) async fn put_project(
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
     let project = state
-        .project_repository
+        .database
+        .project_repository()
         .upsert_project(ProjectUpsertInput {
             canonical_name,
             aliases: input.aliases,

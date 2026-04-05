@@ -129,7 +129,7 @@ mod tests {
     #[tokio::test]
     async fn baseline_existing_schema_marks_a_complete_pre_sqlx_schema_as_applied() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let database = DatabaseContext::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::uninitialized(Some(directory.path().join("track.sqlite")))
             .await
             .expect("database context should resolve");
 

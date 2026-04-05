@@ -10,12 +10,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use track_api::BackendConfigRepository;
 use track_api::{build_app, AppState, MigrationService, RemoteAgentConfigService};
-use track_dal::dispatch_repository::DispatchRepository;
-use track_dal::project_repository::ProjectRepository;
-use track_dal::review_dispatch_repository::ReviewDispatchRepository;
-use track_dal::review_repository::ReviewRepository;
-use track_dal::task_repository::FileTaskRepository;
+use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::types::{
     Priority, ReviewRunRecord, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
@@ -33,11 +30,7 @@ use crate::fixture::RemoteFixture;
 // precisely while still exercising the production router and background work.
 pub struct ApiHarness {
     app: axum::Router,
-    dispatch_repository: Arc<DispatchRepository>,
-    project_repository: Arc<ProjectRepository>,
-    review_dispatch_repository: Arc<ReviewDispatchRepository>,
-    review_repository: Arc<ReviewRepository>,
-    task_repository: Arc<FileTaskRepository>,
+    database: DatabaseContext,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
     _track_legacy_config_guard: ScopedEnvVar,
@@ -87,62 +80,33 @@ impl ApiHarness {
         .expect("managed SSH key should copy into the local track state");
         set_private_key_permissions(&managed_remote_agent_dir.join("id_ed25519"));
 
+        let database = DatabaseContext::initialized(Some(database_path))
+            .await
+            .expect("database should resolve");
         let config_service = Arc::new(
-            RemoteAgentConfigService::new(None)
-                .await
-                .expect("config service should resolve"),
+            RemoteAgentConfigService::new(Some(
+                BackendConfigRepository::new(Some(database.clone()))
+                    .await
+                    .expect("backend config repository should resolve"),
+            ))
+            .await
+            .expect("config service should resolve"),
         );
         config_service
             .save_remote_agent_config(Some(&fixture.remote_agent_config()))
             .await
             .expect("remote-agent config should save");
 
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(database_path.clone()))
-                .await
-                .expect("task repository should resolve"),
-        );
-        let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(database_path.clone()))
-                .await
-                .expect("dispatch repository should resolve"),
-        );
-        let project_repository = Arc::new(
-            ProjectRepository::new(Some(database_path.clone()))
-                .await
-                .expect("project repository should resolve"),
-        );
-        let review_dispatch_repository = Arc::new(
-            ReviewDispatchRepository::new(Some(database_path.clone()))
-                .await
-                .expect("review dispatch repository should resolve"),
-        );
-        let review_repository = Arc::new(
-            ReviewRepository::new(Some(database_path))
-                .await
-                .expect("review repository should resolve"),
-        );
         let migration_service = Arc::new(
-            MigrationService::new(
-                (*config_service).clone(),
-                (*project_repository).clone(),
-                (*task_repository).clone(),
-                (*dispatch_repository).clone(),
-                (*review_repository).clone(),
-                (*review_dispatch_repository).clone(),
-            )
-            .expect("migration service should resolve"),
+            MigrationService::new((*config_service).clone(), database.clone())
+                .expect("migration service should resolve"),
         );
 
         let app = build_app(
             AppState {
                 config_service,
-                dispatch_repository: dispatch_repository.clone(),
+                database: database.clone(),
                 migration_service,
-                project_repository: project_repository.clone(),
-                review_dispatch_repository: review_dispatch_repository.clone(),
-                review_repository: review_repository.clone(),
-                task_repository: task_repository.clone(),
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
             &static_root,
@@ -150,11 +114,7 @@ impl ApiHarness {
 
         Self {
             app,
-            dispatch_repository,
-            project_repository,
-            review_dispatch_repository,
-            review_repository,
-            task_repository,
+            database,
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
             _track_legacy_config_guard: track_legacy_config_guard,
@@ -169,12 +129,14 @@ impl ApiHarness {
         project_metadata: ProjectMetadata,
         task_description: &str,
     ) -> Task {
-        self.project_repository
+        self.database
+            .project_repository()
             .upsert_project_by_name(project_name, project_metadata, Vec::new())
             .await
             .expect("project metadata should save");
 
-        self.task_repository
+        self.database
+            .task_repository()
             .create_task(TaskCreateInput {
                 project: project_name.to_owned(),
                 priority: Priority::High,
@@ -266,18 +228,24 @@ impl ApiHarness {
     }
 
     pub async fn load_task(&self, task_id: &str) -> Task {
-        self.task_repository
+        self.database
+            .task_repository()
             .get_task(task_id)
             .await
             .expect("task should load from the repository")
     }
 
     pub async fn task_exists(&self, task_id: &str) -> bool {
-        self.task_repository.get_task(task_id).await.is_ok()
+        self.database
+            .task_repository()
+            .get_task(task_id)
+            .await
+            .is_ok()
     }
 
     pub async fn dispatch_history_exists(&self, task_id: &str) -> bool {
-        self.dispatch_repository
+        self.database
+            .dispatch_repository()
             .latest_dispatch_for_task(task_id)
             .await
             .expect("dispatch history lookup should succeed")
@@ -285,7 +253,8 @@ impl ApiHarness {
     }
 
     pub async fn review_history_exists(&self, review_id: &str) -> bool {
-        self.review_dispatch_repository
+        self.database
+            .review_dispatch_repository()
             .latest_dispatch_for_review(review_id)
             .await
             .expect("review history lookup should succeed")
@@ -293,7 +262,11 @@ impl ApiHarness {
     }
 
     pub async fn review_record_exists(&self, review_id: &str) -> bool {
-        self.review_repository.get_review(review_id).await.is_ok()
+        self.database
+            .review_repository()
+            .get_review(review_id)
+            .await
+            .is_ok()
     }
 
     pub async fn create_review(
@@ -542,7 +515,8 @@ impl ApiHarness {
     }
 
     pub async fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
-        self.task_repository
+        self.database
+            .task_repository()
             .update_task(
                 task_id,
                 TaskUpdateInput {
@@ -556,7 +530,8 @@ impl ApiHarness {
     }
 
     pub async fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
-        self.task_repository
+        self.database
+            .task_repository()
             .delete_task(task_id)
             .await
             .expect("task file should delete directly in the repository");

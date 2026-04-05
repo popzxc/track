@@ -5,15 +5,12 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+use track_api::BackendConfigRepository;
 use track_api::{
     build_app, spawn_remote_review_follow_up_reconciler, AppState, MigrationService,
     RemoteAgentConfigService, SERVER_VERSION_TEXT,
 };
-use track_dal::dispatch_repository::DispatchRepository;
-use track_dal::project_repository::ProjectRepository;
-use track_dal::review_dispatch_repository::ReviewDispatchRepository;
-use track_dal::review_repository::ReviewRepository;
-use track_dal::task_repository::FileTaskRepository;
+use track_dal::database::DatabaseContext;
 
 fn static_root() -> PathBuf {
     if let Ok(path) = env::var("TRACK_STATIC_ROOT") {
@@ -33,19 +30,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_line_number(true)
         .init();
 
-    let config_service = Arc::new(RemoteAgentConfigService::new(None).await?);
-    let dispatch_repository = Arc::new(DispatchRepository::new(None).await?);
-    let project_repository = Arc::new(ProjectRepository::new(None).await?);
-    let review_dispatch_repository = Arc::new(ReviewDispatchRepository::new(None).await?);
-    let review_repository = Arc::new(ReviewRepository::new(None).await?);
-    let task_repository = Arc::new(FileTaskRepository::new(None).await?);
+    let database = DatabaseContext::initialized(None).await?;
+    let config_service = Arc::new(
+        RemoteAgentConfigService::new(Some(
+            BackendConfigRepository::new(Some(database.clone())).await?,
+        ))
+        .await?,
+    );
     let migration_service = Arc::new(MigrationService::new(
         (*config_service).clone(),
-        (*project_repository).clone(),
-        (*task_repository).clone(),
-        (*dispatch_repository).clone(),
-        (*review_repository).clone(),
-        (*review_dispatch_repository).clone(),
+        database.clone(),
     )?);
     // Docker publishes the backend behind a localhost-only port mapping by
     // default, so the binary still binds all interfaces inside the container.
@@ -58,12 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         config_service,
-        dispatch_repository,
+        database,
         migration_service,
-        project_repository,
-        review_dispatch_repository,
-        review_repository,
-        task_repository,
         task_change_version: Arc::new(AtomicU64::new(0)),
     };
     spawn_remote_review_follow_up_reconciler(state.clone());

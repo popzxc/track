@@ -38,7 +38,12 @@ pub(crate) async fn list_runs(
         .map_err(ApiError::from_track_error)?;
     let mut runs = Vec::new();
     for dispatch in dispatches {
-        let task = match state.task_repository.get_task(&dispatch.task_id).await {
+        let task = match state
+            .database
+            .task_repository()
+            .get_task(&dispatch.task_id)
+            .await
+        {
             Ok(task) => task,
             // Runs are persisted separately from task files. If a task was
             // deleted later, we prefer to hide that orphaned run from the

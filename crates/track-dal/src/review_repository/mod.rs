@@ -1,7 +1,5 @@
 mod records;
 
-use std::path::PathBuf;
-
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::format_iso_8601_millis;
@@ -9,17 +7,14 @@ use track_types::types::ReviewRecord;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
-#[derive(Debug, Clone)]
-pub struct ReviewRepository {
-    database: DatabaseContext,
+#[derive(Debug, Clone, Copy)]
+pub struct ReviewRepository<'a> {
+    database: &'a DatabaseContext,
 }
 
-impl ReviewRepository {
-    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path).await?;
-        database.initialize().await?;
-
-        Ok(Self { database })
+impl<'a> ReviewRepository<'a> {
+    pub(crate) fn new(database: &'a DatabaseContext) -> Self {
+        Self { database }
     }
 
     pub async fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
@@ -194,15 +189,16 @@ mod tests {
     use track_types::errors::ErrorCode;
     use track_types::types::RemoteAgentPreferredTool;
 
-    use super::ReviewRepository;
+    use crate::database::DatabaseContext;
     use crate::test_support::{sample_review, temporary_database_path};
 
     #[tokio::test]
     async fn save_review_upserts_and_get_review_returns_latest_fields() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("review repository should resolve");
+            .expect("database should resolve");
+        let repository = database.review_repository();
 
         let original = sample_review(
             "review-42",
@@ -240,9 +236,10 @@ mod tests {
     #[tokio::test]
     async fn list_reviews_orders_by_updated_at_desc() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("review repository should resolve");
+            .expect("database should resolve");
+        let repository = database.review_repository();
 
         let older = sample_review(
             "review-41",
@@ -283,9 +280,10 @@ mod tests {
     #[tokio::test]
     async fn delete_review_removes_saved_row() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = ReviewRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("review repository should resolve");
+            .expect("database should resolve");
+        let repository = database.review_repository();
 
         let review = sample_review(
             "review-42",

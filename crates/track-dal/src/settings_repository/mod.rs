@@ -5,20 +5,14 @@ use track_types::errors::{ErrorCode, TrackError};
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
-#[derive(Debug, Clone)]
-pub struct SettingsRepository {
-    database: DatabaseContext,
+#[derive(Debug, Clone, Copy)]
+pub struct SettingsRepository<'a> {
+    database: &'a DatabaseContext,
 }
 
-impl SettingsRepository {
-    pub async fn new(database: Option<DatabaseContext>) -> Result<Self, TrackError> {
-        let database = match database {
-            Some(database) => database,
-            None => DatabaseContext::new(None).await?,
-        };
-        database.initialize().await?;
-
-        Ok(Self { database })
+impl<'a> SettingsRepository<'a> {
+    pub(crate) fn new(database: &'a DatabaseContext) -> Self {
+        Self { database }
     }
 
     // TODO: strong typing is a joke I guess?
@@ -105,7 +99,6 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use track_types::errors::ErrorCode;
 
-    use super::SettingsRepository;
     use crate::database::DatabaseContext;
     use crate::test_support::temporary_database_path;
 
@@ -118,12 +111,10 @@ mod tests {
     #[tokio::test]
     async fn save_load_and_delete_json_round_trip() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
             .expect("database should resolve");
-        let repository = SettingsRepository::new(Some(database))
-            .await
-            .expect("settings repository should resolve");
+        let repository = database.settings_repository();
 
         repository
             .save_json(
@@ -163,12 +154,10 @@ mod tests {
     #[tokio::test]
     async fn save_json_overwrites_existing_value_for_the_same_key() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
             .expect("database should resolve");
-        let repository = SettingsRepository::new(Some(database))
-            .await
-            .expect("settings repository should resolve");
+        let repository = database.settings_repository();
 
         repository
             .save_json(
@@ -207,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn load_json_rejects_invalid_json_payloads() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::new(Some(database_path))
+        let database = DatabaseContext::uninitialized(Some(database_path))
             .await
             .expect("database should resolve");
         database
@@ -231,9 +220,7 @@ mod tests {
                 .expect("invalid fixture should insert");
         }
 
-        let repository = SettingsRepository::new(Some(database))
-            .await
-            .expect("settings repository should resolve");
+        let repository = database.settings_repository();
         let error = repository
             .load_json::<ExampleSettings>("remote-agent")
             .await

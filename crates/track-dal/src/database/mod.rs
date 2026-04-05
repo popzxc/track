@@ -11,6 +11,13 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use track_config::paths::{get_backend_database_path, path_to_string, DATABASE_FILE_NAME};
 use track_types::errors::{ErrorCode, TrackError};
 
+use crate::dispatch_repository::DispatchRepository;
+use crate::project_repository::ProjectRepository;
+use crate::review_dispatch_repository::ReviewDispatchRepository;
+use crate::review_repository::ReviewRepository;
+use crate::settings_repository::SettingsRepository;
+use crate::task_repository::FileTaskRepository;
+
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, Clone)]
@@ -19,7 +26,7 @@ pub struct DatabaseContext {
 }
 
 impl DatabaseContext {
-    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+    pub async fn uninitialized(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
         let database_path = resolve_database_path(database_path)?;
         let connect_options = connect_options(&database_path)?;
         let pool = SqlitePoolOptions::new()
@@ -32,6 +39,12 @@ impl DatabaseContext {
             ))?;
 
         Ok(Self { pool })
+    }
+
+    pub async fn initialized(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+        let database = Self::uninitialized(database_path).await?;
+        database.initialize().await?;
+        Ok(database)
     }
 
     pub async fn connect(&self) -> Result<PoolConnection<Sqlite>, TrackError> {
@@ -61,6 +74,30 @@ impl DatabaseContext {
             .run_direct(&mut *connection)
             .await
             .database_error_with("Could not initialize the SQLite schema via SQLx migrations")
+    }
+
+    pub fn dispatch_repository(&self) -> DispatchRepository<'_> {
+        DispatchRepository::new(self)
+    }
+
+    pub fn project_repository(&self) -> ProjectRepository<'_> {
+        ProjectRepository::new(self)
+    }
+
+    pub fn review_dispatch_repository(&self) -> ReviewDispatchRepository<'_> {
+        ReviewDispatchRepository::new(self)
+    }
+
+    pub fn review_repository(&self) -> ReviewRepository<'_> {
+        ReviewRepository::new(self)
+    }
+
+    pub fn settings_repository(&self) -> SettingsRepository<'_> {
+        SettingsRepository::new(self)
+    }
+
+    pub fn task_repository(&self) -> FileTaskRepository<'_> {
+        FileTaskRepository::new(self)
     }
 }
 
@@ -165,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_applies_the_embedded_sqlx_migration_to_a_fresh_database() {
         let directory = TempDir::new().expect("tempdir should be created");
-        let database = DatabaseContext::new(Some(directory.path().join("track.sqlite")))
+        let database = DatabaseContext::uninitialized(Some(directory.path().join("track.sqlite")))
             .await
             .expect("database context should resolve");
 

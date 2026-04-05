@@ -3,6 +3,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 
 use track_config::paths::collapse_home_path;
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
+use track_dal::database::DatabaseContext;
 use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
 use track_dal::review_repository::ReviewRepository;
@@ -31,12 +32,22 @@ use super::remote_agent_services::{
 
 pub struct RemoteReviewService<'a> {
     pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
-    pub(super) project_repository: &'a ProjectRepository,
-    pub(super) review_repository: &'a ReviewRepository,
-    pub(super) review_dispatch_repository: &'a ReviewDispatchRepository,
+    pub(super) database: &'a DatabaseContext,
 }
 
 impl<'a> RemoteReviewService<'a> {
+    fn project_repository(&self) -> ProjectRepository<'a> {
+        self.database.project_repository()
+    }
+
+    fn review_repository(&self) -> ReviewRepository<'a> {
+        self.database.review_repository()
+    }
+
+    fn review_dispatch_repository(&self) -> ReviewDispatchRepository<'a> {
+        self.database.review_dispatch_repository()
+    }
+
     // =============================================================================
     // Review Request Entry Points
     // =============================================================================
@@ -56,7 +67,7 @@ impl<'a> RemoteReviewService<'a> {
                 .execute()?;
         let initial_target_head_oid = pull_request_metadata.head_oid.clone();
         let project_match = self
-            .project_repository
+            .project_repository()
             .list_projects()
             .await?
             .into_iter()
@@ -76,16 +87,26 @@ impl<'a> RemoteReviewService<'a> {
                 pull_request_metadata.repository_full_name,
                 pull_request_metadata.pull_request_number
             ),
-            // |candidate| self.review_repository.get_review(candidate).is_ok(),
+            // |candidate| self.review_repository().get_review(candidate).is_ok(),
         );
 
         // TODO: Do we need that?
-        if self.review_repository.get_review(&review_id).await.is_ok() {
+        if self
+            .review_repository()
+            .get_review(&review_id)
+            .await
+            .is_ok()
+        {
             let mut suffix = 2;
             loop {
                 let candidate = format!("{review_id}-{suffix}");
                 // TODO: Why the hell we `unwrap_or(false)` here?
-                if !self.review_repository.get_review(&candidate).await.is_ok() {
+                if !self
+                    .review_repository()
+                    .get_review(&candidate)
+                    .await
+                    .is_ok()
+                {
                     review_id = candidate;
                     break;
                 }
@@ -123,7 +144,7 @@ impl<'a> RemoteReviewService<'a> {
             updated_at: review_timestamp,
         };
 
-        self.review_repository.save_review(&review).await?;
+        self.review_repository().save_review(&review).await?;
         match self
             .queue_review_dispatch(
                 &review,
@@ -135,7 +156,7 @@ impl<'a> RemoteReviewService<'a> {
         {
             Ok(dispatch) => Ok((review, dispatch)),
             Err(error) => {
-                let _ = self.review_repository.delete_review(&review.id).await;
+                let _ = self.review_repository().delete_review(&review.id).await;
                 Err(error)
             }
         }
@@ -174,7 +195,7 @@ impl<'a> RemoteReviewService<'a> {
             FetchPullRequestMetadataAction::new(&ssh_client, &review.pull_request_url).execute()?;
         let previous_updated_at = review.updated_at;
         review.updated_at = now_utc();
-        self.review_repository.save_review(&review).await?;
+        self.review_repository().save_review(&review).await?;
 
         match self
             .queue_review_dispatch(
@@ -188,7 +209,7 @@ impl<'a> RemoteReviewService<'a> {
             Ok(dispatch) => Ok(dispatch),
             Err(error) => {
                 review.updated_at = previous_updated_at;
-                let _ = self.review_repository.save_review(&review).await;
+                let _ = self.review_repository().save_review(&review).await;
                 Err(error)
             }
         }
@@ -261,7 +282,7 @@ impl<'a> RemoteReviewService<'a> {
             )?;
 
             let dispatch_history = self
-                .review_dispatch_repository
+                .review_dispatch_repository()
                 .dispatches_for_review(&review.id)
                 .await?;
             let previous_submitted_review = select_previous_submitted_review_run(
@@ -332,14 +353,14 @@ impl<'a> RemoteReviewService<'a> {
                 }
 
                 let dispatch_record = dispatch_record.into_running();
-                self.review_dispatch_repository
+                self.review_dispatch_repository()
                     .save_dispatch(&dispatch_record)
                     .await?;
                 Ok(dispatch_record)
             }
             Err(error) => {
                 let dispatch_record = dispatch_record.into_failed(error.to_string());
-                self.review_dispatch_repository
+                self.review_dispatch_repository()
                     .save_dispatch(&dispatch_record)
                     .await?;
                 Err(error)
@@ -354,7 +375,7 @@ impl<'a> RemoteReviewService<'a> {
         let mut records = Vec::new();
         for review_id in review_ids {
             if let Some(record) = self
-                .review_dispatch_repository
+                .review_dispatch_repository()
                 .latest_dispatch_for_review(review_id)
                 .await?
             {
@@ -370,7 +391,7 @@ impl<'a> RemoteReviewService<'a> {
         limit: Option<usize>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
         let records = self
-            .review_dispatch_repository
+            .review_dispatch_repository()
             .list_dispatches(limit)
             .await?;
         self.refresh_active_review_dispatch_records(records).await
@@ -381,7 +402,7 @@ impl<'a> RemoteReviewService<'a> {
         review_id: &str,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
         let mut records = self
-            .review_dispatch_repository
+            .review_dispatch_repository()
             .dispatches_for_review(review_id)
             .await?;
         if records
@@ -425,7 +446,7 @@ impl<'a> RemoteReviewService<'a> {
             .await?;
 
         latest_dispatch = latest_dispatch.into_canceled_from_ui();
-        self.review_dispatch_repository
+        self.review_dispatch_repository()
             .save_dispatch(&latest_dispatch)
             .await?;
 
@@ -433,9 +454,9 @@ impl<'a> RemoteReviewService<'a> {
     }
 
     pub async fn delete_review(&self, review_id: &str) -> Result<(), TrackError> {
-        let review = self.review_repository.get_review(review_id).await?;
+        let review = self.review_repository().get_review(review_id).await?;
         let dispatch_history = self
-            .review_dispatch_repository
+            .review_dispatch_repository()
             .dispatches_for_review(review_id)
             .await?;
         if !dispatch_history.is_empty() {
@@ -446,12 +467,12 @@ impl<'a> RemoteReviewService<'a> {
                 eprintln!("Skipping remote cleanup while deleting review {review_id}: {error}");
             }
 
-            self.review_dispatch_repository
+            self.review_dispatch_repository()
                 .delete_dispatch_history_for_review(review_id)
                 .await?;
         }
 
-        self.review_repository.delete_review(review_id).await
+        self.review_repository().delete_review(review_id).await
     }
 
     async fn refresh_active_review_dispatch_records(
@@ -483,7 +504,7 @@ impl<'a> RemoteReviewService<'a> {
                     .clone()
                     .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
                 {
-                    self.review_dispatch_repository
+                    self.review_dispatch_repository()
                         .save_dispatch(&updated)
                         .await?;
                     refreshed_records.push(updated);
@@ -503,7 +524,7 @@ impl<'a> RemoteReviewService<'a> {
             match self.refresh_review_dispatch_record_from_snapshot(record.clone(), snapshot) {
                 Ok(updated) => {
                     if updated != record {
-                        self.review_dispatch_repository
+                        self.review_dispatch_repository()
                             .save_dispatch(&updated)
                             .await?;
                     }
@@ -518,7 +539,7 @@ impl<'a> RemoteReviewService<'a> {
                             finished_at,
                             error.to_string(),
                         );
-                        self.review_dispatch_repository
+                        self.review_dispatch_repository()
                             .save_dispatch(&updated)
                             .await?;
                         refreshed_records.push(updated);
@@ -661,7 +682,7 @@ impl<'a> RemoteReviewService<'a> {
             )
         });
         let dispatch_record = self
-            .review_dispatch_repository
+            .review_dispatch_repository()
             .create_dispatch(
                 review,
                 &dispatch_id,
@@ -683,7 +704,7 @@ impl<'a> RemoteReviewService<'a> {
         review_id: &str,
         dispatch_id: &str,
     ) -> Result<Option<ReviewRunRecord>, TrackError> {
-        self.review_dispatch_repository
+        self.review_dispatch_repository()
             .get_dispatch(review_id, dispatch_id)
             .await
     }
@@ -716,7 +737,7 @@ impl<'a> RemoteReviewService<'a> {
         }
 
         *dispatch_record = dispatch_record.clone().into_preparing(summary);
-        self.review_dispatch_repository
+        self.review_dispatch_repository()
             .save_dispatch(dispatch_record)
             .await?;
 
@@ -768,7 +789,7 @@ impl<'a> RemoteReviewService<'a> {
             dispatch_record
                 .clone()
                 .into_locally_finalized(status, summary, error_message);
-        self.review_dispatch_repository
+        self.review_dispatch_repository()
             .save_dispatch(&updated_record)
             .await?;
 
@@ -881,7 +902,7 @@ impl<'a> RemoteReviewService<'a> {
         review_id: &str,
     ) -> Result<(RemoteAgentRuntimeConfig, ReviewRecord), TrackError> {
         let remote_agent = self.load_review_runner_prerequisites().await?;
-        let review = self.review_repository.get_review(review_id).await?;
+        let review = self.review_repository().get_review(review_id).await?;
 
         Ok((remote_agent, review))
     }

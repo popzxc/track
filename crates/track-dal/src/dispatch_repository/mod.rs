@@ -1,7 +1,5 @@
 mod records;
 
-use std::path::PathBuf;
-
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
@@ -9,17 +7,14 @@ use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDis
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
-#[derive(Debug, Clone)]
-pub struct DispatchRepository {
-    database: DatabaseContext,
+#[derive(Debug, Clone, Copy)]
+pub struct DispatchRepository<'a> {
+    database: &'a DatabaseContext,
 }
 
-impl DispatchRepository {
-    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let database = DatabaseContext::new(database_path).await?;
-        database.initialize().await?;
-
-        Ok(Self { database })
+impl<'a> DispatchRepository<'a> {
+    pub(crate) fn new(database: &'a DatabaseContext) -> Self {
+        Self { database }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -58,10 +53,6 @@ impl DispatchRepository {
             review_request_head_oid: review_request_head_oid.map(ToOwned::to_owned),
             review_request_user: review_request_user.map(ToOwned::to_owned),
         };
-
-        // Queue-time dispatches now arrive with their launch context already
-        // resolved, so the first write can persist the exact queued record that
-        // launch and reconciliation will observe.
         self.save_dispatch(&record).await?;
 
         Ok(record)
@@ -401,15 +392,16 @@ mod tests {
         DispatchStatus, Priority, RemoteAgentPreferredTool, Status, TaskSource,
     };
 
-    use super::DispatchRepository;
+    use crate::database::DatabaseContext;
     use crate::test_support::{sample_dispatch, sample_task, temporary_database_path};
 
     #[tokio::test]
     async fn create_dispatch_persists_queued_dispatch_with_launch_context() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         let timestamp = now_utc();
         let task = sample_task(
@@ -460,9 +452,10 @@ mod tests {
     #[tokio::test]
     async fn save_dispatch_upserts_and_get_dispatch_returns_latest_fields() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         let original = sample_dispatch(
             "dispatch-1",
@@ -507,9 +500,10 @@ mod tests {
     #[tokio::test]
     async fn dispatches_for_task_and_latest_dispatch_order_by_created_at_desc() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         let older = sample_dispatch(
             "dispatch-older",
@@ -561,9 +555,10 @@ mod tests {
     #[tokio::test]
     async fn latest_dispatches_for_tasks_returns_one_latest_record_per_task() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         repository
             .save_dispatch(&sample_dispatch(
@@ -623,9 +618,10 @@ mod tests {
     #[tokio::test]
     async fn list_dispatches_honors_optional_limit() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         for record in [
             sample_dispatch(
@@ -689,9 +685,10 @@ mod tests {
     #[tokio::test]
     async fn task_ids_with_history_returns_sorted_unique_ids() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         for record in [
             sample_dispatch(
@@ -738,9 +735,10 @@ mod tests {
     #[tokio::test]
     async fn delete_dispatch_history_for_task_removes_only_target_rows() {
         let (_directory, database_path) = temporary_database_path();
-        let repository = DispatchRepository::new(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
-            .expect("repository should open");
+            .expect("database should open");
+        let repository = database.dispatch_repository();
 
         repository
             .save_dispatch(&sample_dispatch(

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
+use track_dal::database::DatabaseContext;
 use track_dal::dispatch_repository::DispatchRepository;
 use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
@@ -57,47 +58,51 @@ impl<T: RemoteAgentConfigProvider + ?Sized> RemoteAgentConfigProvider for std::s
 
 pub struct RemoteAgentServices<'a> {
     config_service: &'a dyn RemoteAgentConfigProvider,
-    dispatch_repository: &'a DispatchRepository,
-    project_repository: &'a ProjectRepository,
-    task_repository: &'a FileTaskRepository,
-    review_repository: &'a ReviewRepository,
-    review_dispatch_repository: &'a ReviewDispatchRepository,
+    database: &'a DatabaseContext,
 }
 
 impl<'a> RemoteAgentServices<'a> {
     pub fn new(
         config_service: &'a dyn RemoteAgentConfigProvider,
-        dispatch_repository: &'a DispatchRepository,
-        project_repository: &'a ProjectRepository,
-        task_repository: &'a FileTaskRepository,
-        review_repository: &'a ReviewRepository,
-        review_dispatch_repository: &'a ReviewDispatchRepository,
+        database: &'a DatabaseContext,
     ) -> Self {
         Self {
             config_service,
-            dispatch_repository,
-            project_repository,
-            task_repository,
-            review_repository,
-            review_dispatch_repository,
+            database,
         }
+    }
+
+    fn dispatch_repository(&self) -> DispatchRepository<'a> {
+        self.database.dispatch_repository()
+    }
+
+    fn project_repository(&self) -> ProjectRepository<'a> {
+        self.database.project_repository()
+    }
+
+    fn task_repository(&self) -> FileTaskRepository<'a> {
+        self.database.task_repository()
+    }
+
+    fn review_repository(&self) -> ReviewRepository<'a> {
+        self.database.review_repository()
+    }
+
+    fn review_dispatch_repository(&self) -> ReviewDispatchRepository<'a> {
+        self.database.review_dispatch_repository()
     }
 
     pub fn dispatch(&self) -> RemoteDispatchService<'a> {
         RemoteDispatchService {
             config_service: self.config_service,
-            dispatch_repository: self.dispatch_repository,
-            project_repository: self.project_repository,
-            task_repository: self.task_repository,
+            database: self.database,
         }
     }
 
     pub fn review(&self) -> RemoteReviewService<'a> {
         RemoteReviewService {
             config_service: self.config_service,
-            project_repository: self.project_repository,
-            review_repository: self.review_repository,
-            review_dispatch_repository: self.review_dispatch_repository,
+            database: self.database,
         }
     }
 
@@ -117,13 +122,13 @@ impl<'a> RemoteAgentServices<'a> {
         let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-        let task_ids_with_history = self.dispatch_repository.task_ids_with_history().await?;
+        let task_ids_with_history = self.dispatch_repository().task_ids_with_history().await?;
         let review_ids_with_history = self
-            .review_dispatch_repository
+            .review_dispatch_repository()
             .review_ids_with_history()
             .await?;
         let tracked_project_names = self
-            .project_repository
+            .project_repository()
             .list_projects()
             .await?
             .into_iter()
@@ -138,14 +143,14 @@ impl<'a> RemoteAgentServices<'a> {
 
         for task_id in task_ids_with_history {
             let dispatch_history = self
-                .dispatch_repository
+                .dispatch_repository()
                 .dispatches_for_task(&task_id)
                 .await?;
             if dispatch_history.is_empty() {
                 continue;
             }
 
-            match self.task_repository.get_task(&task_id).await {
+            match self.task_repository().get_task(&task_id).await {
                 Ok(task) if task.status == Status::Open => {
                     kept_worktree_paths.extend(unique_worktree_paths(&dispatch_history));
                     kept_run_directories
@@ -182,7 +187,7 @@ impl<'a> RemoteAgentServices<'a> {
                             RemoteTaskCleanupMode::DeleteTask,
                         )
                         .await?;
-                    self.dispatch_repository
+                    self.dispatch_repository()
                         .delete_dispatch_history_for_task(&task_id)
                         .await?;
                     summary.missing_tasks_cleaned += 1;
@@ -198,7 +203,7 @@ impl<'a> RemoteAgentServices<'a> {
 
         for review_id in review_ids_with_history {
             let dispatch_history = self
-                .review_dispatch_repository
+                .review_dispatch_repository()
                 .dispatches_for_review(&review_id)
                 .await?;
             if dispatch_history.is_empty() {
@@ -208,7 +213,7 @@ impl<'a> RemoteAgentServices<'a> {
             let workspace_key = dispatch_history[0].workspace_key.clone();
             review_workspace_keys.insert(workspace_key.clone());
 
-            match self.review_repository.get_review(&review_id).await {
+            match self.review_repository().get_review(&review_id).await {
                 Ok(_) => {
                     let active_dispatch_history = dispatch_history
                         .iter()
@@ -226,7 +231,7 @@ impl<'a> RemoteAgentServices<'a> {
                     }
                 }
                 Err(error) if error.code == ErrorCode::TaskNotFound => {
-                    self.review_dispatch_repository
+                    self.review_dispatch_repository()
                         .delete_dispatch_history_for_review(&review_id)
                         .await?;
                     summary.local_dispatch_histories_removed += 1;
@@ -307,7 +312,7 @@ impl<'a> RemoteAgentServices<'a> {
             return Ok(RemoteReviewFollowUpReconciliation::default());
         }
 
-        let task_ids = self.dispatch_repository.task_ids_with_history().await?;
+        let task_ids = self.dispatch_repository().task_ids_with_history().await?;
         if task_ids.is_empty() {
             return Ok(RemoteReviewFollowUpReconciliation::default());
         }
@@ -330,7 +335,7 @@ impl<'a> RemoteAgentServices<'a> {
             };
 
             match self
-                .task_repository
+                .task_repository()
                 .get_task(&dispatch_record.task_id)
                 .await
             {
@@ -543,7 +548,7 @@ impl<'a> RemoteAgentServices<'a> {
         // this PR head already" checkpoint.
         updated_record.review_request_head_oid = Some(head_oid.to_owned());
         updated_record.review_request_user = Some(review_user.to_owned());
-        self.dispatch_repository
+        self.dispatch_repository()
             .save_dispatch(&updated_record)
             .await
     }
