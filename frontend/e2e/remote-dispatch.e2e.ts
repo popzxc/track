@@ -271,7 +271,24 @@ describe('remote dispatch smoke flow', () => {
       await page.getByTestId('drawer-primary-action').click()
       await page.getByTestId('follow-up-modal').waitFor({ timeout: 30_000 })
       await page.getByTestId('follow-up-request').fill('Address the review comments on the open PR.')
-      await page.getByTestId('follow-up-submit').click()
+
+      // The follow-up submission is asynchronous. If we reload immediately
+      // after clicking, the browser can tear down the page before the POST
+      // completes and the queued follow-up dispatch reaches persisted history.
+      // Waiting for both the successful API response and the modal to close
+      // keeps the smoke test aligned with real saved state instead of racing
+      // the request it just triggered.
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === 'POST'
+            && response.url().includes('/api/tasks/')
+            && response.url().includes('/follow-up')
+            && response.ok(),
+        ),
+        page.getByTestId('follow-up-submit').click(),
+      ])
+      await page.getByTestId('follow-up-modal').waitFor({ state: 'hidden', timeout: 30_000 })
       await waitForRunHistoryLabel(page, FOLLOW_UP_TASK_TITLE, 'Follow-up', 20_000)
       const runHistoryItems = page.getByTestId('run-history-item')
       expect(await runHistoryItems.count()).toBe(2)
