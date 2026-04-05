@@ -209,11 +209,12 @@ function runRemoteCommand(
 function runCommand(
   command: string,
   args: string[],
-  options: { cwd: string },
+  options: { cwd: string; env?: NodeJS.ProcessEnv },
 ): void {
   const completed = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: 'utf-8',
+    env: options.env,
   })
 
   if (completed.status === 0) {
@@ -225,6 +226,16 @@ function runCommand(
     completed.stdout?.trim() ? `stdout:\n${completed.stdout.trim()}` : '',
     completed.stderr?.trim() ? `stderr:\n${completed.stderr.trim()}` : '',
   ].filter(Boolean).join('\n\n'))
+}
+
+function runSqlxCommand(args: string[], databaseUrl: string): void {
+  runCommand('cargo', ['sqlx', '--no-dotenv', ...args], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+    },
+  })
 }
 
 async function reserveLocalPort(): Promise<number> {
@@ -388,37 +399,20 @@ async function seedOrphanedCleanupArtifacts(options: {
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
   // Seed the orphan dispatch record directly in SQLite before the API starts.
-  // The task_dispatches table has no FK constraint on task_id (the cascade was
-  // removed), so we can insert the dispatch record without a matching task row.
-  // The API will find this dispatch but no corresponding task and treat it as
-  // an orphan eligible for cleanup.  Creating the table here (idempotently) is
-  // safe because the API runs CREATE TABLE IF NOT EXISTS at startup.
+  // The browser fixture should follow the same migration path as local
+  // development, so we create and migrate the database through SQLx CLI rather
+  // than reimplementing migration execution in TypeScript. The task_dispatches
+  // table intentionally has no FK constraint on task_id, so we can still seed
+  // an orphan dispatch row without creating a matching task.
   const dbPath = path.join(options.stateDir, 'track.sqlite')
   await mkdir(path.dirname(dbPath), { recursive: true })
+  const databaseUrl = `sqlite://${dbPath}`
+
+  runSqlxCommand(['database', 'create'], databaseUrl)
+  runSqlxCommand(['migrate', 'run', '--source', 'crates/track-dal/migrations'], databaseUrl)
+
   const db = new Database(dbPath)
   try {
-    db.run(`
-      CREATE TABLE IF NOT EXISTS task_dispatches (
-        dispatch_id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        finished_at TEXT,
-        remote_host TEXT NOT NULL,
-        branch_name TEXT,
-        worktree_path TEXT,
-        pull_request_url TEXT,
-        preferred_tool TEXT NOT NULL DEFAULT 'codex',
-        follow_up_request TEXT,
-        summary TEXT,
-        notes TEXT,
-        error_message TEXT,
-        review_request_head_oid TEXT,
-        review_request_user TEXT
-      )
-    `)
     db.run(
       `INSERT OR IGNORE INTO task_dispatches
          (dispatch_id, task_id, project, status, created_at, updated_at, finished_at,

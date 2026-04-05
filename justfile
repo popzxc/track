@@ -37,6 +37,10 @@ run-fe: build-fe
 run-api:
   {{cargo}} run -p track-api
 
+# Create a new sequential SQLx migration for the track-dal crate.
+add-dal-migration description:
+  {{cargo}} sqlx migrate add --source crates/track-dal/migrations --sequential {{description}}
+
 # Install the CLI from the current checkout.
 install-cli:
   {{cargo}} install --path crates/track-cli --force --locked

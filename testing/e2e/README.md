@@ -25,7 +25,23 @@ They are not intended to replace the fast frontend unit/component suite.
 
 ## Running
 
-Before running, you need to install chromium:
+Before running, install the local prerequisites:
+
+- chromium for Playwright
+- `sqlx-cli` so `cargo sqlx` is available during fixture setup
+
+The browser fixture creates its temporary SQLite database with:
+
+- `cargo sqlx database create`
+- `cargo sqlx migrate run --source crates/track-dal/migrations`
+
+One way to install the CLI is:
+
+```sh
+cargo install sqlx-cli --no-default-features --features sqlite,rustls
+```
+
+Install chromium with:
 
 ```sh
 cd frontend

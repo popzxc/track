@@ -13,8 +13,15 @@ For local development, keep these available:
 
 - `just`
 - Rust
+- `sqlx-cli` so `cargo sqlx` is available for DAL migrations and browser e2e setup
 - Bun
 - Docker and `docker compose`
+
+One reasonable install command is:
+
+```bash
+cargo install sqlx-cli --no-default-features --features sqlite,rustls
+```
 
 ## Common commands
 
