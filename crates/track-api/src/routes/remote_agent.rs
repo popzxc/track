@@ -107,6 +107,7 @@ pub(crate) async fn get_remote_agent_settings(
     let remote_agent = state
         .config_service
         .load_remote_agent_config()
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(remote_agent_settings_response(remote_agent)))
@@ -121,6 +122,7 @@ pub(crate) async fn patch_remote_agent_settings(
     let existing_remote_agent = state
         .config_service
         .load_remote_agent_config()
+        .await
         .map_err(ApiError::from_track_error)?
         .ok_or_else(|| ApiError::from_track_error(TrackError::new(
             ErrorCode::RemoteAgentNotConfigured,
@@ -143,6 +145,7 @@ pub(crate) async fn patch_remote_agent_settings(
                 })
                 .or(existing_remote_agent.review_follow_up),
         )
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(remote_agent_settings_response(Some(remote_agent))))
@@ -177,6 +180,7 @@ pub(crate) async fn put_remote_agent_settings(
             &input.ssh_private_key,
             input.known_hosts.as_deref(),
         )
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(remote_agent_settings_response(Some(remote_agent))))
@@ -225,15 +229,11 @@ fn remote_agent_settings_response(
 pub(crate) async fn cleanup_remote_agent_artifacts(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteCleanupResponse>, ApiError> {
-    let cleanup_state = state.clone();
-    let summary = tokio::task::spawn_blocking(move || {
-        cleanup_state
-            .remote_agent_services()
-            .cleanup_unused_remote_artifacts()
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Remote cleanup task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let summary = state
+        .remote_agent_services()
+        .cleanup_unused_remote_artifacts()
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     Ok(Json(RemoteCleanupResponse { summary }))
 }
@@ -241,13 +241,11 @@ pub(crate) async fn cleanup_remote_agent_artifacts(
 pub(crate) async fn reset_remote_agent_workspace(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteResetResponse>, ApiError> {
-    let reset_state = state.clone();
-    let summary = tokio::task::spawn_blocking(move || {
-        reset_state.remote_agent_services().reset_remote_workspace()
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Remote reset task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let summary = state
+        .remote_agent_services()
+        .reset_remote_workspace()
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     Ok(Json(RemoteResetResponse { summary }))
 }

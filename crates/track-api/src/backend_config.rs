@@ -22,20 +22,22 @@ pub struct BackendConfigRepository {
 }
 
 impl BackendConfigRepository {
-    pub fn new(settings: Option<SettingsRepository>) -> Result<Self, TrackError> {
+    pub async fn new(settings: Option<SettingsRepository>) -> Result<Self, TrackError> {
         let settings = match settings {
             Some(settings) => settings,
-            None => SettingsRepository::new(None)?,
+            None => SettingsRepository::new(None).await?,
         };
 
         Ok(Self { settings })
     }
 
-    pub fn load_remote_agent_config(&self) -> Result<Option<RemoteAgentConfigFile>, TrackError> {
-        self.settings.load_json(REMOTE_AGENT_SETTING_KEY)
+    pub async fn load_remote_agent_config(
+        &self,
+    ) -> Result<Option<RemoteAgentConfigFile>, TrackError> {
+        self.settings.load_json(REMOTE_AGENT_SETTING_KEY).await
     }
 
-    pub fn save_remote_agent_config(
+    pub async fn save_remote_agent_config(
         &self,
         config: Option<&RemoteAgentConfigFile>,
     ) -> Result<(), TrackError> {
@@ -44,12 +46,13 @@ impl BackendConfigRepository {
                 let canonical = canonicalize_remote_agent_config(config.clone())?;
                 self.settings
                     .save_json(REMOTE_AGENT_SETTING_KEY, &canonical)
+                    .await
             }
-            None => self.settings.delete(REMOTE_AGENT_SETTING_KEY),
+            None => self.settings.delete(REMOTE_AGENT_SETTING_KEY).await,
         }
     }
 
-    pub fn replace_remote_agent_config(
+    pub async fn replace_remote_agent_config(
         &self,
         config: RemoteAgentConfigFile,
         ssh_private_key: &str,
@@ -58,17 +61,18 @@ impl BackendConfigRepository {
         let canonical = canonicalize_remote_agent_config(config)?;
         install_backend_remote_agent_secrets(ssh_private_key, known_hosts)?;
         self.settings
-            .save_json(REMOTE_AGENT_SETTING_KEY, &canonical)?;
+            .save_json(REMOTE_AGENT_SETTING_KEY, &canonical)
+            .await?;
         Ok(canonical)
     }
 
-    pub fn save_remote_agent_settings(
+    pub async fn save_remote_agent_settings(
         &self,
         preferred_tool: RemoteAgentPreferredTool,
         shell_prelude: Option<String>,
         review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
-        let mut config = self.load_remote_agent_config()?.ok_or_else(|| {
+        let mut config = self.load_remote_agent_config().await?.ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 "Remote dispatch is not configured yet. Import legacy data or register remote-agent settings first.",
@@ -80,21 +84,23 @@ impl BackendConfigRepository {
             .map(|value| value.replace("\r\n", "\n").trim().to_owned())
             .filter(|value| !value.is_empty());
         config.review_follow_up = review_follow_up;
-        self.save_remote_agent_config(Some(&config))?;
+        self.save_remote_agent_config(Some(&config)).await?;
 
         Ok(config)
     }
 
-    pub fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
+    pub async fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
         Ok(self
             .settings
-            .load_json(MIGRATION_STATUS_SETTING_KEY)?
+            .load_json(MIGRATION_STATUS_SETTING_KEY)
+            .await?
             .unwrap_or_else(MigrationStatus::ready))
     }
 
-    pub fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
+    pub async fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
         self.settings
             .save_json(MIGRATION_STATUS_SETTING_KEY, status)
+            .await
     }
 }
 
@@ -104,27 +110,29 @@ pub struct RemoteAgentConfigService {
 }
 
 impl RemoteAgentConfigService {
-    pub fn new(repository: Option<BackendConfigRepository>) -> Result<Self, TrackError> {
+    pub async fn new(repository: Option<BackendConfigRepository>) -> Result<Self, TrackError> {
         let repository = match repository {
             Some(repository) => repository,
-            None => BackendConfigRepository::new(None)?,
+            None => BackendConfigRepository::new(None).await?,
         };
 
         Ok(Self { repository })
     }
 
-    pub fn load_remote_agent_config(&self) -> Result<Option<RemoteAgentConfigFile>, TrackError> {
-        self.repository.load_remote_agent_config()
+    pub async fn load_remote_agent_config(
+        &self,
+    ) -> Result<Option<RemoteAgentConfigFile>, TrackError> {
+        self.repository.load_remote_agent_config().await
     }
 
-    pub fn save_remote_agent_config(
+    pub async fn save_remote_agent_config(
         &self,
         config: Option<&RemoteAgentConfigFile>,
     ) -> Result<(), TrackError> {
-        self.repository.save_remote_agent_config(config)
+        self.repository.save_remote_agent_config(config).await
     }
 
-    pub fn replace_remote_agent_config(
+    pub async fn replace_remote_agent_config(
         &self,
         config: RemoteAgentConfigFile,
         ssh_private_key: &str,
@@ -132,9 +140,10 @@ impl RemoteAgentConfigService {
     ) -> Result<RemoteAgentConfigFile, TrackError> {
         self.repository
             .replace_remote_agent_config(config, ssh_private_key, known_hosts)
+            .await
     }
 
-    pub fn save_remote_agent_settings(
+    pub async fn save_remote_agent_settings(
         &self,
         preferred_tool: RemoteAgentPreferredTool,
         shell_prelude: Option<String>,
@@ -142,30 +151,33 @@ impl RemoteAgentConfigService {
     ) -> Result<RemoteAgentConfigFile, TrackError> {
         self.repository
             .save_remote_agent_settings(preferred_tool, shell_prelude, review_follow_up)
+            .await
     }
 
-    pub fn load_remote_agent_runtime_config(
+    pub async fn load_remote_agent_runtime_config(
         &self,
     ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        self.load_remote_agent_config()?
+        self.load_remote_agent_config()
+            .await?
             .map(build_remote_agent_runtime_config)
             .transpose()
     }
 
-    pub fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
-        self.repository.load_migration_status()
+    pub async fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
+        self.repository.load_migration_status().await
     }
 
-    pub fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
-        self.repository.save_migration_status(status)
+    pub async fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
+        self.repository.save_migration_status(status).await
     }
 }
 
+#[async_trait::async_trait]
 impl RemoteAgentConfigProvider for RemoteAgentConfigService {
-    fn load_remote_agent_runtime_config(
+    async fn load_remote_agent_runtime_config(
         &self,
     ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        RemoteAgentConfigService::load_remote_agent_runtime_config(self)
+        RemoteAgentConfigService::load_remote_agent_runtime_config(self).await
     }
 }
 
@@ -290,16 +302,18 @@ mod tests {
     use track_dal::settings_repository::SettingsRepository;
     use track_types::migration::{LegacyScanSummary, MigrationState, MigrationStatus};
 
-    fn repository() -> (TempDir, BackendConfigRepository) {
+    async fn repository() -> (TempDir, BackendConfigRepository) {
         let directory = TempDir::new().expect("tempdir should be created");
         let database = DatabaseContext::new(Some(directory.path().join("track.sqlite")))
             .expect("database should resolve");
-        let settings =
-            SettingsRepository::new(Some(database)).expect("settings repository should resolve");
+        let settings = SettingsRepository::new(Some(database))
+            .await
+            .expect("settings repository should resolve");
 
         (
             directory,
             BackendConfigRepository::new(Some(settings))
+                .await
                 .expect("backend config repository should resolve"),
         )
     }
@@ -317,15 +331,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn saves_and_loads_imported_status() {
-        let (_directory, repository) = repository();
+    #[tokio::test]
+    async fn saves_and_loads_imported_status() {
+        let (_directory, repository) = repository().await;
         repository
             .save_migration_status(&status(MigrationState::Imported))
+            .await
             .expect("migration status should save");
 
         let loaded = repository
             .load_migration_status()
+            .await
             .expect("migration status should load");
 
         assert_eq!(loaded.state, MigrationState::Imported);

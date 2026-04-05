@@ -2,7 +2,6 @@ use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use track_types::errors::TrackError;
 use track_types::task_sort::sort_tasks;
 use track_types::time_utils::now_utc;
 use track_types::types::{
@@ -51,6 +50,7 @@ pub(crate) async fn list_tasks(
             query.include_closed.unwrap_or(false),
             query.project.as_deref(),
         )
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(TasksResponse {
@@ -62,28 +62,24 @@ pub(crate) async fn list_task_runs(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<super::runs::RunsResponse>, ApiError> {
-    let state = state.clone();
-    let task_id = id.clone();
-    let runs = tokio::task::spawn_blocking(move || {
-        let task = state.task_repository.get_task(&task_id)?;
-        let dispatches = state
-            .remote_agent_services()
-            .dispatch()
-            .dispatch_history_for_task(&task_id)?;
-
-        Ok::<Vec<super::runs::RunRecordResponse>, TrackError>(
-            dispatches
-                .into_iter()
-                .map(|dispatch| super::runs::RunRecordResponse {
-                    task: task.clone(),
-                    dispatch,
-                })
-                .collect(),
-        )
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Task runs refresh failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let task = state
+        .task_repository
+        .get_task(&id)
+        .await
+        .map_err(ApiError::from_track_error)?;
+    let dispatches = state
+        .remote_agent_services()
+        .dispatch()
+        .dispatch_history_for_task(&id)
+        .await
+        .map_err(ApiError::from_track_error)?;
+    let runs = dispatches
+        .into_iter()
+        .map(|dispatch| super::runs::RunRecordResponse {
+            task: task.clone(),
+            dispatch,
+        })
+        .collect::<Vec<_>>();
 
     Ok(Json(super::runs::RunsResponse { runs }))
 }
@@ -112,6 +108,7 @@ pub(crate) async fn create_task(
     let created_task = state
         .task_repository
         .create_task(validated_input)
+        .await
         .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
 
@@ -127,17 +124,12 @@ pub(crate) async fn patch_task(
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
     let validated_input = input.validate().map_err(ApiError::from_track_error)?;
 
-    let patch_state = state.clone();
-    let task_id = id.clone();
-    let updated_task = tokio::task::spawn_blocking(move || {
-        patch_state
-            .remote_agent_services()
-            .dispatch()
-            .update_task(&task_id, validated_input)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Patch task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let updated_task = state
+        .remote_agent_services()
+        .dispatch()
+        .update_task(&id, validated_input)
+        .await
+        .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
 
     Ok(Json(updated_task))
@@ -147,17 +139,12 @@ pub(crate) async fn delete_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
-    let delete_state = state.clone();
-    let task_id = id.clone();
-    tokio::task::spawn_blocking(move || {
-        delete_state
-            .remote_agent_services()
-            .dispatch()
-            .delete_task(&task_id)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Delete task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    state
+        .remote_agent_services()
+        .dispatch()
+        .delete_task(&id)
+        .await
+        .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
 
     Ok(Json(DeleteTaskResponse { ok: true }))
@@ -175,17 +162,12 @@ pub(crate) async fn dispatch_task(
             .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?
     };
 
-    let queue_state = state.clone();
-    let task_id = id.clone();
-    let dispatch = tokio::task::spawn_blocking(move || {
-        queue_state
-            .remote_agent_services()
-            .dispatch()
-            .queue_dispatch(&task_id, input.preferred_tool)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Dispatch task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let dispatch = state
+        .remote_agent_services()
+        .dispatch()
+        .queue_dispatch(&id, input.preferred_tool)
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
 
@@ -200,17 +182,12 @@ pub(crate) async fn follow_up_task(
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let queue_state = state.clone();
-    let task_id = id.clone();
-    let dispatch = tokio::task::spawn_blocking(move || {
-        queue_state
-            .remote_agent_services()
-            .dispatch()
-            .queue_follow_up_dispatch(&task_id, &input.request)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Follow-up task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let dispatch = state
+        .remote_agent_services()
+        .dispatch()
+        .queue_follow_up_dispatch(&id, &input.request)
+        .await
+        .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
@@ -222,16 +199,12 @@ pub(crate) async fn cancel_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
-    let state = state.clone();
-    let canceled_dispatch = tokio::task::spawn_blocking(move || {
-        state
-            .remote_agent_services()
-            .dispatch()
-            .cancel_dispatch(&id)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Cancel dispatch task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let canceled_dispatch = state
+        .remote_agent_services()
+        .dispatch()
+        .cancel_dispatch(&id)
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     Ok(Json(canceled_dispatch))
 }
@@ -240,16 +213,12 @@ pub(crate) async fn discard_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
-    let state = state.clone();
-    tokio::task::spawn_blocking(move || {
-        state
-            .remote_agent_services()
-            .dispatch()
-            .discard_dispatch_history(&id)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Discard dispatch task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    state
+        .remote_agent_services()
+        .dispatch()
+        .discard_dispatch_history(&id)
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     Ok(Json(DeleteTaskResponse { ok: true }))
 }
@@ -257,20 +226,17 @@ pub(crate) async fn discard_task_dispatch(
 // TODO: Used elsewhere -- is this a right location?
 pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
     tokio::spawn(async move {
-        let launch_state = state.clone();
-        let launch_dispatch = queued_dispatch.clone();
-        let join_result = tokio::task::spawn_blocking(move || {
-            launch_state
-                .remote_agent_services()
-                .dispatch()
-                .launch_prepared_dispatch(launch_dispatch)
-        })
-        .await;
+        let launch_result = state
+            .remote_agent_services()
+            .dispatch()
+            .launch_prepared_dispatch(queued_dispatch.clone())
+            .await;
 
-        if let Err(join_error) = join_result {
+        if let Err(join_error) = launch_result {
             if let Some(mut saved_dispatch) = state
                 .dispatch_repository
                 .get_dispatch(&queued_dispatch.task_id, &queued_dispatch.dispatch_id)
+                .await
                 .ok()
                 .flatten()
             {
@@ -281,7 +247,10 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
                     saved_dispatch.error_message = Some(format!(
                         "Background dispatch task stopped unexpectedly: {join_error}"
                     ));
-                    let _ = state.dispatch_repository.save_dispatch(&saved_dispatch);
+                    let _ = state
+                        .dispatch_repository
+                        .save_dispatch(&saved_dispatch)
+                        .await;
                 }
             }
         }

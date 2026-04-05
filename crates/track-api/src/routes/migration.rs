@@ -17,6 +17,7 @@ pub(crate) async fn migration_status(
     let migration = state
         .migration_service
         .status()
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(MigrationStatusResponse { migration }))
@@ -33,6 +34,7 @@ pub(crate) async fn import_legacy_data(
     let summary = state
         .migration_service
         .import_legacy()
+        .await
         .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
 
@@ -52,6 +54,7 @@ pub(crate) async fn enforce_migration_gate(
     let migration = state
         .migration_service
         .status()
+        .await
         .map_err(ApiError::from_track_error)?;
     if migration.requires_migration {
         return Err(ApiError::from_track_error(TrackError::new(

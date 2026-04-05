@@ -16,17 +16,13 @@ pub(crate) async fn list_dispatches(
     State(state): State<AppState>,
     uri: Uri,
 ) -> Result<Json<DispatchesResponse>, ApiError> {
-    let state = state.clone();
     let task_ids = parse_dispatch_task_ids(uri.query());
-    let dispatches = tokio::task::spawn_blocking(move || {
-        state
-            .remote_agent_services()
-            .dispatch()
-            .latest_dispatches_for_tasks(&task_ids)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Dispatch refresh task failed to join: {error}")))?
-    .map_err(ApiError::from_track_error)?;
+    let dispatches = state
+        .remote_agent_services()
+        .dispatch()
+        .latest_dispatches_for_tasks(&task_ids)
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     Ok(Json(DispatchesResponse { dispatches }))
 }

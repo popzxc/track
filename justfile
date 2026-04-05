@@ -6,10 +6,9 @@ bun := env('BUN', 'bun')
 default:
   @just --list
 
-# Build the release CLI and API binaries used for local development.
+# Build the rust workspace
 build-rust:
-  {{cargo}} build --release -p track-cli
-  {{cargo}} build --release -p track-api
+  {{cargo}} build --workspace --tests
 
 # Build the frontend production bundle.
 [working-directory: "frontend"]
@@ -74,7 +73,7 @@ test-all: test-rust test-fe test-int test-e2e
 # Rust lints
 lint-rust:
   {{cargo}} fmt --all -- --check
-  {{cargo}} clippy --workspace -- -D warnings
+  {{cargo}} clippy --workspace --tests -- -D warnings
 
 # TypeScript lints
 lint-ts:

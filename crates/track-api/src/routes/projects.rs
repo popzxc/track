@@ -20,6 +20,7 @@ pub(crate) async fn list_projects(
     let projects = state
         .project_repository
         .list_projects()
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(ProjectsResponse { projects }))
@@ -39,6 +40,7 @@ pub(crate) async fn patch_project(
             &canonical_name,
             input.validate().map_err(ApiError::from_track_error)?,
         )
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(project))
@@ -67,6 +69,7 @@ pub(crate) async fn put_project(
             aliases: input.aliases,
             metadata: input.metadata,
         })
+        .await
         .map_err(ApiError::from_track_error)?;
 
     Ok(Json(project))

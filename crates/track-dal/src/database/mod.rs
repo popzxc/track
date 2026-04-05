@@ -492,37 +492,5 @@ async fn rollback_transaction(connection: &mut SqliteConnection) -> Result<(), T
     Ok(())
 }
 
-fn run_database_operation<T>(
-    connect_options: SqliteConnectOptions,
-    database_path: PathBuf,
-    operation: impl for<'a> FnOnce(&'a mut SqliteConnection) -> BoxDbFuture<'a, T>,
-) -> Result<T, TrackError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!("Could not start the SQLite runtime: {error}"),
-            )
-        })?;
-
-    runtime.block_on(async move {
-        let mut connection = SqliteConnection::connect_with(&connect_options)
-            .await
-            .map_err(|error| {
-                TrackError::new(
-                    ErrorCode::TaskWriteFailed,
-                    format!(
-                        "Could not open the SQLite database at {}: {error}",
-                        path_to_string(&database_path)
-                    ),
-                )
-            })?;
-
-        operation(&mut connection).await
-    })
-}
-
 #[cfg(test)]
 mod migration_tests;

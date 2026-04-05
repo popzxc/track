@@ -77,51 +77,59 @@ impl TestEnvironment {
     }
 }
 
-fn config_service(directory: &TempDir) -> Arc<RemoteAgentConfigService> {
+async fn config_service(directory: &TempDir) -> Arc<RemoteAgentConfigService> {
     let database = DatabaseContext::new(Some(database_path(directory)))
         .expect("database context should resolve");
-    let settings =
-        SettingsRepository::new(Some(database)).expect("settings repository should resolve");
+    let settings = SettingsRepository::new(Some(database))
+        .await
+        .expect("settings repository should resolve");
     let repository = BackendConfigRepository::new(Some(settings))
+        .await
         .expect("backend config repository should resolve");
 
     Arc::new(
         RemoteAgentConfigService::new(Some(repository))
+            .await
             .expect("remote-agent config service should resolve"),
     )
 }
 
-fn dispatch_repository(directory: &TempDir) -> Arc<DispatchRepository> {
+async fn dispatch_repository(directory: &TempDir) -> Arc<DispatchRepository> {
     Arc::new(
         DispatchRepository::new(Some(database_path(directory)))
+            .await
             .expect("dispatch repository should resolve"),
     )
 }
 
-fn project_repository(directory: &TempDir) -> Arc<ProjectRepository> {
+async fn project_repository(directory: &TempDir) -> Arc<ProjectRepository> {
     Arc::new(
         ProjectRepository::new(Some(database_path(directory)))
+            .await
             .expect("project repository should resolve"),
     )
 }
 
-fn review_repository(directory: &TempDir) -> Arc<ReviewRepository> {
+async fn review_repository(directory: &TempDir) -> Arc<ReviewRepository> {
     Arc::new(
         ReviewRepository::new(Some(database_path(directory)))
+            .await
             .expect("review repository should resolve"),
     )
 }
 
-fn review_dispatch_repository(directory: &TempDir) -> Arc<ReviewDispatchRepository> {
+async fn review_dispatch_repository(directory: &TempDir) -> Arc<ReviewDispatchRepository> {
     Arc::new(
         ReviewDispatchRepository::new(Some(database_path(directory)))
+            .await
             .expect("review dispatch repository should resolve"),
     )
 }
 
-fn task_repository(directory: &TempDir) -> Arc<FileTaskRepository> {
+async fn task_repository(directory: &TempDir) -> Arc<FileTaskRepository> {
     Arc::new(
         FileTaskRepository::new(Some(database_path(directory)))
+            .await
             .expect("task repository should resolve"),
     )
 }
@@ -176,7 +184,7 @@ fn app_state(
     }
 }
 
-fn register_project(project_repository: &ProjectRepository, canonical_name: &str) {
+async fn register_project(project_repository: &ProjectRepository, canonical_name: &str) {
     project_repository
         .upsert_project_by_name(
             canonical_name,
@@ -188,11 +196,14 @@ fn register_project(project_repository: &ProjectRepository, canonical_name: &str
             },
             Vec::new(),
         )
+        .await
         .expect("project should save");
 }
 
-fn configured_remote_agent_config_service(directory: &TempDir) -> Arc<RemoteAgentConfigService> {
-    let service = config_service(directory);
+async fn configured_remote_agent_config_service(
+    directory: &TempDir,
+) -> Arc<RemoteAgentConfigService> {
+    let service = config_service(directory).await;
     service
         .save_remote_agent_config(Some(&RemoteAgentConfigFile {
             host: "192.0.2.25".to_owned(),
@@ -204,6 +215,7 @@ fn configured_remote_agent_config_service(directory: &TempDir) -> Arc<RemoteAgen
             shell_prelude: Some(". \"$HOME/.cargo/env\"".to_owned()),
             review_follow_up: None,
         }))
+        .await
         .expect("remote-agent config should save");
     service
 }
@@ -213,9 +225,9 @@ async fn lists_tasks_with_backend_sorting() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let repository = task_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let repository = task_repository(&directory).await;
     repository
         .create_task(TaskCreateInput {
             project: "project-a".to_owned(),
@@ -223,6 +235,7 @@ async fn lists_tasks_with_backend_sorting() {
             description: "Middle priority task".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("first task should be created");
     repository
         .create_task(TaskCreateInput {
@@ -231,15 +244,16 @@ async fn lists_tasks_with_backend_sorting() {
             description: "Top priority task".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("second task should be created");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             repository,
         ),
         &static_root,
@@ -269,17 +283,17 @@ async fn creates_tasks_from_the_web_api() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let repository = task_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let repository = task_repository(&directory).await;
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             repository.clone(),
         ),
         &static_root,
@@ -312,6 +326,7 @@ async fn creates_tasks_from_the_web_api() {
 
     let stored = repository
         .list_tasks(false, Some("project-a"))
+        .await
         .expect("stored tasks should load");
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].source, Some(TaskSource::Web));
@@ -322,17 +337,17 @@ async fn preserves_cli_source_when_task_is_created_through_the_api() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let repository = task_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let repository = task_repository(&directory).await;
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             repository.clone(),
         ),
         &static_root,
@@ -362,6 +377,7 @@ async fn preserves_cli_source_when_task_is_created_through_the_api() {
 
     let stored = repository
         .list_tasks(false, Some("project-a"))
+        .await
         .expect("stored tasks should load");
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].source, Some(TaskSource::Cli));
@@ -372,11 +388,11 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    register_project(&project_repository, "project-b");
-    let task_repository = task_repository(&directory);
-    let dispatch_repository = dispatch_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    register_project(&project_repository, "project-b").await;
+    let task_repository = task_repository(&directory).await;
+    let dispatch_repository = dispatch_repository(&directory).await;
 
     let first_task = task_repository
         .create_task(TaskCreateInput {
@@ -385,6 +401,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
             description: "First dispatched task".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("first task should be created")
         .task;
     let second_task = task_repository
@@ -394,6 +411,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
             description: "Second dispatched task".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("second task should be created")
         .task;
 
@@ -404,6 +422,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
     first_dispatch.finished_at = Some(first_dispatch.updated_at);
     dispatch_repository
         .save_dispatch(&first_dispatch)
+        .await
         .expect("first dispatch should save");
 
     let mut second_dispatch = dispatch_repository
@@ -413,15 +432,16 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
     second_dispatch.finished_at = Some(second_dispatch.updated_at);
     dispatch_repository
         .save_dispatch(&second_dispatch)
+        .await
         .expect("second dispatch should save");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
+            config_service(&directory).await,
             dispatch_repository,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             task_repository,
         ),
         &static_root,
@@ -475,10 +495,10 @@ async fn lists_runs_with_task_context() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let task_repository = task_repository(&directory);
-    let dispatch_repository = dispatch_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let task_repository = task_repository(&directory).await;
+    let dispatch_repository = dispatch_repository(&directory).await;
 
     let task = task_repository
         .create_task(TaskCreateInput {
@@ -487,6 +507,7 @@ async fn lists_runs_with_task_context() {
             description: "Investigate an agent run".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("task should be created")
         .task;
     let mut dispatch = dispatch_repository
@@ -496,15 +517,16 @@ async fn lists_runs_with_task_context() {
     dispatch.finished_at = Some(dispatch.updated_at);
     dispatch_repository
         .save_dispatch(&dispatch)
+        .await
         .expect("dispatch should save");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
+            config_service(&directory).await,
             dispatch_repository,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             task_repository,
         ),
         &static_root,
@@ -540,10 +562,10 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let task_repository = task_repository(&directory);
-    let dispatch_repository = dispatch_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let task_repository = task_repository(&directory).await;
+    let dispatch_repository = dispatch_repository(&directory).await;
 
     let task = task_repository
         .create_task(TaskCreateInput {
@@ -552,6 +574,7 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
             description: "Inspect task-scoped run history".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("task should be created")
         .task;
 
@@ -562,6 +585,7 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
     first_dispatch.finished_at = Some(first_dispatch.updated_at);
     dispatch_repository
         .save_dispatch(&first_dispatch)
+        .await
         .expect("first dispatch should save");
 
     let mut second_dispatch = dispatch_repository
@@ -571,15 +595,16 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
     second_dispatch.finished_at = Some(second_dispatch.updated_at);
     dispatch_repository
         .save_dispatch(&second_dispatch)
+        .await
         .expect("second dispatch should save");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
+            config_service(&directory).await,
             dispatch_repository,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             task_repository,
         ),
         &static_root,
@@ -615,8 +640,8 @@ async fn lists_reviews_with_latest_run_and_review_history() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let review_repository = review_repository(&directory);
-    let review_dispatch_repository = review_dispatch_repository(&directory);
+    let review_repository = review_repository(&directory).await;
+    let review_dispatch_repository = review_dispatch_repository(&directory).await;
     let created_at = now_utc();
     let review = ReviewRecord {
         id: "20260326-120000-review-pr-42".to_owned(),
@@ -638,6 +663,7 @@ async fn lists_reviews_with_latest_run_and_review_history() {
     };
     review_repository
         .save_review(&review)
+        .await
         .expect("review should save");
     review_dispatch_repository
         .save_dispatch(&ReviewRunRecord {
@@ -665,16 +691,17 @@ async fn lists_reviews_with_latest_run_and_review_history() {
             notes: None,
             error_message: None,
         })
+        .await
         .expect("review run should save");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
-            project_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
+            project_repository(&directory).await,
             review_dispatch_repository,
             review_repository,
-            task_repository(&directory),
+            task_repository(&directory).await,
         ),
         &static_root,
     );
@@ -733,10 +760,10 @@ async fn discards_dispatch_history_for_a_task() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let task_repository = task_repository(&directory);
-    let dispatch_repository = dispatch_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let task_repository = task_repository(&directory).await;
+    let dispatch_repository = dispatch_repository(&directory).await;
 
     let task = task_repository
         .create_task(TaskCreateInput {
@@ -745,6 +772,7 @@ async fn discards_dispatch_history_for_a_task() {
             description: "Discardable dispatch".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("task should be created")
         .task;
 
@@ -755,15 +783,16 @@ async fn discards_dispatch_history_for_a_task() {
     dispatch.finished_at = Some(dispatch.updated_at);
     dispatch_repository
         .save_dispatch(&dispatch)
+        .await
         .expect("terminal dispatch should save");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
+            config_service(&directory).await,
             dispatch_repository.clone(),
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             task_repository,
         ),
         &static_root,
@@ -784,6 +813,7 @@ async fn discards_dispatch_history_for_a_task() {
 
     assert!(dispatch_repository
         .latest_dispatch_for_task(&task.id)
+        .await
         .expect("latest dispatch lookup should succeed")
         .is_none());
 
@@ -810,9 +840,9 @@ async fn patches_and_deletes_tasks() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let repository = task_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let repository = task_repository(&directory).await;
     let created = repository
         .create_task(TaskCreateInput {
             project: "project-a".to_owned(),
@@ -820,15 +850,16 @@ async fn patches_and_deletes_tasks() {
             description: "Update the onboarding guide".to_owned(),
             source: Some(TaskSource::Web),
         })
+        .await
         .expect("task should be created");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             repository,
         ),
         &static_root,
@@ -868,9 +899,9 @@ async fn bumps_task_change_version_for_notify_and_mutations() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    register_project(&project_repository, "project-a");
-    let repository = task_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    register_project(&project_repository, "project-a").await;
+    let repository = task_repository(&directory).await;
     let created = repository
         .create_task(TaskCreateInput {
             project: "project-a".to_owned(),
@@ -878,15 +909,16 @@ async fn bumps_task_change_version_for_notify_and_mutations() {
             description: "Versioned task".to_owned(),
             source: Some(TaskSource::Cli),
         })
+        .await
         .expect("task should be created");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             repository,
         ),
         &static_root,
@@ -949,23 +981,24 @@ async fn lists_and_updates_project_metadata() {
         "[remote \"origin\"]\n\turl = git@github.com:acme/project-a.git\n",
     )
     .expect("git config should be written");
-    let project_repository = project_repository(&directory);
+    let project_repository = project_repository(&directory).await;
     project_repository
         .ensure_project(&ProjectInfo {
             canonical_name: "project-a".to_owned(),
             path: project_path,
             aliases: vec![],
         })
+        .await
         .expect("project should initialize");
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
-            task_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
+            task_repository(&directory).await,
         ),
         &static_root,
     );
@@ -1023,16 +1056,16 @@ async fn rejects_task_creation_for_unknown_projects() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let project_repository = project_repository(&directory);
-    let task_repository = task_repository(&directory);
+    let project_repository = project_repository(&directory).await;
+    let task_repository = task_repository(&directory).await;
 
     let app = build_app(
         app_state(
-            config_service(&directory),
-            dispatch_repository(&directory),
+            config_service(&directory).await,
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
             task_repository,
         ),
         &static_root,
@@ -1065,17 +1098,17 @@ async fn gets_and_updates_remote_agent_shell_prelude() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let config_service = configured_remote_agent_config_service(&directory);
-    let project_repository = project_repository(&directory);
+    let config_service = configured_remote_agent_config_service(&directory).await;
+    let project_repository = project_repository(&directory).await;
 
     let app = build_app(
         app_state(
             config_service,
-            dispatch_repository(&directory),
+            dispatch_repository(&directory).await,
             project_repository,
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
-            task_repository(&directory),
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
+            task_repository(&directory).await,
         ),
         &static_root,
     );
@@ -1138,16 +1171,16 @@ async fn puts_remote_agent_config_for_a_fresh_install() {
     let directory = TempDir::new().expect("tempdir should be created");
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
-    let config_service = config_service(&directory);
+    let config_service = config_service(&directory).await;
 
     let app = build_app(
         app_state(
             config_service,
-            dispatch_repository(&directory),
-            project_repository(&directory),
-            review_dispatch_repository(&directory),
-            review_repository(&directory),
-            task_repository(&directory),
+            dispatch_repository(&directory).await,
+            project_repository(&directory).await,
+            review_dispatch_repository(&directory).await,
+            review_repository(&directory).await,
+            task_repository(&directory).await,
         ),
         &static_root,
     );

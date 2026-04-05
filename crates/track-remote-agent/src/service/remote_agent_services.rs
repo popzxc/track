@@ -39,17 +39,19 @@ use crate::utils::{
 use super::dispatch::{unique_run_directories, unique_worktree_paths, RemoteDispatchService};
 use super::review::RemoteReviewService;
 
-pub trait RemoteAgentConfigProvider {
-    fn load_remote_agent_runtime_config(
+#[async_trait::async_trait]
+pub trait RemoteAgentConfigProvider: Send + Sync {
+    async fn load_remote_agent_runtime_config(
         &self,
     ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError>;
 }
 
+#[async_trait::async_trait]
 impl<T: RemoteAgentConfigProvider + ?Sized> RemoteAgentConfigProvider for std::sync::Arc<T> {
-    fn load_remote_agent_runtime_config(
+    async fn load_remote_agent_runtime_config(
         &self,
     ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        (**self).load_remote_agent_runtime_config()
+        (**self).load_remote_agent_runtime_config().await
     }
 }
 
@@ -108,16 +110,22 @@ impl<'a> RemoteAgentServices<'a> {
     // workspace. The top-level service owner handles that coordination so the
     // dispatch and review application services can stay focused on their own
     // local records and workflows.
-    pub fn cleanup_unused_remote_artifacts(&self) -> Result<RemoteCleanupSummary, TrackError> {
+    pub async fn cleanup_unused_remote_artifacts(
+        &self,
+    ) -> Result<RemoteCleanupSummary, TrackError> {
         let dispatch_service = self.dispatch();
-        let remote_agent = self.load_remote_agent_for_global_cleanup()?;
+        let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-        let task_ids_with_history = self.dispatch_repository.task_ids_with_history()?;
-        let review_ids_with_history = self.review_dispatch_repository.review_ids_with_history()?;
+        let task_ids_with_history = self.dispatch_repository.task_ids_with_history().await?;
+        let review_ids_with_history = self
+            .review_dispatch_repository
+            .review_ids_with_history()
+            .await?;
         let tracked_project_names = self
             .project_repository
-            .list_projects()?
+            .list_projects()
+            .await?
             .into_iter()
             .map(|project| project.canonical_name)
             .collect::<BTreeSet<_>>();
@@ -129,29 +137,36 @@ impl<'a> RemoteAgentServices<'a> {
         let mut active_review_workspace_keys = BTreeSet::new();
 
         for task_id in task_ids_with_history {
-            let dispatch_history = self.dispatch_repository.dispatches_for_task(&task_id)?;
+            let dispatch_history = self
+                .dispatch_repository
+                .dispatches_for_task(&task_id)
+                .await?;
             if dispatch_history.is_empty() {
                 continue;
             }
 
-            match self.task_repository.get_task(&task_id) {
+            match self.task_repository.get_task(&task_id).await {
                 Ok(task) if task.status == Status::Open => {
                     kept_worktree_paths.extend(unique_worktree_paths(&dispatch_history));
                     kept_run_directories
                         .extend(unique_run_directories(&dispatch_history, &remote_agent));
                 }
                 Ok(task) if task.status == Status::Closed => {
-                    let cleanup_counts = dispatch_service.cleanup_task_remote_artifacts(
-                        &task.id,
-                        &dispatch_history,
-                        RemoteTaskCleanupMode::CloseTask,
-                    )?;
-                    dispatch_service.finalize_active_dispatches_locally(
-                        &dispatch_history,
-                        DispatchStatus::Canceled,
-                        "Canceled because the task was closed.",
-                        None,
-                    )?;
+                    let cleanup_counts = dispatch_service
+                        .cleanup_task_remote_artifacts(
+                            &task.id,
+                            &dispatch_history,
+                            RemoteTaskCleanupMode::CloseTask,
+                        )
+                        .await?;
+                    dispatch_service
+                        .finalize_active_dispatches_locally(
+                            &dispatch_history,
+                            DispatchStatus::Canceled,
+                            "Canceled because the task was closed.",
+                            None,
+                        )
+                        .await?;
                     kept_run_directories
                         .extend(unique_run_directories(&dispatch_history, &remote_agent));
                     summary.closed_tasks_cleaned += 1;
@@ -160,13 +175,16 @@ impl<'a> RemoteAgentServices<'a> {
                         cleanup_counts.run_directories_removed;
                 }
                 Err(error) if error.code == ErrorCode::TaskNotFound => {
-                    let cleanup_counts = dispatch_service.cleanup_task_remote_artifacts(
-                        &task_id,
-                        &dispatch_history,
-                        RemoteTaskCleanupMode::DeleteTask,
-                    )?;
+                    let cleanup_counts = dispatch_service
+                        .cleanup_task_remote_artifacts(
+                            &task_id,
+                            &dispatch_history,
+                            RemoteTaskCleanupMode::DeleteTask,
+                        )
+                        .await?;
                     self.dispatch_repository
-                        .delete_dispatch_history_for_task(&task_id)?;
+                        .delete_dispatch_history_for_task(&task_id)
+                        .await?;
                     summary.missing_tasks_cleaned += 1;
                     summary.local_dispatch_histories_removed += 1;
                     summary.remote_worktrees_removed += cleanup_counts.worktrees_removed;
@@ -181,7 +199,8 @@ impl<'a> RemoteAgentServices<'a> {
         for review_id in review_ids_with_history {
             let dispatch_history = self
                 .review_dispatch_repository
-                .dispatches_for_review(&review_id)?;
+                .dispatches_for_review(&review_id)
+                .await?;
             if dispatch_history.is_empty() {
                 continue;
             }
@@ -189,7 +208,7 @@ impl<'a> RemoteAgentServices<'a> {
             let workspace_key = dispatch_history[0].workspace_key.clone();
             review_workspace_keys.insert(workspace_key.clone());
 
-            match self.review_repository.get_review(&review_id) {
+            match self.review_repository.get_review(&review_id).await {
                 Ok(_) => {
                     let active_dispatch_history = dispatch_history
                         .iter()
@@ -208,7 +227,8 @@ impl<'a> RemoteAgentServices<'a> {
                 }
                 Err(error) if error.code == ErrorCode::TaskNotFound => {
                     self.review_dispatch_repository
-                        .delete_dispatch_history_for_review(&review_id)?;
+                        .delete_dispatch_history_for_review(&review_id)
+                        .await?;
                     summary.local_dispatch_histories_removed += 1;
                 }
                 Err(error) => return Err(error),
@@ -240,9 +260,9 @@ impl<'a> RemoteAgentServices<'a> {
     //
     // Reset is also cross-domain by definition: we need both task dispatches
     // and review runs to be idle before we drop the shared remote workspace.
-    pub fn reset_remote_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
-        let active_task_dispatches = self.dispatch().list_dispatches(None)?;
-        let active_review_dispatches = self.review().list_dispatches(None)?;
+    pub async fn reset_remote_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
+        let active_task_dispatches = self.dispatch().list_dispatches(None).await?;
+        let active_review_dispatches = self.review().list_dispatches(None).await?;
         let active_dispatches =
             describe_remote_reset_blockers(&active_task_dispatches, &active_review_dispatches);
         if !active_dispatches.is_empty() {
@@ -255,15 +275,15 @@ impl<'a> RemoteAgentServices<'a> {
             ));
         }
 
-        let remote_agent = self.load_remote_agent_for_global_cleanup()?;
+        let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         RemoteWorkspaceOps::new(&ssh_client, &remote_agent).reset_workspace()
     }
 
-    pub fn reconcile_review_follow_up(
+    pub async fn reconcile_review_follow_up(
         &self,
     ) -> Result<RemoteReviewFollowUpReconciliation, TrackError> {
-        let remote_agent = match self.config_service.load_remote_agent_runtime_config() {
+        let remote_agent = match self.config_service.load_remote_agent_runtime_config().await {
             Ok(config) => config,
             Err(error)
                 if matches!(
@@ -287,13 +307,15 @@ impl<'a> RemoteAgentServices<'a> {
             return Ok(RemoteReviewFollowUpReconciliation::default());
         }
 
-        let task_ids = self.dispatch_repository.task_ids_with_history()?;
+        let task_ids = self.dispatch_repository.task_ids_with_history().await?;
         if task_ids.is_empty() {
             return Ok(RemoteReviewFollowUpReconciliation::default());
         }
 
         let dispatch_service = self.dispatch();
-        let latest_dispatches = dispatch_service.latest_dispatches_for_tasks(&task_ids)?;
+        let latest_dispatches = dispatch_service
+            .latest_dispatches_for_tasks(&task_ids)
+            .await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let mut reconciliation = RemoteReviewFollowUpReconciliation::default();
 
@@ -307,7 +329,11 @@ impl<'a> RemoteAgentServices<'a> {
                 continue;
             };
 
-            match self.task_repository.get_task(&dispatch_record.task_id) {
+            match self
+                .task_repository
+                .get_task(&dispatch_record.task_id)
+                .await
+            {
                 Ok(task) if task.status == Status::Open => task,
                 Ok(_) => continue,
                 Err(error) if error.code == ErrorCode::TaskNotFound => continue,
@@ -381,7 +407,8 @@ impl<'a> RemoteAgentServices<'a> {
                         dispatch_record.created_at,
                     );
                     let queued_dispatch = dispatch_service
-                        .queue_follow_up_dispatch(&dispatch_record.task_id, &follow_up_request)?;
+                        .queue_follow_up_dispatch(&dispatch_record.task_id, &follow_up_request)
+                        .await?;
                     reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                         "queue_follow_up",
                         format!(
@@ -460,7 +487,8 @@ impl<'a> RemoteAgentServices<'a> {
                 &dispatch_record,
                 &pull_request_state.head_oid,
                 &review_follow_up.main_user,
-            )?;
+            )
+            .await?;
             reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                 "notify_reviewer_posted",
                 "Posted a PR comment mentioning the configured main GitHub user for the current PR head.",
@@ -474,10 +502,13 @@ impl<'a> RemoteAgentServices<'a> {
         Ok(reconciliation)
     }
 
-    fn load_remote_agent_for_global_cleanup(&self) -> Result<RemoteAgentRuntimeConfig, TrackError> {
+    async fn load_remote_agent_for_global_cleanup(
+        &self,
+    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
-            .load_remote_agent_runtime_config()?
+            .load_remote_agent_runtime_config()
+            .await?
             .ok_or_else(|| {
                 TrackError::new(
                     ErrorCode::RemoteAgentNotConfigured,
@@ -498,7 +529,7 @@ impl<'a> RemoteAgentServices<'a> {
         Ok(remote_agent)
     }
 
-    fn mark_review_notification_for_head(
+    async fn mark_review_notification_for_head(
         &self,
         dispatch_record: &TaskDispatchRecord,
         head_oid: &str,
@@ -512,7 +543,9 @@ impl<'a> RemoteAgentServices<'a> {
         // this PR head already" checkpoint.
         updated_record.review_request_head_oid = Some(head_oid.to_owned());
         updated_record.review_request_user = Some(review_user.to_owned());
-        self.dispatch_repository.save_dispatch(&updated_record)
+        self.dispatch_repository
+            .save_dispatch(&updated_record)
+            .await
     }
 }
 
@@ -707,10 +740,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         .execute()
     }
 
-    pub(super) fn resolve_checkout_path(
-        &self,
-        workspace_key: &str,
-    ) -> Result<String, TrackError> {
+    pub(super) fn resolve_checkout_path(&self, workspace_key: &str) -> Result<String, TrackError> {
         let remote_registry = self.load_registry()?;
         Ok(self.checkout_path_from_registry_or_default(&remote_registry, workspace_key))
     }
@@ -846,10 +876,10 @@ pub(super) enum RefreshRemoteClient {
     UnavailableLocally { error_message: String },
 }
 
-pub(super) fn load_refresh_ssh_client(
+pub(super) async fn load_refresh_ssh_client(
     config_service: &dyn RemoteAgentConfigProvider,
 ) -> Result<RefreshRemoteClient, TrackError> {
-    let remote_agent = match config_service.load_remote_agent_runtime_config() {
+    let remote_agent = match config_service.load_remote_agent_runtime_config().await {
         Ok(Some(config)) => config,
         Ok(None) => {
             return Ok(RefreshRemoteClient::UnavailableLocally {

@@ -49,8 +49,9 @@ impl StaticRemoteAgentConfigService {
     }
 }
 
+#[async_trait::async_trait]
 impl RemoteAgentConfigProvider for StaticRemoteAgentConfigService {
-    fn load_remote_agent_runtime_config(
+    async fn load_remote_agent_runtime_config(
         &self,
     ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
         Ok(self.remote_agent.clone())
@@ -71,7 +72,7 @@ struct TestContext {
 }
 
 impl TestContext {
-    fn new(config: TrackConfigFile) -> Self {
+    async fn new(config: TrackConfigFile) -> Self {
         let directory = TempDir::new().expect("tempdir should be created");
         let env_lock_guard = track_data_env_lock()
             .lock()
@@ -111,14 +112,19 @@ impl TestContext {
             data_dir: data_dir.clone(),
             config_service,
             dispatch_repository: DispatchRepository::new(Some(database_path.clone()))
+                .await
                 .expect("dispatch repository should resolve"),
             project_repository: ProjectRepository::new(Some(database_path.clone()))
+                .await
                 .expect("project repository should resolve"),
             review_dispatch_repository: ReviewDispatchRepository::new(Some(database_path.clone()))
+                .await
                 .expect("review dispatch repository should resolve"),
             review_repository: ReviewRepository::new(Some(database_path.clone()))
+                .await
                 .expect("review repository should resolve"),
             task_repository: FileTaskRepository::new(Some(database_path))
+                .await
                 .expect("task repository should resolve"),
         }
     }
@@ -142,7 +148,7 @@ impl TestContext {
         self.remote_agent_services().review()
     }
 
-    fn create_task(&self, project: &str, description: &str) -> Task {
+    async fn create_task(&self, project: &str, description: &str) -> Task {
         self.project_repository
             .upsert_project_by_name(
                 project,
@@ -154,6 +160,7 @@ impl TestContext {
                 },
                 Vec::new(),
             )
+            .await
             .expect("project should save");
         self.task_repository
             .create_task(TaskCreateInput {
@@ -162,11 +169,12 @@ impl TestContext {
                 description: description.to_owned(),
                 source: Some(TaskSource::Web),
             })
+            .await
             .expect("task should be created")
             .task
     }
 
-    fn write_project_metadata(&self, project: &str) {
+    async fn write_project_metadata(&self, project: &str) {
         self.project_repository
             .upsert_project_by_name(
                 project,
@@ -178,10 +186,11 @@ impl TestContext {
                 },
                 Vec::new(),
             )
+            .await
             .expect("project metadata should save");
     }
 
-    fn create_running_dispatch(&self, task: &Task) -> TaskDispatchRecord {
+    async fn create_running_dispatch(&self, task: &Task) -> TaskDispatchRecord {
         let mut dispatch = self
             .dispatch_repository
             .create_dispatch(task, "198.51.100.10", RemoteAgentPreferredTool::Codex)
@@ -197,14 +206,16 @@ impl TestContext {
         dispatch.updated_at = now_utc();
         self.dispatch_repository
             .save_dispatch(&dispatch)
+            .await
             .expect("dispatch should save");
         dispatch
     }
 
-    fn create_review(&self) -> ReviewRecord {
+    async fn create_review(&self) -> ReviewRecord {
         let review = sample_review_record();
         self.review_repository
             .save_review(&review)
+            .await
             .expect("review should save");
         review
     }
@@ -261,8 +272,8 @@ fn sample_review_record() -> ReviewRecord {
     }
 }
 
-#[test]
-fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_settings() {
+#[tokio::test]
+async fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_settings() {
     let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
         user: "builder".to_owned(),
@@ -272,8 +283,9 @@ fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_se
         preferred_tool: RemoteAgentPreferredTool::Codex,
         shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         review_follow_up: None,
-    })));
-    let review = context.create_review();
+    })))
+    .await;
+    let review = context.create_review().await;
 
     let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
     install_dummy_managed_remote_agent_material(&context.data_dir);
@@ -281,6 +293,7 @@ fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_se
     let (remote_agent, loaded_review) = context
         .review_service()
         .load_review_dispatch_prerequisites(&review.id)
+        .await
         .expect("saved review dispatch prerequisites should load");
 
     assert_eq!(remote_agent.host, "127.0.0.1");
@@ -353,9 +366,9 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
     );
 }
 
-#[test]
-fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
-    let context = TestContext::new(base_test_config(None));
+#[tokio::test]
+async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
+    let context = TestContext::new(base_test_config(None)).await;
     let created_at = now_utc();
     let record = ReviewRunRecord {
         dispatch_id: "review-dispatch-1".to_owned(),
@@ -628,11 +641,13 @@ fn selects_the_latest_previous_submitted_review_run() {
     assert_eq!(selected.github_review_id.as_deref(), Some("1002"));
 }
 
-#[test]
-fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
-    let context = TestContext::new(base_test_config(None));
-    let task = context.create_task("project-a", "Investigate a flaky remote cleanup");
-    let existing_dispatch = context.create_running_dispatch(&task);
+#[tokio::test]
+async fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
+    let context = TestContext::new(base_test_config(None)).await;
+    let task = context
+        .create_task("project-a", "Investigate a flaky remote cleanup")
+        .await;
+    let existing_dispatch = context.create_running_dispatch(&task).await;
 
     let updated_task = context
         .service()
@@ -643,11 +658,13 @@ fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
                 ..TaskUpdateInput::default()
             },
         )
+        .await
         .expect("closing should still succeed locally");
 
     let updated_dispatch = context
         .dispatch_repository
         .get_dispatch(&task.id, &existing_dispatch.dispatch_id)
+        .await
         .expect("dispatch lookup should succeed")
         .expect("dispatch should still exist");
 
@@ -663,38 +680,46 @@ fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
         .is_some_and(|message| message.contains("Remote agent configuration is missing")));
 }
 
-#[test]
-fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
-    let context = TestContext::new(base_test_config(None));
-    let task = context.create_task("project-a", "Delete the task even without remote cleanup");
-    let _existing_dispatch = context.create_running_dispatch(&task);
+#[tokio::test]
+async fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
+    let context = TestContext::new(base_test_config(None)).await;
+    let task = context
+        .create_task("project-a", "Delete the task even without remote cleanup")
+        .await;
+    let _existing_dispatch = context.create_running_dispatch(&task).await;
 
     context
         .service()
         .delete_task(&task.id)
+        .await
         .expect("delete should still succeed locally");
 
     let task_error = context
         .task_repository
         .get_task(&task.id)
+        .await
         .expect_err("deleted task should be gone");
     assert_eq!(task_error.code, ErrorCode::TaskNotFound);
     assert!(context
         .dispatch_repository
         .dispatches_for_task(&task.id)
+        .await
         .expect("dispatch lookup should succeed")
         .is_empty());
 }
 
-#[test]
-fn refresh_releases_active_dispatches_when_remote_config_disappears() {
-    let context = TestContext::new(base_test_config(None));
-    let task = context.create_task("project-a", "Recover from a missing remote config");
-    let existing_dispatch = context.create_running_dispatch(&task);
+#[tokio::test]
+async fn refresh_releases_active_dispatches_when_remote_config_disappears() {
+    let context = TestContext::new(base_test_config(None)).await;
+    let task = context
+        .create_task("project-a", "Recover from a missing remote config")
+        .await;
+    let existing_dispatch = context.create_running_dispatch(&task).await;
 
     let refreshed = context
         .service()
         .latest_dispatches_for_tasks(std::slice::from_ref(&task.id))
+        .await
         .expect("dispatch refresh should succeed");
     let updated_dispatch = refreshed
         .first()
@@ -712,8 +737,8 @@ fn refresh_releases_active_dispatches_when_remote_config_disappears() {
     );
 }
 
-#[test]
-fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
+#[tokio::test]
+async fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
     let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
         user: "builder".to_owned(),
@@ -723,10 +748,13 @@ fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
         preferred_tool: RemoteAgentPreferredTool::Codex,
         shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         review_follow_up: None,
-    })));
-    let task = context.create_task("project-a", "Retry after the previous remote run got stuck");
-    context.write_project_metadata(&task.project);
-    let existing_dispatch = context.create_running_dispatch(&task);
+    })))
+    .await;
+    let task = context
+        .create_task("project-a", "Retry after the previous remote run got stuck")
+        .await;
+    context.write_project_metadata(&task.project).await;
+    let existing_dispatch = context.create_running_dispatch(&task).await;
 
     let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
     install_dummy_managed_remote_agent_material(&context.data_dir);
@@ -734,10 +762,12 @@ fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
     let queued_dispatch = context
         .service()
         .queue_dispatch(&task.id, None)
+        .await
         .expect("queueing should release the stale active dispatch first");
     let released_dispatch = context
         .dispatch_repository
         .get_dispatch(&task.id, &existing_dispatch.dispatch_id)
+        .await
         .expect("dispatch lookup should succeed")
         .expect("previous dispatch should still exist");
 
@@ -753,8 +783,8 @@ fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
     assert!(released_dispatch.error_message.is_some());
 }
 
-#[test]
-fn follow_up_dispatch_keeps_the_original_runner_tool() {
+#[tokio::test]
+async fn follow_up_dispatch_keeps_the_original_runner_tool() {
     let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
         user: "builder".to_owned(),
@@ -764,26 +794,32 @@ fn follow_up_dispatch_keeps_the_original_runner_tool() {
         preferred_tool: RemoteAgentPreferredTool::Codex,
         shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         review_follow_up: None,
-    })));
-    let task = context.create_task("project-a", "Keep using the same runner on follow-up");
-    context.write_project_metadata(&task.project);
+    })))
+    .await;
+    let task = context
+        .create_task("project-a", "Keep using the same runner on follow-up")
+        .await;
+    context.write_project_metadata(&task.project).await;
     let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
     install_dummy_managed_remote_agent_material(&context.data_dir);
 
     let mut first_dispatch = context
         .service()
         .queue_dispatch(&task.id, Some(RemoteAgentPreferredTool::Claude))
+        .await
         .expect("initial dispatch should queue");
     first_dispatch.status = DispatchStatus::Succeeded;
     first_dispatch.finished_at = Some(first_dispatch.updated_at);
     context
         .dispatch_repository
         .save_dispatch(&first_dispatch)
+        .await
         .expect("initial dispatch should save as terminal");
 
     let follow_up_dispatch = context
         .service()
         .queue_follow_up_dispatch(&task.id, "Address the review comments.")
+        .await
         .expect("follow-up dispatch should queue");
 
     assert_eq!(

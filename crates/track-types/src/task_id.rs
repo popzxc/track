@@ -44,9 +44,8 @@ pub fn build_unique_task_id(
 
 #[cfg(test)]
 mod tests {
-    use time::macros::datetime;
 
-    use super::{build_task_slug, build_unique_task_id};
+    use super::build_task_slug;
 
     #[test]
     fn slug_falls_back_when_description_has_no_letters() {

@@ -46,7 +46,7 @@ pub struct ApiHarness {
 }
 
 impl ApiHarness {
-    pub fn new(fixture: &RemoteFixture) -> Self {
+    pub async fn new(fixture: &RemoteFixture) -> Self {
         let state_dir = TempDir::new().expect("local state tempdir should be created");
         let static_root = create_static_root(&state_dir);
         let track_root = state_dir.path().join("track-root");
@@ -87,30 +87,40 @@ impl ApiHarness {
         .expect("managed SSH key should copy into the local track state");
         set_private_key_permissions(&managed_remote_agent_dir.join("id_ed25519"));
 
-        let config_service =
-            Arc::new(RemoteAgentConfigService::new(None).expect("config service should resolve"));
+        let config_service = Arc::new(
+            RemoteAgentConfigService::new(None)
+                .await
+                .expect("config service should resolve"),
+        );
         config_service
             .save_remote_agent_config(Some(&fixture.remote_agent_config()))
+            .await
             .expect("remote-agent config should save");
 
         let task_repository = Arc::new(
             FileTaskRepository::new(Some(database_path.clone()))
+                .await
                 .expect("task repository should resolve"),
         );
         let dispatch_repository = Arc::new(
             DispatchRepository::new(Some(database_path.clone()))
+                .await
                 .expect("dispatch repository should resolve"),
         );
         let project_repository = Arc::new(
             ProjectRepository::new(Some(database_path.clone()))
+                .await
                 .expect("project repository should resolve"),
         );
         let review_dispatch_repository = Arc::new(
             ReviewDispatchRepository::new(Some(database_path.clone()))
+                .await
                 .expect("review dispatch repository should resolve"),
         );
         let review_repository = Arc::new(
-            ReviewRepository::new(Some(database_path)).expect("review repository should resolve"),
+            ReviewRepository::new(Some(database_path))
+                .await
+                .expect("review repository should resolve"),
         );
         let migration_service = Arc::new(
             MigrationService::new(
@@ -153,7 +163,7 @@ impl ApiHarness {
         }
     }
 
-    pub fn create_task_with_project(
+    pub async fn create_task_with_project(
         &self,
         project_name: &str,
         project_metadata: ProjectMetadata,
@@ -161,6 +171,7 @@ impl ApiHarness {
     ) -> Task {
         self.project_repository
             .upsert_project_by_name(project_name, project_metadata, Vec::new())
+            .await
             .expect("project metadata should save");
 
         self.task_repository
@@ -170,6 +181,7 @@ impl ApiHarness {
                 description: task_description.to_owned(),
                 source: Some(TaskSource::Cli),
             })
+            .await
             .expect("task should be created")
             .task
     }
@@ -253,32 +265,35 @@ impl ApiHarness {
         response_json(response).await
     }
 
-    pub fn load_task(&self, task_id: &str) -> Task {
+    pub async fn load_task(&self, task_id: &str) -> Task {
         self.task_repository
             .get_task(task_id)
+            .await
             .expect("task should load from the repository")
     }
 
-    pub fn task_exists(&self, task_id: &str) -> bool {
-        self.task_repository.get_task(task_id).is_ok()
+    pub async fn task_exists(&self, task_id: &str) -> bool {
+        self.task_repository.get_task(task_id).await.is_ok()
     }
 
-    pub fn dispatch_history_exists(&self, task_id: &str) -> bool {
+    pub async fn dispatch_history_exists(&self, task_id: &str) -> bool {
         self.dispatch_repository
             .latest_dispatch_for_task(task_id)
+            .await
             .expect("dispatch history lookup should succeed")
             .is_some()
     }
 
-    pub fn review_history_exists(&self, review_id: &str) -> bool {
+    pub async fn review_history_exists(&self, review_id: &str) -> bool {
         self.review_dispatch_repository
             .latest_dispatch_for_review(review_id)
+            .await
             .expect("review history lookup should succeed")
             .is_some()
     }
 
-    pub fn review_record_exists(&self, review_id: &str) -> bool {
-        self.review_repository.get_review(review_id).is_ok()
+    pub async fn review_record_exists(&self, review_id: &str) -> bool {
+        self.review_repository.get_review(review_id).await.is_ok()
     }
 
     pub async fn create_review(
@@ -526,7 +541,7 @@ impl ApiHarness {
         response_json(response).await
     }
 
-    pub fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
+    pub async fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
         self.task_repository
             .update_task(
                 task_id,
@@ -536,12 +551,14 @@ impl ApiHarness {
                     status: Some(Status::Closed),
                 },
             )
+            .await
             .expect("task should close directly in the repository")
     }
 
-    pub fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
+    pub async fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
         self.task_repository
             .delete_task(task_id)
+            .await
             .expect("task file should delete directly in the repository");
     }
 

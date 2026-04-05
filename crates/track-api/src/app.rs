@@ -27,27 +27,16 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
             let reconciliation_run_id =
                 format!("review-follow-up-{}", now_utc().unix_timestamp_nanos());
 
-            let reconcile_state = state.clone();
-            let join_result = tokio::task::spawn_blocking(move || {
-                reconcile_state
-                    .remote_agent_services()
-                    .reconcile_review_follow_up()
-            })
-            .await;
-
-            let reconciliation = match join_result {
-                Ok(Ok(reconciliation)) => reconciliation,
-                Ok(Err(error)) => {
+            let reconciliation = match state
+                .remote_agent_services()
+                .reconcile_review_follow_up()
+                .await
+            {
+                Ok(reconciliation) => reconciliation,
+                Err(error) => {
                     tracing::warn!(
                         reconciliation_run_id = %reconciliation_run_id,
                         "Review follow-up reconciliation failed: {error}"
-                    );
-                    continue;
-                }
-                Err(join_error) => {
-                    tracing::warn!(
-                        reconciliation_run_id = %reconciliation_run_id,
-                        "Review follow-up reconciliation task failed to join: {join_error}"
                     );
                     continue;
                 }

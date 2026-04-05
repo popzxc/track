@@ -51,21 +51,24 @@ impl<'a> RemoteDispatchService<'a> {
     // place: queueing, follow-up reuse, launch, refresh, and cleanup. The goal
     // is not to reduce responsibilities, but to make the current shape easy to
     // inspect while the service boundaries settle.
-    pub fn queue_dispatch(
+    pub async fn queue_dispatch(
         &self,
         task_id: &str,
         preferred_tool: Option<RemoteAgentPreferredTool>,
     ) -> Result<TaskDispatchRecord, TrackError> {
-        let (remote_agent, task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
+        let (remote_agent, task, _project_metadata) =
+            self.load_dispatch_prerequisites(task_id).await?;
         let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
-        self.ensure_no_blocking_active_dispatch(task_id)?;
+        self.ensure_no_blocking_active_dispatch(task_id).await?;
         let preferred_tool = preferred_tool.unwrap_or(remote_agent.preferred_tool);
 
         let dispatch_record = self
             .dispatch_repository
             .create_dispatch(&task, &remote_agent.host, preferred_tool)?
             .populated(&remote_agent, &task);
-        self.dispatch_repository.save_dispatch(&dispatch_record)?;
+        self.dispatch_repository
+            .save_dispatch(&dispatch_record)
+            .await?;
 
         Ok(dispatch_record)
     }
@@ -79,7 +82,7 @@ impl<'a> RemoteDispatchService<'a> {
     // user request into the task Markdown for auditability, and store the
     // latest follow-up request directly on the dispatch record so prompt
     // generation can highlight the newest ask explicitly.
-    pub fn queue_follow_up_dispatch(
+    pub async fn queue_follow_up_dispatch(
         &self,
         task_id: &str,
         follow_up_request: &str,
@@ -92,11 +95,15 @@ impl<'a> RemoteDispatchService<'a> {
             ));
         }
 
-        let (remote_agent, _task, _project_metadata) = self.load_dispatch_prerequisites(task_id)?;
+        let (remote_agent, _task, _project_metadata) =
+            self.load_dispatch_prerequisites(task_id).await?;
         let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
-        self.ensure_no_blocking_active_dispatch(task_id)?;
+        self.ensure_no_blocking_active_dispatch(task_id).await?;
 
-        let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
+        let dispatch_history = self
+            .dispatch_repository
+            .dispatches_for_task(task_id)
+            .await?;
         let previous_dispatch = select_follow_up_base_dispatch(task_id, &dispatch_history)?;
         let branch_name = previous_dispatch.branch_name.clone().ok_or_else(|| {
             dispatch_not_found(
@@ -111,8 +118,9 @@ impl<'a> RemoteDispatchService<'a> {
             )
         })?;
 
-        let updated_task =
-            self.append_follow_up_request_to_task(task_id, trimmed_follow_up_request)?;
+        let updated_task = self
+            .append_follow_up_request_to_task(task_id, trimmed_follow_up_request)
+            .await?;
         let pull_request_url = latest_pull_request_for_branch(&dispatch_history, &branch_name)
             .or(previous_dispatch.pull_request_url.clone());
         let dispatch_record = self
@@ -129,17 +137,20 @@ impl<'a> RemoteDispatchService<'a> {
                 trimmed_follow_up_request,
                 &previous_dispatch,
             );
-        self.dispatch_repository.save_dispatch(&dispatch_record)?;
+        self.dispatch_repository
+            .save_dispatch(&dispatch_record)
+            .await?;
 
         Ok(dispatch_record)
     }
 
-    pub fn launch_prepared_dispatch(
+    pub async fn launch_prepared_dispatch(
         &self,
         mut dispatch_record: TaskDispatchRecord,
     ) -> Result<TaskDispatchRecord, TrackError> {
-        if let Some(existing_record) =
-            self.load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+        if let Some(existing_record) = self
+            .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+            .await?
         {
             if !existing_record.status.is_active() {
                 return Ok(existing_record);
@@ -157,28 +168,35 @@ impl<'a> RemoteDispatchService<'a> {
         let remote_run_directory =
             derive_remote_run_directory(&worktree_path, &dispatch_record.dispatch_id)?;
 
-        let launch_result = (|| -> Result<(), TrackError> {
-            if !self.save_preparing_phase(
-                &mut dispatch_record,
-                "Checking remote agent prerequisites.",
-            )? {
-                return Ok(());
+        let launch_result = async {
+            if !self
+                .save_preparing_phase(&mut dispatch_record, "Checking remote agent prerequisites.")
+                .await?
+            {
+                return Ok::<(), TrackError>(());
             }
-            let (remote_agent, task, project_metadata) =
-                self.load_dispatch_prerequisites(&dispatch_record.task_id)?;
+            let (remote_agent, task, project_metadata) = self
+                .load_dispatch_prerequisites(&dispatch_record.task_id)
+                .await?;
             let ssh_client = SshClient::new(&remote_agent)?;
             let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
             let runner = RemoteRunOps::new(&ssh_client);
-            if !self.save_preparing_phase(
-                &mut dispatch_record,
-                "Ensuring the remote checkout is up to date.",
-            )? {
-                return Ok(());
+            if !self
+                .save_preparing_phase(
+                    &mut dispatch_record,
+                    "Ensuring the remote checkout is up to date.",
+                )
+                .await?
+            {
+                return Ok::<(), TrackError>(());
             }
             let checkout_path = workspace.ensure_task_checkout(&task.project, &project_metadata)?;
 
-            if !self.save_preparing_phase(&mut dispatch_record, "Preparing the task worktree.")? {
-                return Ok(());
+            if !self
+                .save_preparing_phase(&mut dispatch_record, "Preparing the task worktree.")
+                .await?
+            {
+                return Ok::<(), TrackError>(());
             }
             workspace.prepare_task_worktree(
                 &checkout_path,
@@ -199,11 +217,14 @@ impl<'a> RemoteDispatchService<'a> {
             )
             .render();
             let schema = RemoteDispatchSchema.render();
-            if !self.save_preparing_phase(
-                &mut dispatch_record,
-                "Uploading the agent prompt and schema.",
-            )? {
-                return Ok(());
+            if !self
+                .save_preparing_phase(
+                    &mut dispatch_record,
+                    "Uploading the agent prompt and schema.",
+                )
+                .await?
+            {
+                return Ok::<(), TrackError>(());
             }
             runner.upload_prompt_and_schema(
                 &format!("{remote_run_directory}/{REMOTE_PROMPT_FILE_NAME}"),
@@ -217,12 +238,16 @@ impl<'a> RemoteDispatchService<'a> {
             // expensive remote-agent launch so a user-triggered cancel can stop
             // the flow before it starts spending more tokens.
             if !self
-                .dispatch_is_still_active(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+                .dispatch_is_still_active(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+                .await?
             {
                 return Ok(());
             }
 
-            if !self.save_preparing_phase(&mut dispatch_record, "Launching the remote agent.")? {
+            if !self
+                .save_preparing_phase(&mut dispatch_record, "Launching the remote agent.")
+                .await?
+            {
                 return Ok(());
             }
             runner.launch(
@@ -232,26 +257,34 @@ impl<'a> RemoteDispatchService<'a> {
             )?;
 
             Ok(())
-        })();
+        }
+        .await;
 
         match launch_result {
             Ok(()) => {
                 if let Some(existing_record) = self
-                    .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+                    .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+                    .await?
                 {
                     if !existing_record.status.is_active() {
-                        let _ = self.cancel_remote_dispatch_if_possible(&existing_record);
+                        let _ = self
+                            .cancel_remote_dispatch_if_possible(&existing_record)
+                            .await;
                         return Ok(existing_record);
                     }
                 }
 
                 let dispatch_record = dispatch_record.into_running();
-                self.dispatch_repository.save_dispatch(&dispatch_record)?;
+                self.dispatch_repository
+                    .save_dispatch(&dispatch_record)
+                    .await?;
                 Ok(dispatch_record)
             }
             Err(error) => {
                 let dispatch_record = dispatch_record.into_failed(error.to_string());
-                self.dispatch_repository.save_dispatch(&dispatch_record)?;
+                self.dispatch_repository
+                    .save_dispatch(&dispatch_record)
+                    .await?;
                 Err(error)
             }
         }
@@ -269,9 +302,10 @@ impl<'a> RemoteDispatchService<'a> {
     //
     // We keep them separate so the UI can expose both actions without
     // overloading one button with two meanings.
-    pub fn cancel_dispatch(&self, task_id: &str) -> Result<TaskDispatchRecord, TrackError> {
+    pub async fn cancel_dispatch(&self, task_id: &str) -> Result<TaskDispatchRecord, TrackError> {
         let mut latest_dispatch = self
-            .latest_dispatches_for_tasks(&[task_id.to_owned()])?
+            .latest_dispatches_for_tasks(&[task_id.to_owned()])
+            .await?
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -285,18 +319,22 @@ impl<'a> RemoteDispatchService<'a> {
             ));
         }
 
-        self.cancel_remote_dispatch_if_possible(&latest_dispatch)?;
+        self.cancel_remote_dispatch_if_possible(&latest_dispatch)
+            .await?;
 
         latest_dispatch = latest_dispatch.into_canceled_from_ui();
-        self.dispatch_repository.save_dispatch(&latest_dispatch)?;
+        self.dispatch_repository
+            .save_dispatch(&latest_dispatch)
+            .await?;
 
         Ok(latest_dispatch)
     }
 
-    pub fn discard_dispatch_history(&self, task_id: &str) -> Result<(), TrackError> {
+    pub async fn discard_dispatch_history(&self, task_id: &str) -> Result<(), TrackError> {
         let latest_dispatch = self
             .dispatch_repository
-            .latest_dispatch_for_task(task_id)?
+            .latest_dispatch_for_task(task_id)
+            .await?
             .ok_or_else(|| {
                 dispatch_not_found(task_id, "does not have a remote dispatch to discard.")
             })?;
@@ -319,16 +357,18 @@ impl<'a> RemoteDispatchService<'a> {
         // dispatch records automatically.
         self.dispatch_repository
             .delete_dispatch_history_for_task(task_id)
+            .await
     }
 
-    pub fn latest_dispatches_for_tasks(
+    pub async fn latest_dispatches_for_tasks(
         &self,
         task_ids: &[String],
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let records = self
             .dispatch_repository
-            .latest_dispatches_for_tasks(task_ids)?;
-        self.refresh_active_dispatch_records(records)
+            .latest_dispatches_for_tasks(task_ids)
+            .await?;
+        self.refresh_active_dispatch_records(records).await
     }
 
     // =============================================================================
@@ -340,12 +380,12 @@ impl<'a> RemoteDispatchService<'a> {
     // route the global history listing through the same refresh path instead of
     // reading raw JSON records and leaving active runs stale until some other
     // endpoint happens to reconcile them.
-    pub fn list_dispatches(
+    pub async fn list_dispatches(
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let records = self.dispatch_repository.list_dispatches(limit)?;
-        self.refresh_active_dispatch_records(records)
+        let records = self.dispatch_repository.list_dispatches(limit).await?;
+        self.refresh_active_dispatch_records(records).await
     }
 
     // The task drawer needs authoritative history for the selected task even
@@ -353,11 +393,14 @@ impl<'a> RemoteDispatchService<'a> {
     // therefore expose a task-scoped history path that keeps older tasks from
     // losing their latest status or drawer history just because newer runs
     // pushed them past the global limit.
-    pub fn dispatch_history_for_task(
+    pub async fn dispatch_history_for_task(
         &self,
         task_id: &str,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let mut records = self.dispatch_repository.dispatches_for_task(task_id)?;
+        let mut records = self
+            .dispatch_repository
+            .dispatches_for_task(task_id)
+            .await?;
 
         // At most one dispatch should be active per task. If the newest record
         // is still active, route it through the same remote reconciliation path
@@ -368,7 +411,8 @@ impl<'a> RemoteDispatchService<'a> {
             .is_some_and(|record| record.status.is_active())
         {
             if let Some(refreshed_latest) = self
-                .latest_dispatches_for_tasks(&[task_id.to_owned()])?
+                .latest_dispatches_for_tasks(&[task_id.to_owned()])
+                .await?
                 .into_iter()
                 .next()
             {
@@ -388,29 +432,41 @@ impl<'a> RemoteDispatchService<'a> {
     // The dispatch domain owns task close/delete cleanup because those actions
     // are really about reclaiming task-specific remote worktrees while keeping
     // the local tracker usable if the remote side has already gone away.
-    pub fn update_task(&self, task_id: &str, input: TaskUpdateInput) -> Result<Task, TrackError> {
+    pub async fn update_task(
+        &self,
+        task_id: &str,
+        input: TaskUpdateInput,
+    ) -> Result<Task, TrackError> {
         let validated_input = input.validate()?;
 
         if validated_input.status == Some(Status::Closed) {
-            let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
+            let dispatch_history = self
+                .dispatch_repository
+                .dispatches_for_task(task_id)
+                .await?;
             if !dispatch_history.is_empty() {
-                let cleanup_result = self.cleanup_task_remote_artifacts(
-                    task_id,
-                    &dispatch_history,
-                    RemoteTaskCleanupMode::CloseTask,
-                );
+                let cleanup_result = self
+                    .cleanup_task_remote_artifacts(
+                        task_id,
+                        &dispatch_history,
+                        RemoteTaskCleanupMode::CloseTask,
+                    )
+                    .await;
 
                 // The tracker should stay usable even if the remote machine,
                 // SSH key, or remote config disappears. Closing the task is a
                 // local filesystem mutation first; remote cleanup is only a
                 // best-effort follow-up.
                 match cleanup_result {
-                    Ok(_) => self.finalize_active_dispatches_locally(
-                        &dispatch_history,
-                        DispatchStatus::Canceled,
-                        "Canceled because the task was closed.",
-                        None,
-                    )?,
+                    Ok(_) => {
+                        self.finalize_active_dispatches_locally(
+                            &dispatch_history,
+                            DispatchStatus::Canceled,
+                            "Canceled because the task was closed.",
+                            None,
+                        )
+                        .await?
+                    }
                     Err(error) => {
                         eprintln!("Skipping remote cleanup while closing task {task_id}: {error}");
                         self.finalize_active_dispatches_locally(
@@ -418,23 +474,32 @@ impl<'a> RemoteDispatchService<'a> {
                             DispatchStatus::Canceled,
                             "Canceled because the task was closed locally. Remote cleanup was skipped.",
                             Some(error.message()),
-                        )?;
+                        )
+                        .await?;
                     }
                 }
             }
         }
 
-        self.task_repository.update_task(task_id, validated_input)
+        self.task_repository
+            .update_task(task_id, validated_input)
+            .await
     }
 
-    pub fn delete_task(&self, task_id: &str) -> Result<(), TrackError> {
-        let dispatch_history = self.dispatch_repository.dispatches_for_task(task_id)?;
+    pub async fn delete_task(&self, task_id: &str) -> Result<(), TrackError> {
+        let dispatch_history = self
+            .dispatch_repository
+            .dispatches_for_task(task_id)
+            .await?;
         if !dispatch_history.is_empty() {
-            if let Err(error) = self.cleanup_task_remote_artifacts(
-                task_id,
-                &dispatch_history,
-                RemoteTaskCleanupMode::DeleteTask,
-            ) {
+            if let Err(error) = self
+                .cleanup_task_remote_artifacts(
+                    task_id,
+                    &dispatch_history,
+                    RemoteTaskCleanupMode::DeleteTask,
+                )
+                .await
+            {
                 // Delete is the strongest local intent: once the user removes a
                 // task, stale remote artifacts must not veto that choice.
                 // TODO: We intentionally do not persist this warning locally
@@ -447,24 +512,27 @@ impl<'a> RemoteDispatchService<'a> {
             // sees the task and can retry, rather than ending up with invisible
             // orphaned runs in the UI.
             self.dispatch_repository
-                .delete_dispatch_history_for_task(task_id)?;
+                .delete_dispatch_history_for_task(task_id)
+                .await?;
         }
 
-        self.task_repository.delete_task(task_id)
+        self.task_repository.delete_task(task_id).await
     }
 
-    fn refresh_active_dispatch_records(
+    async fn refresh_active_dispatch_records(
         &self,
         records: Vec<TaskDispatchRecord>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let ssh_client = match load_refresh_ssh_client(self.config_service)? {
+        let ssh_client = match load_refresh_ssh_client(self.config_service).await? {
             RefreshRemoteClient::Available(ssh_client) => ssh_client,
             RefreshRemoteClient::UnavailableLocally { error_message } => {
-                return self.release_active_dispatches_after_reconciliation_loss(
-                    records,
-                    "Remote reconciliation is unavailable locally, so active runs were released.",
-                    &error_message,
-                );
+                return self
+                    .release_active_dispatches_after_reconciliation_loss(
+                        records,
+                        "Remote reconciliation is unavailable locally, so active runs were released.",
+                        &error_message,
+                    )
+                    .await;
             }
         };
         let snapshots_by_dispatch_id = match load_dispatch_snapshots_for_records(
@@ -474,11 +542,13 @@ impl<'a> RemoteDispatchService<'a> {
             Ok(snapshots) => snapshots,
             Err(error) => {
                 let error_message = error.to_string();
-                return self.release_active_dispatches_after_reconciliation_loss(
-                    records,
-                    "Remote reconciliation could not reach the remote machine, so active runs were released locally.",
-                    &error_message,
-                );
+                return self
+                    .release_active_dispatches_after_reconciliation_loss(
+                        records,
+                        "Remote reconciliation could not reach the remote machine, so active runs were released locally.",
+                        &error_message,
+                    )
+                    .await;
             }
         };
         let mut refreshed_records = Vec::with_capacity(records.len());
@@ -493,7 +563,7 @@ impl<'a> RemoteDispatchService<'a> {
                     .clone()
                     .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
                 {
-                    self.dispatch_repository.save_dispatch(&updated)?;
+                    self.dispatch_repository.save_dispatch(&updated).await?;
                     refreshed_records.push(updated);
                 } else {
                     let updated = self.finalize_dispatch_locally(
@@ -501,7 +571,8 @@ impl<'a> RemoteDispatchService<'a> {
                         DispatchStatus::Blocked,
                         "Remote reconciliation could not find this run anymore, so it was released locally.",
                         Some("Remote dispatch snapshot is missing."),
-                    )?;
+                    )
+                    .await?;
                     refreshed_records.push(updated);
                 }
                 continue;
@@ -510,7 +581,7 @@ impl<'a> RemoteDispatchService<'a> {
             match refresh_dispatch_record_from_snapshot(record.clone(), snapshot) {
                 Ok(updated) => {
                     if updated != record {
-                        self.dispatch_repository.save_dispatch(&updated)?;
+                        self.dispatch_repository.save_dispatch(&updated).await?;
                     }
                     refreshed_records.push(updated);
                 }
@@ -523,7 +594,7 @@ impl<'a> RemoteDispatchService<'a> {
                             finished_at,
                             error.to_string(),
                         );
-                        self.dispatch_repository.save_dispatch(&updated)?;
+                        self.dispatch_repository.save_dispatch(&updated).await?;
                         refreshed_records.push(updated);
                     } else {
                         let error_message = error.to_string();
@@ -532,7 +603,8 @@ impl<'a> RemoteDispatchService<'a> {
                             DispatchStatus::Blocked,
                             "Remote reconciliation could not confirm this run, so it was released locally.",
                             Some(&error_message),
-                        )?;
+                        )
+                        .await?;
                         refreshed_records.push(updated);
                     }
                 }
@@ -542,7 +614,7 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(refreshed_records)
     }
 
-    fn release_active_dispatches_after_reconciliation_loss(
+    async fn release_active_dispatches_after_reconciliation_loss(
         &self,
         records: Vec<TaskDispatchRecord>,
         summary: &str,
@@ -551,12 +623,15 @@ impl<'a> RemoteDispatchService<'a> {
         let mut refreshed_records = Vec::with_capacity(records.len());
         for record in records {
             if record.status.is_active() {
-                refreshed_records.push(self.finalize_dispatch_locally(
-                    &record,
-                    DispatchStatus::Blocked,
-                    summary,
-                    Some(error_message),
-                )?);
+                refreshed_records.push(
+                    self.finalize_dispatch_locally(
+                        &record,
+                        DispatchStatus::Blocked,
+                        summary,
+                        Some(error_message),
+                    )
+                    .await?,
+                );
             } else {
                 refreshed_records.push(record);
             }
@@ -565,7 +640,7 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(refreshed_records)
     }
 
-    pub(super) fn cleanup_task_remote_artifacts(
+    pub(super) async fn cleanup_task_remote_artifacts(
         &self,
         task_id: &str,
         dispatch_history: &[TaskDispatchRecord],
@@ -575,7 +650,7 @@ impl<'a> RemoteDispatchService<'a> {
             return Ok(RemoteArtifactCleanupCounts::default());
         }
 
-        let remote_agent = self.load_remote_agent(task_id)?;
+        let remote_agent = self.load_remote_agent(task_id).await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
         let checkout_path = workspace.resolve_checkout_path(&dispatch_history[0].project)?;
@@ -590,7 +665,7 @@ impl<'a> RemoteDispatchService<'a> {
         )
     }
 
-    pub(super) fn finalize_active_dispatches_locally(
+    pub(super) async fn finalize_active_dispatches_locally(
         &self,
         dispatch_history: &[TaskDispatchRecord],
         status: DispatchStatus,
@@ -602,13 +677,14 @@ impl<'a> RemoteDispatchService<'a> {
                 continue;
             }
 
-            self.finalize_dispatch_locally(dispatch_record, status, summary, error_message)?;
+            self.finalize_dispatch_locally(dispatch_record, status, summary, error_message)
+                .await?;
         }
 
         Ok(())
     }
 
-    fn finalize_dispatch_locally(
+    async fn finalize_dispatch_locally(
         &self,
         dispatch_record: &TaskDispatchRecord,
         status: DispatchStatus,
@@ -619,14 +695,17 @@ impl<'a> RemoteDispatchService<'a> {
             dispatch_record
                 .clone()
                 .into_locally_finalized(status, summary, error_message);
-        self.dispatch_repository.save_dispatch(&updated_record)?;
+        self.dispatch_repository
+            .save_dispatch(&updated_record)
+            .await?;
 
         Ok(updated_record)
     }
 
-    fn ensure_no_blocking_active_dispatch(&self, task_id: &str) -> Result<(), TrackError> {
+    async fn ensure_no_blocking_active_dispatch(&self, task_id: &str) -> Result<(), TrackError> {
         if let Some(existing_dispatch) = self
-            .latest_dispatches_for_tasks(&[task_id.to_owned()])?
+            .latest_dispatches_for_tasks(&[task_id.to_owned()])
+            .await?
             .into_iter()
             .next()
             .filter(|record| record.status.is_active())
@@ -643,30 +722,33 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(())
     }
 
-    fn dispatch_is_still_active(
+    async fn dispatch_is_still_active(
         &self,
         task_id: &str,
         dispatch_id: &str,
     ) -> Result<bool, TrackError> {
         Ok(self
-            .load_saved_dispatch(task_id, dispatch_id)?
+            .load_saved_dispatch(task_id, dispatch_id)
+            .await?
             .map(|record| record.status.is_active())
             .unwrap_or(false))
     }
 
-    fn load_saved_dispatch(
+    async fn load_saved_dispatch(
         &self,
         task_id: &str,
         dispatch_id: &str,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
-        self.dispatch_repository.get_dispatch(task_id, dispatch_id)
+        self.dispatch_repository
+            .get_dispatch(task_id, dispatch_id)
+            .await
     }
 
-    fn cancel_remote_dispatch_if_possible(
+    async fn cancel_remote_dispatch_if_possible(
         &self,
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<(), TrackError> {
-        let remote_agent = self.load_remote_agent(&dispatch_record.task_id)?;
+        let remote_agent = self.load_remote_agent(&dispatch_record.task_id).await?;
 
         let Some(worktree_path) = dispatch_record.worktree_path.as_deref() else {
             return Ok(());
@@ -677,13 +759,14 @@ impl<'a> RemoteDispatchService<'a> {
         RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory)
     }
 
-    fn save_preparing_phase(
+    async fn save_preparing_phase(
         &self,
         dispatch_record: &mut TaskDispatchRecord,
         summary: &str,
     ) -> Result<bool, TrackError> {
-        if let Some(saved_record) =
-            self.load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)?
+        if let Some(saved_record) = self
+            .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+            .await?
         {
             if !saved_record.status.is_active() {
                 *dispatch_record = saved_record;
@@ -692,36 +775,40 @@ impl<'a> RemoteDispatchService<'a> {
         }
 
         *dispatch_record = dispatch_record.clone().into_preparing(summary);
-        self.dispatch_repository.save_dispatch(dispatch_record)?;
+        self.dispatch_repository
+            .save_dispatch(dispatch_record)
+            .await?;
 
         Ok(true)
     }
 
-    fn append_follow_up_request_to_task(
+    async fn append_follow_up_request_to_task(
         &self,
         task_id: &str,
         follow_up_request: &str,
     ) -> Result<Task, TrackError> {
-        let task = self.task_repository.get_task(task_id)?;
+        let task = self.task_repository.get_task(task_id).await?;
         let timestamp_label = format_iso_8601_millis(now_utc());
         let next_description =
             append_follow_up_request(&task.description, &timestamp_label, follow_up_request);
 
-        self.task_repository.update_task(
-            task_id,
-            TaskUpdateInput {
-                description: Some(next_description),
-                priority: None,
-                status: None,
-            },
-        )
+        self.task_repository
+            .update_task(
+                task_id,
+                TaskUpdateInput {
+                    description: Some(next_description),
+                    priority: None,
+                    status: None,
+                },
+            )
+            .await
     }
 
-    fn load_dispatch_prerequisites(
+    async fn load_dispatch_prerequisites(
         &self,
         task_id: &str,
     ) -> Result<(RemoteAgentRuntimeConfig, Task, ProjectMetadata), TrackError> {
-        let remote_agent = self.load_remote_agent(task_id)?;
+        let remote_agent = self.load_remote_agent(task_id).await?;
 
         if remote_agent
             .shell_prelude
@@ -736,17 +823,24 @@ impl<'a> RemoteDispatchService<'a> {
             ));
         }
 
-        let task = self.task_repository.get_task(task_id)?;
-        let project = self.project_repository.get_project_by_name(&task.project)?;
+        let task = self.task_repository.get_task(task_id).await?;
+        let project = self
+            .project_repository
+            .get_project_by_name(&task.project)
+            .await?;
         validate_project_metadata_for_dispatch(&project.metadata)?;
 
         Ok((remote_agent, task, project.metadata))
     }
 
-    fn load_remote_agent(&self, task_id: &str) -> Result<RemoteAgentRuntimeConfig, TrackError> {
+    async fn load_remote_agent(
+        &self,
+        task_id: &str,
+    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
-            .load_remote_agent_runtime_config()?
+            .load_remote_agent_runtime_config()
+            .await?
             .ok_or_else(|| {
                 TrackError::new(
                     ErrorCode::RemoteAgentNotConfigured,

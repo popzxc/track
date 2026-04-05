@@ -33,12 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_line_number(true)
         .init();
 
-    let config_service = Arc::new(RemoteAgentConfigService::new(None)?);
-    let dispatch_repository = Arc::new(DispatchRepository::new(None)?);
-    let project_repository = Arc::new(ProjectRepository::new(None)?);
-    let review_dispatch_repository = Arc::new(ReviewDispatchRepository::new(None)?);
-    let review_repository = Arc::new(ReviewRepository::new(None)?);
-    let task_repository = Arc::new(FileTaskRepository::new(None)?);
+    let config_service = Arc::new(RemoteAgentConfigService::new(None).await?);
+    let dispatch_repository = Arc::new(DispatchRepository::new(None).await?);
+    let project_repository = Arc::new(ProjectRepository::new(None).await?);
+    let review_dispatch_repository = Arc::new(ReviewDispatchRepository::new(None).await?);
+    let review_repository = Arc::new(ReviewRepository::new(None).await?);
+    let task_repository = Arc::new(FileTaskRepository::new(None).await?);
     let migration_service = Arc::new(MigrationService::new(
         (*config_service).clone(),
         (*project_repository).clone(),

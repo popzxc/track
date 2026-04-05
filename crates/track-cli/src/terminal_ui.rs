@@ -118,7 +118,8 @@ mod tests {
 
     // TODO: Tests that depend on this are questionable, do we want them?
     fn ensure_no_terminal<F: FnOnce() -> ()>(test: F) {
-        static GUARD: std::sync::LazyLock<std::sync::Mutex<()>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+        static GUARD: std::sync::LazyLock<std::sync::Mutex<()>> =
+            std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
         let _lock = GUARD.lock().unwrap();
 
         // Make test pass if it's actually runs from a terminal

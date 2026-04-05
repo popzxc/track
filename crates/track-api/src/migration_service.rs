@@ -71,15 +71,18 @@ impl MigrationService {
         })
     }
 
-    pub fn status(&self) -> Result<MigrationStatus, TrackError> {
-        let saved = self.remote_agent_config_service.load_migration_status()?;
+    pub async fn status(&self) -> Result<MigrationStatus, TrackError> {
+        let saved = self
+            .remote_agent_config_service
+            .load_migration_status()
+            .await?;
         // Only a completed import is durable state now. Older saved `skipped`
         // values are treated like `ready` so legacy data still requires import.
         if saved.state == MigrationState::Imported {
             return Ok(saved);
         }
 
-        if !self.database_is_empty()? {
+        if !self.database_is_empty().await? {
             return Ok(MigrationStatus::ready());
         }
 
@@ -99,8 +102,8 @@ impl MigrationService {
         })
     }
 
-    pub fn import_legacy(&self) -> Result<MigrationImportSummary, TrackError> {
-        if !self.database_is_empty()? {
+    pub async fn import_legacy(&self) -> Result<MigrationImportSummary, TrackError> {
+        if !self.database_is_empty().await? {
             return Err(TrackError::new(
                 ErrorCode::MigrationFailed,
                 "The backend already contains data, so legacy import is only allowed into an empty SQLite database.",
@@ -127,104 +130,113 @@ impl MigrationService {
         let summary = snapshot.summary.clone();
         let legacy_root = self.legacy_root.clone();
 
-        self.database.transaction(move |connection| {
-            Box::pin(async move {
-                let mut copied_secret_files = Vec::new();
-                let import_result = async {
-                    for project in &imported_projects {
-                        let aliases = imported_aliases
-                            .get(&project.canonical_name)
-                            .cloned()
-                            .unwrap_or_default();
-                        import_project(connection, project, aliases).await?;
-                    }
+        self.database
+            .transaction(move |connection| {
+                Box::pin(async move {
+                    let mut copied_secret_files = Vec::new();
+                    let import_result = async {
+                        for project in &imported_projects {
+                            let aliases = imported_aliases
+                                .get(&project.canonical_name)
+                                .cloned()
+                                .unwrap_or_default();
+                            import_project(connection, project, aliases).await?;
+                        }
 
-                    for task in &imported_tasks {
-                        import_task(connection, task).await?;
-                    }
+                        for task in &imported_tasks {
+                            import_task(connection, task).await?;
+                        }
 
-                    for review in &imported_reviews {
-                        import_review(connection, review).await?;
-                    }
+                        for review in &imported_reviews {
+                            import_review(connection, review).await?;
+                        }
 
-                    for dispatch in &imported_task_dispatches {
-                        import_task_dispatch(connection, dispatch).await?;
-                    }
+                        for dispatch in &imported_task_dispatches {
+                            import_task_dispatch(connection, dispatch).await?;
+                        }
 
-                    for review_run in &imported_review_runs {
-                        import_review_run(connection, review_run).await?;
-                    }
+                        for review_run in &imported_review_runs {
+                            import_review_run(connection, review_run).await?;
+                        }
 
-                    if let Some(remote_agent) = imported_remote_agent_config.as_ref() {
+                        if let Some(remote_agent) = imported_remote_agent_config.as_ref() {
+                            save_backend_setting_json(
+                                connection,
+                                REMOTE_AGENT_SETTING_KEY,
+                                remote_agent,
+                            )
+                            .await?;
+                        }
+
+                        copied_secret_files = copy_remote_agent_secret_files(&legacy_root)?;
+
+                        let imported_summary = MigrationImportSummary {
+                            imported_projects: imported_projects.len(),
+                            imported_aliases: imported_aliases.values().map(Vec::len).sum(),
+                            imported_tasks: imported_tasks.len(),
+                            imported_task_dispatches: imported_task_dispatches.len(),
+                            imported_reviews: imported_reviews.len(),
+                            imported_review_runs: imported_review_runs.len(),
+                            remote_agent_config_imported: imported_remote_agent_config.is_some(),
+                            copied_secret_files: copied_secret_files
+                                .iter()
+                                .map(|path| path_to_string(path))
+                                .collect(),
+                            skipped_records: skipped_records.clone(),
+                            cleanup_candidates: cleanup_candidates.clone(),
+                        };
+
                         save_backend_setting_json(
                             connection,
-                            REMOTE_AGENT_SETTING_KEY,
-                            remote_agent,
+                            MIGRATION_STATUS_SETTING_KEY,
+                            &MigrationStatus {
+                                state: MigrationState::Imported,
+                                requires_migration: false,
+                                can_import: false,
+                                legacy_detected: true,
+                                summary,
+                                skipped_records: imported_summary.skipped_records.clone(),
+                                cleanup_candidates: imported_summary.cleanup_candidates.clone(),
+                            },
                         )
                         .await?;
+
+                        Ok(imported_summary)
+                    }
+                    .await;
+
+                    if import_result.is_err() {
+                        cleanup_copied_secret_files(&copied_secret_files);
                     }
 
-                    copied_secret_files = copy_remote_agent_secret_files(&legacy_root)?;
-
-                    let imported_summary = MigrationImportSummary {
-                        imported_projects: imported_projects.len(),
-                        imported_aliases: imported_aliases.values().map(Vec::len).sum(),
-                        imported_tasks: imported_tasks.len(),
-                        imported_task_dispatches: imported_task_dispatches.len(),
-                        imported_reviews: imported_reviews.len(),
-                        imported_review_runs: imported_review_runs.len(),
-                        remote_agent_config_imported: imported_remote_agent_config.is_some(),
-                        copied_secret_files: copied_secret_files
-                            .iter()
-                            .map(|path| path_to_string(path))
-                            .collect(),
-                        skipped_records: skipped_records.clone(),
-                        cleanup_candidates: cleanup_candidates.clone(),
-                    };
-
-                    save_backend_setting_json(
-                        connection,
-                        MIGRATION_STATUS_SETTING_KEY,
-                        &MigrationStatus {
-                            state: MigrationState::Imported,
-                            requires_migration: false,
-                            can_import: false,
-                            legacy_detected: true,
-                            summary,
-                            skipped_records: imported_summary.skipped_records.clone(),
-                            cleanup_candidates: imported_summary.cleanup_candidates.clone(),
-                        },
-                    )
-                    .await?;
-
-                    Ok(imported_summary)
-                }
-                .await;
-
-                if import_result.is_err() {
-                    cleanup_copied_secret_files(&copied_secret_files);
-                }
-
-                import_result
+                    import_result
+                })
             })
-        })
+            .await
     }
 
-    fn database_is_empty(&self) -> Result<bool, TrackError> {
-        Ok(self.project_repository.list_projects()?.is_empty()
-            && self.task_repository.list_tasks(true, None)?.is_empty()
-            && self.review_repository.list_reviews()?.is_empty()
+    async fn database_is_empty(&self) -> Result<bool, TrackError> {
+        Ok(self.project_repository.list_projects().await?.is_empty()
+            && self
+                .task_repository
+                .list_tasks(true, None)
+                .await?
+                .is_empty()
+            && self.review_repository.list_reviews().await?.is_empty()
             && self
                 .dispatch_repository
-                .list_dispatches(Some(1))?
+                .list_dispatches(Some(1))
+                .await?
                 .is_empty()
             && self
                 .review_dispatch_repository
-                .list_dispatches(Some(1))?
+                .list_dispatches(Some(1))
+                .await?
                 .is_empty()
             && self
                 .remote_agent_config_service
-                .load_remote_agent_config()?
+                .load_remote_agent_config()
+                .await?
                 .is_none())
     }
 
@@ -1558,21 +1570,32 @@ mod tests {
         }
     }
 
-    fn migration_service() -> MigrationService {
+    async fn migration_service() -> MigrationService {
         MigrationService::new(
             RemoteAgentConfigService::new(None)
+                .await
                 .expect("remote-agent config service should resolve"),
-            ProjectRepository::new(None).expect("project repository should resolve"),
-            FileTaskRepository::new(None).expect("task repository should resolve"),
-            DispatchRepository::new(None).expect("dispatch repository should resolve"),
-            ReviewRepository::new(None).expect("review repository should resolve"),
-            ReviewDispatchRepository::new(None).expect("review dispatch repository should resolve"),
+            ProjectRepository::new(None)
+                .await
+                .expect("project repository should resolve"),
+            FileTaskRepository::new(None)
+                .await
+                .expect("task repository should resolve"),
+            DispatchRepository::new(None)
+                .await
+                .expect("dispatch repository should resolve"),
+            ReviewRepository::new(None)
+                .await
+                .expect("review repository should resolve"),
+            ReviewDispatchRepository::new(None)
+                .await
+                .expect("review dispatch repository should resolve"),
         )
         .expect("migration service should resolve")
     }
 
-    #[test]
-    fn import_skips_orphaned_history_instead_of_aborting() {
+    #[tokio::test]
+    async fn import_skips_orphaned_history_instead_of_aborting() {
         let directory = TempDir::new().expect("tempdir should be created");
         let _environment = TestEnvironment::new(&directory);
         let legacy_root = directory.path().join("legacy-root");
@@ -1692,8 +1715,11 @@ mod tests {
         )
         .expect("orphan review run should be written");
 
-        let service = migration_service();
-        let status = service.status().expect("migration status should load");
+        let service = migration_service().await;
+        let status = service
+            .status()
+            .await
+            .expect("migration status should load");
         assert!(status.requires_migration);
         assert_eq!(status.summary.tasks_found, 1);
         assert_eq!(status.summary.task_dispatches_found, 1);
@@ -1712,6 +1738,7 @@ mod tests {
 
         let summary = service
             .import_legacy()
+            .await
             .expect("legacy import should succeed");
         assert_eq!(summary.imported_tasks, 1);
         assert_eq!(summary.imported_task_dispatches, 1);
@@ -1725,25 +1752,32 @@ mod tests {
         let dispatches = DispatchRepository::new(Some(
             get_backend_database_path().expect("database path should resolve"),
         ))
+        .await
         .expect("dispatch repository should resolve")
         .list_dispatches(None)
+        .await
         .expect("dispatches should list");
         assert_eq!(dispatches.len(), 1);
 
         let review_runs = ReviewDispatchRepository::new(Some(
             get_backend_database_path().expect("database path should resolve"),
         ))
+        .await
         .expect("review dispatch repository should resolve")
         .list_dispatches(None)
+        .await
         .expect("review runs should list");
         assert_eq!(review_runs.len(), 1);
 
-        let post_import_status = service.status().expect("migration status should reload");
+        let post_import_status = service
+            .status()
+            .await
+            .expect("migration status should reload");
         assert_eq!(post_import_status.state, MigrationState::Imported);
     }
 
-    #[test]
-    fn migrates_configured_projects_without_issues_and_skips_alias_only_targets() {
+    #[tokio::test]
+    async fn migrates_configured_projects_without_issues_and_skips_alias_only_targets() {
         let directory = TempDir::new().expect("tempdir should be created");
         let _environment = TestEnvironment::new(&directory);
         let legacy_root = directory.path().join("legacy-root");
@@ -1767,8 +1801,11 @@ mod tests {
             })
             .expect("legacy config should save");
 
-        let service = migration_service();
-        let status = service.status().expect("migration status should load");
+        let service = migration_service().await;
+        let status = service
+            .status()
+            .await
+            .expect("migration status should load");
         assert!(status.requires_migration);
         assert_eq!(status.summary.projects_found, 2);
         assert_eq!(status.summary.aliases_found, 2);
@@ -1780,6 +1817,7 @@ mod tests {
 
         let summary = service
             .import_legacy()
+            .await
             .expect("legacy import should succeed");
         assert_eq!(summary.imported_projects, 2);
         assert_eq!(summary.imported_aliases, 2);
@@ -1792,8 +1830,10 @@ mod tests {
         let imported_projects = ProjectRepository::new(Some(
             get_backend_database_path().expect("database path should resolve"),
         ))
+        .await
         .expect("project repository should resolve")
         .list_projects()
+        .await
         .expect("projects should list");
         assert_eq!(imported_projects.len(), 2);
         assert_eq!(imported_projects[0].canonical_name, "project-a");
