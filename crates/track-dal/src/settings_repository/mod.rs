@@ -1,5 +1,6 @@
+mod records;
+
 use serde::{de::DeserializeOwned, Serialize};
-use sqlx::Row;
 use track_types::errors::{ErrorCode, TrackError};
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
@@ -26,21 +27,27 @@ impl SettingsRepository {
     {
         let key = key.to_owned();
         let mut connection = self.database.connect().await?;
-        let row = sqlx::query("SELECT setting_json FROM backend_settings WHERE setting_key = ?1")
-            .bind(&key)
-            .fetch_optional(&mut *connection)
-            .await
-            .database_error_with(format!("Could not load backend setting `{key}`"))?;
+        let key_ref = key.as_str();
+        let row = sqlx::query_as!(
+            records::SettingJsonRecord,
+            r#"
+            SELECT setting_json AS "setting_json!"
+            FROM backend_settings
+            WHERE setting_key = ?1
+            "#,
+            key_ref,
+        )
+        .fetch_optional(&mut *connection)
+        .await
+        .database_error_with(format!("Could not load backend setting `{key}`"))?;
 
         row.map(|row| {
-            serde_json::from_str::<T>(row.get::<String, _>("setting_json").as_str()).map_err(
-                |error| {
-                    TrackError::new(
-                        ErrorCode::InvalidConfig,
-                        format!("Backend setting `{key}` is not valid JSON: {error}"),
-                    )
-                },
-            )
+            serde_json::from_str::<T>(row.setting_json.as_str()).map_err(|error| {
+                TrackError::new(
+                    ErrorCode::InvalidConfig,
+                    format!("Backend setting `{key}` is not valid JSON: {error}"),
+                )
+            })
         })
         .transpose()
     }
@@ -58,15 +65,17 @@ impl SettingsRepository {
         })?;
 
         let mut connection = self.database.connect().await?;
-        sqlx::query(
+        let key_ref = key.as_str();
+        let serialized_ref = serialized.as_str();
+        sqlx::query!(
             r#"
             INSERT INTO backend_settings (setting_key, setting_json)
             VALUES (?1, ?2)
             ON CONFLICT(setting_key) DO UPDATE SET setting_json = excluded.setting_json
             "#,
+            key_ref,
+            serialized_ref,
         )
-        .bind(&key)
-        .bind(&serialized)
         .execute(&mut *connection)
         .await
         .database_error_with(format!("Could not save backend setting `{key}`"))?;
@@ -77,11 +86,14 @@ impl SettingsRepository {
     pub async fn delete(&self, key: &str) -> Result<(), TrackError> {
         let key = key.to_owned();
         let mut connection = self.database.connect().await?;
-        sqlx::query("DELETE FROM backend_settings WHERE setting_key = ?1")
-            .bind(&key)
-            .execute(&mut *connection)
-            .await
-            .database_error_with(format!("Could not delete backend setting `{key}`"))?;
+        let key_ref = key.as_str();
+        sqlx::query!(
+            "DELETE FROM backend_settings WHERE setting_key = ?1",
+            key_ref
+        )
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!("Could not delete backend setting `{key}`"))?;
 
         Ok(())
     }

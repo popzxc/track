@@ -54,6 +54,20 @@ just run-docs
 just build-docs
 ```
 
+DAL query metadata:
+
+```bash
+just db-prepare
+```
+
+That recipe uses an ignored SQLite file at `crates/track-dal/sqlx-prepare.sqlite`
+to re-run the real DAL migrations and refresh the committed offline query cache in
+`crates/track-dal/.sqlx`.
+
+Do not commit a crate-local `.env` with `DATABASE_URL` for this workflow. Normal
+builds should resolve SQLx queries from the checked-in `.sqlx` cache instead of
+preferring a live database connection.
+
 ## What to edit
 
 - `crates/track-core`: shared backend behavior and remote-agent orchestration

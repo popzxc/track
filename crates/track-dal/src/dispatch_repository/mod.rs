@@ -1,6 +1,7 @@
+mod records;
+
 use std::path::PathBuf;
 
-use sqlx::Row;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
@@ -70,7 +71,25 @@ impl DispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        sqlx::query(
+        let dispatch_id = record.dispatch_id.as_str();
+        let task_id = record.task_id.as_str();
+        let preferred_tool = record.preferred_tool.as_str();
+        let project = record.project.as_str();
+        let status = record.status.as_str();
+        let created_at = format_iso_8601_millis(record.created_at);
+        let updated_at = format_iso_8601_millis(record.updated_at);
+        let finished_at = record.finished_at.map(format_iso_8601_millis);
+        let remote_host = record.remote_host.as_str();
+        let branch_name = record.branch_name.as_deref();
+        let worktree_path = record.worktree_path.as_deref();
+        let pull_request_url = record.pull_request_url.as_deref();
+        let follow_up_request = record.follow_up_request.as_deref();
+        let summary = record.summary.as_deref();
+        let notes = record.notes.as_deref();
+        let error_message = record.error_message.as_deref();
+        let review_request_head_oid = record.review_request_head_oid.as_deref();
+        let review_request_user = record.review_request_user.as_deref();
+        sqlx::query!(
             r#"
             INSERT INTO task_dispatches (
                 dispatch_id, task_id, preferred_tool, project, status, created_at, updated_at,
@@ -98,25 +117,25 @@ impl DispatchRepository {
                 review_request_head_oid = excluded.review_request_head_oid,
                 review_request_user = excluded.review_request_user
             "#,
+            dispatch_id,
+            task_id,
+            preferred_tool,
+            project,
+            status,
+            created_at,
+            updated_at,
+            finished_at,
+            remote_host,
+            branch_name,
+            worktree_path,
+            pull_request_url,
+            follow_up_request,
+            summary,
+            notes,
+            error_message,
+            review_request_head_oid,
+            review_request_user,
         )
-        .bind(&record.dispatch_id)
-        .bind(&record.task_id)
-        .bind(record.preferred_tool.as_str())
-        .bind(&record.project)
-        .bind(record.status.as_str())
-        .bind(format_iso_8601_millis(record.created_at))
-        .bind(format_iso_8601_millis(record.updated_at))
-        .bind(record.finished_at.map(format_iso_8601_millis))
-        .bind(&record.remote_host)
-        .bind(record.branch_name.as_deref())
-        .bind(record.worktree_path.as_deref())
-        .bind(record.pull_request_url.as_deref())
-        .bind(record.follow_up_request.as_deref())
-        .bind(record.summary.as_deref())
-        .bind(record.notes.as_deref())
-        .bind(record.error_message.as_deref())
-        .bind(record.review_request_head_oid.as_deref())
-        .bind(record.review_request_user.as_deref())
         .execute(&mut *connection)
         .await
         .database_error_with(format!(
@@ -145,22 +164,42 @@ impl DispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query(
+        let task_id_ref = task_id.as_str();
+        let rows = sqlx::query_as!(
+            records::TaskDispatchRow,
             r#"
-            SELECT *
+            SELECT
+                dispatch_id AS "dispatch_id!",
+                task_id AS "task_id!",
+                preferred_tool AS "preferred_tool!",
+                project AS "project!",
+                status AS "status!",
+                created_at AS "created_at!",
+                updated_at AS "updated_at!",
+                finished_at AS "finished_at?",
+                remote_host AS "remote_host!",
+                branch_name AS "branch_name?",
+                worktree_path AS "worktree_path?",
+                pull_request_url AS "pull_request_url?",
+                follow_up_request AS "follow_up_request?",
+                summary AS "summary?",
+                notes AS "notes?",
+                error_message AS "error_message?",
+                review_request_head_oid AS "review_request_head_oid?",
+                review_request_user AS "review_request_user?"
             FROM task_dispatches
             WHERE task_id = ?1
             ORDER BY created_at DESC
             "#,
+            task_id_ref,
         )
-        .bind(&task_id)
         .fetch_all(&mut *connection)
         .await
         .database_error_with(format!(
             "Could not load dispatch history for task {task_id}"
         ))?;
 
-        rows.into_iter().map(task_dispatch_from_row).collect()
+        rows.into_iter().map(task_dispatch_from_record).collect()
     }
 
     pub async fn latest_dispatches_for_tasks(
@@ -184,21 +223,59 @@ impl DispatchRepository {
         let limit = limit.map(|value| value as i64);
         let mut connection = self.database.connect().await?;
         let rows = if let Some(limit) = limit {
-            sqlx::query(
+            sqlx::query_as!(
+                records::TaskDispatchRow,
                 r#"
-                SELECT *
+                SELECT
+                    dispatch_id AS "dispatch_id!",
+                    task_id AS "task_id!",
+                    preferred_tool AS "preferred_tool!",
+                    project AS "project!",
+                    status AS "status!",
+                    created_at AS "created_at!",
+                    updated_at AS "updated_at!",
+                    finished_at AS "finished_at?",
+                    remote_host AS "remote_host!",
+                    branch_name AS "branch_name?",
+                    worktree_path AS "worktree_path?",
+                    pull_request_url AS "pull_request_url?",
+                    follow_up_request AS "follow_up_request?",
+                    summary AS "summary?",
+                    notes AS "notes?",
+                    error_message AS "error_message?",
+                    review_request_head_oid AS "review_request_head_oid?",
+                    review_request_user AS "review_request_user?"
                 FROM task_dispatches
                 ORDER BY created_at DESC
                 LIMIT ?1
                 "#,
+                limit,
             )
-            .bind(limit)
             .fetch_all(&mut *connection)
             .await
         } else {
-            sqlx::query(
+            sqlx::query_as!(
+                records::TaskDispatchRow,
                 r#"
-                SELECT *
+                SELECT
+                    dispatch_id AS "dispatch_id!",
+                    task_id AS "task_id!",
+                    preferred_tool AS "preferred_tool!",
+                    project AS "project!",
+                    status AS "status!",
+                    created_at AS "created_at!",
+                    updated_at AS "updated_at!",
+                    finished_at AS "finished_at?",
+                    remote_host AS "remote_host!",
+                    branch_name AS "branch_name?",
+                    worktree_path AS "worktree_path?",
+                    pull_request_url AS "pull_request_url?",
+                    follow_up_request AS "follow_up_request?",
+                    summary AS "summary?",
+                    notes AS "notes?",
+                    error_message AS "error_message?",
+                    review_request_head_oid AS "review_request_head_oid?",
+                    review_request_user AS "review_request_user?"
                 FROM task_dispatches
                 ORDER BY created_at DESC
                 "#,
@@ -208,14 +285,15 @@ impl DispatchRepository {
         }
         .database_error_with("Could not list dispatch records")?;
 
-        rows.into_iter().map(task_dispatch_from_row).collect()
+        rows.into_iter().map(task_dispatch_from_record).collect()
     }
 
     pub async fn task_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            records::TaskIdRow,
             r#"
-            SELECT DISTINCT task_id
+            SELECT DISTINCT task_id AS "task_id!"
             FROM task_dispatches
             ORDER BY task_id ASC
             "#,
@@ -224,10 +302,7 @@ impl DispatchRepository {
         .await
         .database_error_with("Could not load task ids with dispatch history")?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| row.get::<String, _>("task_id"))
-            .collect())
+        Ok(rows.into_iter().map(|row| row.task_id).collect())
     }
 
     pub async fn get_dispatch(
@@ -247,22 +322,43 @@ impl DispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        let row = sqlx::query(
+        let task_id_ref = task_id.as_str();
+        let dispatch_id_ref = dispatch_id.as_str();
+        let row = sqlx::query_as!(
+            records::TaskDispatchRow,
             r#"
-            SELECT *
+            SELECT
+                dispatch_id AS "dispatch_id!",
+                task_id AS "task_id!",
+                preferred_tool AS "preferred_tool!",
+                project AS "project!",
+                status AS "status!",
+                created_at AS "created_at!",
+                updated_at AS "updated_at!",
+                finished_at AS "finished_at?",
+                remote_host AS "remote_host!",
+                branch_name AS "branch_name?",
+                worktree_path AS "worktree_path?",
+                pull_request_url AS "pull_request_url?",
+                follow_up_request AS "follow_up_request?",
+                summary AS "summary?",
+                notes AS "notes?",
+                error_message AS "error_message?",
+                review_request_head_oid AS "review_request_head_oid?",
+                review_request_user AS "review_request_user?"
             FROM task_dispatches
             WHERE task_id = ?1 AND dispatch_id = ?2
             "#,
+            task_id_ref,
+            dispatch_id_ref,
         )
-        .bind(&task_id)
-        .bind(&dispatch_id)
         .fetch_optional(&mut *connection)
         .await
         .database_error_with(format!(
             "Could not load the dispatch record {dispatch_id} for task {task_id}"
         ))?;
 
-        row.map(task_dispatch_from_row).transpose()
+        row.map(task_dispatch_from_record).transpose()
     }
 
     pub async fn delete_dispatch_history_for_task(&self, task_id: &str) -> Result<(), TrackError> {
@@ -273,36 +369,39 @@ impl DispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        sqlx::query("DELETE FROM task_dispatches WHERE task_id = ?1")
-            .bind(&task_id)
-            .execute(&mut *connection)
-            .await
-            .database_error_with(format!(
-                "Could not remove the dispatch history for task {task_id}"
-            ))?;
+        let task_id_ref = task_id.as_str();
+        sqlx::query!(
+            "DELETE FROM task_dispatches WHERE task_id = ?1",
+            task_id_ref
+        )
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!(
+            "Could not remove the dispatch history for task {task_id}"
+        ))?;
 
         Ok(())
     }
 }
 
-fn task_dispatch_from_row(row: sqlx::sqlite::SqliteRow) -> Result<TaskDispatchRecord, TrackError> {
-    let dispatch_id = row.get::<String, _>("dispatch_id");
-    let created_at =
-        parse_iso_8601_millis(&row.get::<String, _>("created_at")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!("Dispatch {dispatch_id} has an invalid created_at timestamp: {error}"),
-            )
-        })?;
-    let updated_at =
-        parse_iso_8601_millis(&row.get::<String, _>("updated_at")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!("Dispatch {dispatch_id} has an invalid updated_at timestamp: {error}"),
-            )
-        })?;
-    let finished_at = row
-        .get::<Option<String>, _>("finished_at")
+fn task_dispatch_from_record(
+    record: records::TaskDispatchRow,
+) -> Result<TaskDispatchRecord, TrackError> {
+    let dispatch_id = record.dispatch_id;
+    let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
+        TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Dispatch {dispatch_id} has an invalid created_at timestamp: {error}"),
+        )
+    })?;
+    let updated_at = parse_iso_8601_millis(&record.updated_at).map_err(|error| {
+        TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Dispatch {dispatch_id} has an invalid updated_at timestamp: {error}"),
+        )
+    })?;
+    let finished_at = record
+        .finished_at
         .map(|value| parse_iso_8601_millis(&value))
         .transpose()
         .map_err(|error| {
@@ -314,27 +413,23 @@ fn task_dispatch_from_row(row: sqlx::sqlite::SqliteRow) -> Result<TaskDispatchRe
 
     Ok(TaskDispatchRecord {
         dispatch_id,
-        task_id: row.get::<String, _>("task_id"),
-        preferred_tool: parse_preferred_tool(
-            row.try_get::<String, _>("preferred_tool")
-                .unwrap_or_else(|_| "codex".to_owned())
-                .as_str(),
-        )?,
-        project: row.get::<String, _>("project"),
-        status: parse_dispatch_status(row.get::<String, _>("status").as_str())?,
+        task_id: record.task_id,
+        preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
+        project: record.project,
+        status: parse_dispatch_status(record.status.as_str())?,
         created_at,
         updated_at,
         finished_at,
-        remote_host: row.get::<String, _>("remote_host"),
-        branch_name: row.get::<Option<String>, _>("branch_name"),
-        worktree_path: row.get::<Option<String>, _>("worktree_path"),
-        pull_request_url: row.get::<Option<String>, _>("pull_request_url"),
-        follow_up_request: row.get::<Option<String>, _>("follow_up_request"),
-        summary: row.get::<Option<String>, _>("summary"),
-        notes: row.get::<Option<String>, _>("notes"),
-        error_message: row.get::<Option<String>, _>("error_message"),
-        review_request_head_oid: row.get::<Option<String>, _>("review_request_head_oid"),
-        review_request_user: row.get::<Option<String>, _>("review_request_user"),
+        remote_host: record.remote_host,
+        branch_name: record.branch_name,
+        worktree_path: record.worktree_path,
+        pull_request_url: record.pull_request_url,
+        follow_up_request: record.follow_up_request,
+        summary: record.summary,
+        notes: record.notes,
+        error_message: record.error_message,
+        review_request_head_oid: record.review_request_head_oid,
+        review_request_user: record.review_request_user,
     })
 }
 

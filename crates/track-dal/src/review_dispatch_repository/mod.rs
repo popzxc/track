@@ -1,6 +1,7 @@
+mod records;
+
 use std::path::PathBuf;
 
-use sqlx::Row;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
@@ -73,7 +74,28 @@ impl ReviewDispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        sqlx::query(
+        let dispatch_id = record.dispatch_id.as_str();
+        let review_id = record.review_id.as_str();
+        let pull_request_url = record.pull_request_url.as_str();
+        let repository_full_name = record.repository_full_name.as_str();
+        let workspace_key = record.workspace_key.as_str();
+        let preferred_tool = record.preferred_tool.as_str();
+        let status = record.status.as_str();
+        let created_at = format_iso_8601_millis(record.created_at);
+        let updated_at = format_iso_8601_millis(record.updated_at);
+        let finished_at = record.finished_at.map(format_iso_8601_millis);
+        let remote_host = record.remote_host.as_str();
+        let branch_name = record.branch_name.as_deref();
+        let worktree_path = record.worktree_path.as_deref();
+        let follow_up_request = record.follow_up_request.as_deref();
+        let target_head_oid = record.target_head_oid.as_deref();
+        let summary = record.summary.as_deref();
+        let review_submitted = record.review_submitted as i64;
+        let github_review_id = record.github_review_id.as_deref();
+        let github_review_url = record.github_review_url.as_deref();
+        let notes = record.notes.as_deref();
+        let error_message = record.error_message.as_deref();
+        sqlx::query!(
             r#"
             INSERT INTO review_runs (
                 dispatch_id, review_id, pull_request_url, repository_full_name,
@@ -105,28 +127,28 @@ impl ReviewDispatchRepository {
                 notes = excluded.notes,
                 error_message = excluded.error_message
             "#,
+            dispatch_id,
+            review_id,
+            pull_request_url,
+            repository_full_name,
+            workspace_key,
+            preferred_tool,
+            status,
+            created_at,
+            updated_at,
+            finished_at,
+            remote_host,
+            branch_name,
+            worktree_path,
+            follow_up_request,
+            target_head_oid,
+            summary,
+            review_submitted,
+            github_review_id,
+            github_review_url,
+            notes,
+            error_message,
         )
-        .bind(&record.dispatch_id)
-        .bind(&record.review_id)
-        .bind(&record.pull_request_url)
-        .bind(&record.repository_full_name)
-        .bind(&record.workspace_key)
-        .bind(record.preferred_tool.as_str())
-        .bind(record.status.as_str())
-        .bind(format_iso_8601_millis(record.created_at))
-        .bind(format_iso_8601_millis(record.updated_at))
-        .bind(record.finished_at.map(format_iso_8601_millis))
-        .bind(&record.remote_host)
-        .bind(record.branch_name.as_deref())
-        .bind(record.worktree_path.as_deref())
-        .bind(record.follow_up_request.as_deref())
-        .bind(record.target_head_oid.as_deref())
-        .bind(record.summary.as_deref())
-        .bind(record.review_submitted as i64)
-        .bind(record.github_review_id.as_deref())
-        .bind(record.github_review_url.as_deref())
-        .bind(record.notes.as_deref())
-        .bind(record.error_message.as_deref())
         .execute(&mut *connection)
         .await
         .database_error_with(format!(
@@ -159,20 +181,43 @@ impl ReviewDispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query(
+        let review_id_ref = review_id.as_str();
+        let rows = sqlx::query_as!(
+            records::ReviewRunRow,
             r#"
-            SELECT *
+            SELECT
+                dispatch_id AS "dispatch_id!",
+                review_id AS "review_id!",
+                pull_request_url AS "pull_request_url!",
+                repository_full_name AS "repository_full_name!",
+                workspace_key AS "workspace_key!",
+                preferred_tool AS "preferred_tool!",
+                status AS "status!",
+                created_at AS "created_at!",
+                updated_at AS "updated_at!",
+                finished_at AS "finished_at?",
+                remote_host AS "remote_host!",
+                branch_name AS "branch_name?",
+                worktree_path AS "worktree_path?",
+                follow_up_request AS "follow_up_request?",
+                target_head_oid AS "target_head_oid?",
+                summary AS "summary?",
+                review_submitted AS "review_submitted!",
+                github_review_id AS "github_review_id?",
+                github_review_url AS "github_review_url?",
+                notes AS "notes?",
+                error_message AS "error_message?"
             FROM review_runs
             WHERE review_id = ?1
             ORDER BY created_at DESC
             "#,
+            review_id_ref,
         )
-        .bind(&review_id)
         .fetch_all(&mut *connection)
         .await
         .database_error_with(format!("Could not load review runs for {review_id}"))?;
 
-        rows.into_iter().map(review_run_from_row).collect()
+        rows.into_iter().map(review_run_from_record).collect()
     }
 
     pub async fn list_dispatches(
@@ -182,21 +227,65 @@ impl ReviewDispatchRepository {
         let limit = limit.map(|value| value as i64);
         let mut connection = self.database.connect().await?;
         let rows = if let Some(limit) = limit {
-            sqlx::query(
+            sqlx::query_as!(
+                records::ReviewRunRow,
                 r#"
-                SELECT *
+                SELECT
+                    dispatch_id AS "dispatch_id!",
+                    review_id AS "review_id!",
+                    pull_request_url AS "pull_request_url!",
+                    repository_full_name AS "repository_full_name!",
+                    workspace_key AS "workspace_key!",
+                    preferred_tool AS "preferred_tool!",
+                    status AS "status!",
+                    created_at AS "created_at!",
+                    updated_at AS "updated_at!",
+                    finished_at AS "finished_at?",
+                    remote_host AS "remote_host!",
+                    branch_name AS "branch_name?",
+                    worktree_path AS "worktree_path?",
+                    follow_up_request AS "follow_up_request?",
+                    target_head_oid AS "target_head_oid?",
+                    summary AS "summary?",
+                    review_submitted AS "review_submitted!",
+                    github_review_id AS "github_review_id?",
+                    github_review_url AS "github_review_url?",
+                    notes AS "notes?",
+                    error_message AS "error_message?"
                 FROM review_runs
                 ORDER BY created_at DESC
                 LIMIT ?1
                 "#,
+                limit,
             )
-            .bind(limit)
             .fetch_all(&mut *connection)
             .await
         } else {
-            sqlx::query(
+            sqlx::query_as!(
+                records::ReviewRunRow,
                 r#"
-                SELECT *
+                SELECT
+                    dispatch_id AS "dispatch_id!",
+                    review_id AS "review_id!",
+                    pull_request_url AS "pull_request_url!",
+                    repository_full_name AS "repository_full_name!",
+                    workspace_key AS "workspace_key!",
+                    preferred_tool AS "preferred_tool!",
+                    status AS "status!",
+                    created_at AS "created_at!",
+                    updated_at AS "updated_at!",
+                    finished_at AS "finished_at?",
+                    remote_host AS "remote_host!",
+                    branch_name AS "branch_name?",
+                    worktree_path AS "worktree_path?",
+                    follow_up_request AS "follow_up_request?",
+                    target_head_oid AS "target_head_oid?",
+                    summary AS "summary?",
+                    review_submitted AS "review_submitted!",
+                    github_review_id AS "github_review_id?",
+                    github_review_url AS "github_review_url?",
+                    notes AS "notes?",
+                    error_message AS "error_message?"
                 FROM review_runs
                 ORDER BY created_at DESC
                 "#,
@@ -206,14 +295,15 @@ impl ReviewDispatchRepository {
         }
         .database_error_with("Could not list review run records")?;
 
-        rows.into_iter().map(review_run_from_row).collect()
+        rows.into_iter().map(review_run_from_record).collect()
     }
 
     pub async fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            records::ReviewIdRow,
             r#"
-            SELECT DISTINCT review_id
+            SELECT DISTINCT review_id AS "review_id!"
             FROM review_runs
             ORDER BY review_id ASC
             "#,
@@ -222,10 +312,7 @@ impl ReviewDispatchRepository {
         .await
         .database_error_with("Could not load review ids with run history")?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| row.get::<String, _>("review_id"))
-            .collect())
+        Ok(rows.into_iter().map(|row| row.review_id).collect())
     }
 
     pub async fn get_dispatch(
@@ -245,22 +332,46 @@ impl ReviewDispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        let row = sqlx::query(
+        let review_id_ref = review_id.as_str();
+        let dispatch_id_ref = dispatch_id.as_str();
+        let row = sqlx::query_as!(
+            records::ReviewRunRow,
             r#"
-            SELECT *
+            SELECT
+                dispatch_id AS "dispatch_id!",
+                review_id AS "review_id!",
+                pull_request_url AS "pull_request_url!",
+                repository_full_name AS "repository_full_name!",
+                workspace_key AS "workspace_key!",
+                preferred_tool AS "preferred_tool!",
+                status AS "status!",
+                created_at AS "created_at!",
+                updated_at AS "updated_at!",
+                finished_at AS "finished_at?",
+                remote_host AS "remote_host!",
+                branch_name AS "branch_name?",
+                worktree_path AS "worktree_path?",
+                follow_up_request AS "follow_up_request?",
+                target_head_oid AS "target_head_oid?",
+                summary AS "summary?",
+                review_submitted AS "review_submitted!",
+                github_review_id AS "github_review_id?",
+                github_review_url AS "github_review_url?",
+                notes AS "notes?",
+                error_message AS "error_message?"
             FROM review_runs
             WHERE review_id = ?1 AND dispatch_id = ?2
             "#,
+            review_id_ref,
+            dispatch_id_ref,
         )
-        .bind(&review_id)
-        .bind(&dispatch_id)
         .fetch_optional(&mut *connection)
         .await
         .database_error_with(format!(
             "Could not load the review run {dispatch_id} for review {review_id}"
         ))?;
 
-        row.map(review_run_from_row).transpose()
+        row.map(review_run_from_record).transpose()
     }
 
     pub async fn delete_dispatch_history_for_review(
@@ -274,36 +385,37 @@ impl ReviewDispatchRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        sqlx::query("DELETE FROM review_runs WHERE review_id = ?1")
-            .bind(&review_id)
-            .execute(&mut *connection)
-            .await
-            .database_error_with(format!(
-                "Could not remove the review dispatch history for {review_id}"
-            ))?;
+        let review_id_ref = review_id.as_str();
+        sqlx::query!(
+            "DELETE FROM review_runs WHERE review_id = ?1",
+            review_id_ref
+        )
+        .execute(&mut *connection)
+        .await
+        .database_error_with(format!(
+            "Could not remove the review dispatch history for {review_id}"
+        ))?;
 
         Ok(())
     }
 }
 
-fn review_run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRunRecord, TrackError> {
-    let dispatch_id = row.get::<String, _>("dispatch_id");
-    let created_at =
-        parse_iso_8601_millis(&row.get::<String, _>("created_at")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!("Review run {dispatch_id} has an invalid created_at timestamp: {error}"),
-            )
-        })?;
-    let updated_at =
-        parse_iso_8601_millis(&row.get::<String, _>("updated_at")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!("Review run {dispatch_id} has an invalid updated_at timestamp: {error}"),
-            )
-        })?;
-    let finished_at = row
-        .get::<Option<String>, _>("finished_at")
+fn review_run_from_record(record: records::ReviewRunRow) -> Result<ReviewRunRecord, TrackError> {
+    let dispatch_id = record.dispatch_id;
+    let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
+        TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Review run {dispatch_id} has an invalid created_at timestamp: {error}"),
+        )
+    })?;
+    let updated_at = parse_iso_8601_millis(&record.updated_at).map_err(|error| {
+        TrackError::new(
+            ErrorCode::DispatchWriteFailed,
+            format!("Review run {dispatch_id} has an invalid updated_at timestamp: {error}"),
+        )
+    })?;
+    let finished_at = record
+        .finished_at
         .map(|value| parse_iso_8601_millis(&value))
         .transpose()
         .map_err(|error| {
@@ -315,30 +427,26 @@ fn review_run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRunRecord, 
 
     Ok(ReviewRunRecord {
         dispatch_id,
-        review_id: row.get::<String, _>("review_id"),
-        pull_request_url: row.get::<String, _>("pull_request_url"),
-        repository_full_name: row.get::<String, _>("repository_full_name"),
-        workspace_key: row.get::<String, _>("workspace_key"),
-        preferred_tool: parse_preferred_tool(
-            row.try_get::<String, _>("preferred_tool")
-                .unwrap_or_else(|_| "codex".to_owned())
-                .as_str(),
-        )?,
-        status: parse_dispatch_status(row.get::<String, _>("status").as_str())?,
+        review_id: record.review_id,
+        pull_request_url: record.pull_request_url,
+        repository_full_name: record.repository_full_name,
+        workspace_key: record.workspace_key,
+        preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
+        status: parse_dispatch_status(record.status.as_str())?,
         created_at,
         updated_at,
         finished_at,
-        remote_host: row.get::<String, _>("remote_host"),
-        branch_name: row.get::<Option<String>, _>("branch_name"),
-        worktree_path: row.get::<Option<String>, _>("worktree_path"),
-        follow_up_request: row.get::<Option<String>, _>("follow_up_request"),
-        target_head_oid: row.get::<Option<String>, _>("target_head_oid"),
-        summary: row.get::<Option<String>, _>("summary"),
-        review_submitted: row.get::<i64, _>("review_submitted") != 0,
-        github_review_id: row.get::<Option<String>, _>("github_review_id"),
-        github_review_url: row.get::<Option<String>, _>("github_review_url"),
-        notes: row.get::<Option<String>, _>("notes"),
-        error_message: row.get::<Option<String>, _>("error_message"),
+        remote_host: record.remote_host,
+        branch_name: record.branch_name,
+        worktree_path: record.worktree_path,
+        follow_up_request: record.follow_up_request,
+        target_head_oid: record.target_head_oid,
+        summary: record.summary,
+        review_submitted: record.review_submitted != 0,
+        github_review_id: record.github_review_id,
+        github_review_url: record.github_review_url,
+        notes: record.notes,
+        error_message: record.error_message,
     })
 }
 

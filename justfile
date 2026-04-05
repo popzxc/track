@@ -41,6 +41,13 @@ run-api:
 add-dal-migration description:
   {{cargo}} sqlx migrate add --source crates/track-dal/migrations --sequential {{description}}
 
+# Refresh the committed SQLx offline query cache for track-dal.
+[working-directory: "crates/track-dal"]
+db-prepare:
+  {{cargo}} sqlx database create --database-url sqlite://sqlx-prepare.sqlite
+  {{cargo}} sqlx migrate run --database-url sqlite://sqlx-prepare.sqlite --source migrations
+  {{cargo}} sqlx prepare --database-url "sqlite://$(pwd)/sqlx-prepare.sqlite"
+
 # Install the CLI from the current checkout.
 install-cli:
   {{cargo}} install --path crates/track-cli --force --locked

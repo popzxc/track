@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT\n                id AS \"id!\",\n                pull_request_url AS \"pull_request_url!\",\n                pull_request_number AS \"pull_request_number!\",\n                pull_request_title AS \"pull_request_title!\",\n                repository_full_name AS \"repository_full_name!\",\n                repo_url AS \"repo_url!\",\n                git_url AS \"git_url!\",\n                base_branch AS \"base_branch!\",\n                workspace_key AS \"workspace_key!\",\n                preferred_tool AS \"preferred_tool!\",\n                project AS \"project?\",\n                main_user AS \"main_user!\",\n                default_review_prompt AS \"default_review_prompt?\",\n                extra_instructions AS \"extra_instructions?\",\n                created_at AS \"created_at!\",\n                updated_at AS \"updated_at!\"\n            FROM reviews\n            WHERE id = ?1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "pull_request_url!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "pull_request_number!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "pull_request_title!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "repository_full_name!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_url!",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_url!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "base_branch!",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "workspace_key!",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "preferred_tool!",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "project?",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "main_user!",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "default_review_prompt?",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "extra_instructions?",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!",
+        "ordinal": 15,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "bc3c0a252c438a08fdb97eddb119aab93b542ad9f897bdd0f6ae1584cfc49c31"
+}

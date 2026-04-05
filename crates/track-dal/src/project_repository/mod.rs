@@ -1,6 +1,7 @@
+mod records;
+
 use std::path::PathBuf;
 
-use sqlx::Row;
 use track_projects::project_catalog::ProjectInfo;
 use track_projects::project_metadata::{
     infer_project_metadata, ProjectMetadata, ProjectRecord, ProjectUpsertInput,
@@ -35,9 +36,15 @@ impl ProjectRepository {
 
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, TrackError> {
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            records::ProjectRow,
             r#"
-            SELECT canonical_name, repo_url, git_url, base_branch, description
+            SELECT
+                canonical_name AS "canonical_name!",
+                repo_url AS "repo_url!",
+                git_url AS "git_url!",
+                base_branch AS "base_branch!",
+                description AS "description?"
             FROM projects
             ORDER BY canonical_name ASC
             "#,
@@ -48,14 +55,14 @@ impl ProjectRepository {
 
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
-            let canonical_name = row.get::<String, _>("canonical_name");
+            let canonical_name = row.canonical_name;
             records.push(ProjectRecord {
                 aliases: load_aliases(&mut connection, &canonical_name).await?,
                 metadata: ProjectMetadata {
-                    repo_url: row.get::<String, _>("repo_url"),
-                    git_url: row.get::<String, _>("git_url"),
-                    base_branch: row.get::<String, _>("base_branch"),
-                    description: row.get::<Option<String>, _>("description"),
+                    repo_url: row.repo_url,
+                    git_url: row.git_url,
+                    base_branch: row.base_branch,
+                    description: row.description,
                 },
                 canonical_name,
             });
@@ -75,14 +82,21 @@ impl ProjectRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        let row = sqlx::query(
+        let canonical_name_ref = canonical_name.as_str();
+        let row = sqlx::query_as!(
+            records::ProjectRow,
             r#"
-            SELECT canonical_name, repo_url, git_url, base_branch, description
+            SELECT
+                canonical_name AS "canonical_name!",
+                repo_url AS "repo_url!",
+                git_url AS "git_url!",
+                base_branch AS "base_branch!",
+                description AS "description?"
             FROM projects
             WHERE canonical_name = ?1
             "#,
+            canonical_name_ref,
         )
-        .bind(&canonical_name)
         .fetch_optional(&mut *connection)
         .await
         .database_error_with(format!(
@@ -98,10 +112,10 @@ impl ProjectRepository {
         Ok(ProjectRecord {
             aliases: load_aliases(&mut connection, &canonical_name).await?,
             metadata: ProjectMetadata {
-                repo_url: row.get::<String, _>("repo_url"),
-                git_url: row.get::<String, _>("git_url"),
-                base_branch: row.get::<String, _>("base_branch"),
-                description: row.get::<Option<String>, _>("description"),
+                repo_url: row.repo_url,
+                git_url: row.git_url,
+                base_branch: row.base_branch,
+                description: row.description,
             },
             canonical_name,
         })
@@ -154,8 +168,13 @@ impl ProjectRepository {
         // anything so callers never observe a half-applied registration when
         // another project already owns an alias.
         ensure_aliases_are_available(&mut *transaction, &canonical_name, &merged_aliases).await?;
+        let canonical_name_ref = canonical_name.as_str();
+        let repo_url = metadata.repo_url.as_str();
+        let git_url = metadata.git_url.as_str();
+        let base_branch = metadata.base_branch.as_str();
+        let description = metadata.description.as_deref();
 
-        sqlx::query(
+        sqlx::query!(
             r#"
             INSERT INTO projects (canonical_name, repo_url, git_url, base_branch, description)
             VALUES (?1, ?2, ?3, ?4, ?5)
@@ -165,26 +184,27 @@ impl ProjectRepository {
                 base_branch = excluded.base_branch,
                 description = excluded.description
             "#,
+            canonical_name_ref,
+            repo_url,
+            git_url,
+            base_branch,
+            description,
         )
-        .bind(&canonical_name)
-        .bind(&metadata.repo_url)
-        .bind(&metadata.git_url)
-        .bind(&metadata.base_branch)
-        .bind(metadata.description.as_deref())
         .execute(&mut *transaction)
         .await
         .database_error_with(format!("Could not save project {canonical_name}"))?;
 
         for alias in &merged_aliases {
-            sqlx::query(
+            let alias_name = alias.as_str();
+            sqlx::query!(
                 r#"
                 INSERT INTO project_aliases (canonical_name, alias)
                 VALUES (?1, ?2)
                 ON CONFLICT(canonical_name, alias) DO NOTHING
                 "#,
+                canonical_name_ref,
+                alias_name,
             )
-            .bind(&canonical_name)
-            .bind(alias)
             .execute(&mut *transaction)
             .await
             .database_error_with(format!(
@@ -209,25 +229,23 @@ async fn load_aliases(
     connection: &mut sqlx::SqliteConnection,
     canonical_name: &str,
 ) -> Result<Vec<String>, TrackError> {
-    let rows = sqlx::query(
+    let rows = sqlx::query_as!(
+        records::ProjectAliasRow,
         r#"
-        SELECT alias
+        SELECT alias AS "alias!"
         FROM project_aliases
         WHERE canonical_name = ?1
         ORDER BY alias ASC
         "#,
+        canonical_name,
     )
-    .bind(canonical_name)
     .fetch_all(&mut *connection)
     .await
     .database_error_with(format!(
         "Could not load project aliases for {canonical_name}"
     ))?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| row.get::<String, _>("alias"))
-        .collect())
+    Ok(rows.into_iter().map(|row| row.alias).collect())
 }
 
 async fn ensure_aliases_are_available(
@@ -236,14 +254,16 @@ async fn ensure_aliases_are_available(
     aliases: &[String],
 ) -> Result<(), TrackError> {
     for alias in aliases {
-        let row = sqlx::query(
+        let alias_name = alias.as_str();
+        let row = sqlx::query_as!(
+            records::AliasOwnerRow,
             r#"
-            SELECT canonical_name
+            SELECT canonical_name AS "canonical_name!"
             FROM project_aliases
             WHERE alias = ?1
             "#,
+            alias_name,
         )
-        .bind(alias)
         .fetch_optional(&mut *connection)
         .await
         .database_error_with(format!(
@@ -251,7 +271,7 @@ async fn ensure_aliases_are_available(
         ))?;
 
         if let Some(row) = row {
-            let claimed_by = row.get::<String, _>("canonical_name");
+            let claimed_by = row.canonical_name;
             if claimed_by != canonical_name {
                 return Err(TrackError::new(
                     ErrorCode::InvalidProjectMetadata,

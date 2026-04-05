@@ -1,6 +1,7 @@
+mod records;
+
 use std::path::PathBuf;
 
-use sqlx::Row;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
@@ -33,7 +34,23 @@ impl ReviewRepository {
     pub async fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
         let review = review.clone();
         let mut connection = self.database.connect().await?;
-        sqlx::query(
+        let id = review.id.as_str();
+        let pull_request_url = review.pull_request_url.as_str();
+        let pull_request_title = review.pull_request_title.as_str();
+        let repository_full_name = review.repository_full_name.as_str();
+        let repo_url = review.repo_url.as_str();
+        let git_url = review.git_url.as_str();
+        let base_branch = review.base_branch.as_str();
+        let workspace_key = review.workspace_key.as_str();
+        let preferred_tool = review.preferred_tool.as_str();
+        let project = review.project.as_deref();
+        let main_user = review.main_user.as_str();
+        let default_review_prompt = review.default_review_prompt.as_deref();
+        let extra_instructions = review.extra_instructions.as_deref();
+        let pull_request_number = review.pull_request_number as i64;
+        let created_at = format_iso_8601_millis(review.created_at);
+        let updated_at = format_iso_8601_millis(review.updated_at);
+        sqlx::query!(
             r#"
             INSERT INTO reviews (
                 id, pull_request_url, pull_request_number, pull_request_title,
@@ -59,23 +76,23 @@ impl ReviewRepository {
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at
             "#,
+            id,
+            pull_request_url,
+            pull_request_number,
+            pull_request_title,
+            repository_full_name,
+            repo_url,
+            git_url,
+            base_branch,
+            workspace_key,
+            preferred_tool,
+            project,
+            main_user,
+            default_review_prompt,
+            extra_instructions,
+            created_at,
+            updated_at,
         )
-        .bind(&review.id)
-        .bind(&review.pull_request_url)
-        .bind(review.pull_request_number as i64)
-        .bind(&review.pull_request_title)
-        .bind(&review.repository_full_name)
-        .bind(&review.repo_url)
-        .bind(&review.git_url)
-        .bind(&review.base_branch)
-        .bind(&review.workspace_key)
-        .bind(review.preferred_tool.as_str())
-        .bind(review.project.as_deref())
-        .bind(&review.main_user)
-        .bind(review.default_review_prompt.as_deref())
-        .bind(review.extra_instructions.as_deref())
-        .bind(format_iso_8601_millis(review.created_at))
-        .bind(format_iso_8601_millis(review.updated_at))
         .execute(&mut *connection)
         .await
         .database_error_with(format!("Could not save review {}", review.id))?;
@@ -85,13 +102,26 @@ impl ReviewRepository {
 
     pub async fn list_reviews(&self) -> Result<Vec<ReviewRecord>, TrackError> {
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            records::ReviewRow,
             r#"
             SELECT
-                id, pull_request_url, pull_request_number, pull_request_title,
-                repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                preferred_tool, project, main_user, default_review_prompt,
-                extra_instructions, created_at, updated_at
+                id AS "id!",
+                pull_request_url AS "pull_request_url!",
+                pull_request_number AS "pull_request_number!",
+                pull_request_title AS "pull_request_title!",
+                repository_full_name AS "repository_full_name!",
+                repo_url AS "repo_url!",
+                git_url AS "git_url!",
+                base_branch AS "base_branch!",
+                workspace_key AS "workspace_key!",
+                preferred_tool AS "preferred_tool!",
+                project AS "project?",
+                main_user AS "main_user!",
+                default_review_prompt AS "default_review_prompt?",
+                extra_instructions AS "extra_instructions?",
+                created_at AS "created_at!",
+                updated_at AS "updated_at!"
             FROM reviews
             ORDER BY updated_at DESC
             "#,
@@ -100,7 +130,7 @@ impl ReviewRepository {
         .await
         .database_error_with("Could not list reviews from SQLite")?;
 
-        rows.into_iter().map(review_from_row).collect()
+        rows.into_iter().map(review_from_record).collect()
     }
 
     pub async fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
@@ -111,18 +141,32 @@ impl ReviewRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        let row = sqlx::query(
+        let review_id_ref = review_id.as_str();
+        let row = sqlx::query_as!(
+            records::ReviewRow,
             r#"
             SELECT
-                id, pull_request_url, pull_request_number, pull_request_title,
-                repository_full_name, repo_url, git_url, base_branch, workspace_key,
-                preferred_tool, project, main_user, default_review_prompt,
-                extra_instructions, created_at, updated_at
+                id AS "id!",
+                pull_request_url AS "pull_request_url!",
+                pull_request_number AS "pull_request_number!",
+                pull_request_title AS "pull_request_title!",
+                repository_full_name AS "repository_full_name!",
+                repo_url AS "repo_url!",
+                git_url AS "git_url!",
+                base_branch AS "base_branch!",
+                workspace_key AS "workspace_key!",
+                preferred_tool AS "preferred_tool!",
+                project AS "project?",
+                main_user AS "main_user!",
+                default_review_prompt AS "default_review_prompt?",
+                extra_instructions AS "extra_instructions?",
+                created_at AS "created_at!",
+                updated_at AS "updated_at!"
             FROM reviews
             WHERE id = ?1
             "#,
+            review_id_ref,
         )
-        .bind(&review_id)
         .fetch_optional(&mut *connection)
         .await
         .database_error_with(format!("Could not load review {review_id}"))?
@@ -133,7 +177,7 @@ impl ReviewRepository {
             )
         })?;
 
-        review_from_row(row)
+        review_from_record(row)
     }
 
     pub async fn delete_review(&self, id: &str) -> Result<(), TrackError> {
@@ -144,8 +188,8 @@ impl ReviewRepository {
         )?;
 
         let mut connection = self.database.connect().await?;
-        sqlx::query("DELETE FROM reviews WHERE id = ?1")
-            .bind(&review_id)
+        let review_id_ref = review_id.as_str();
+        sqlx::query!("DELETE FROM reviews WHERE id = ?1", review_id_ref)
             .execute(&mut *connection)
             .await
             .database_error_with(format!("Could not delete review {review_id}"))?;
@@ -154,42 +198,36 @@ impl ReviewRepository {
     }
 }
 
-fn review_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReviewRecord, TrackError> {
-    let id = row.get::<String, _>("id");
-    let created_at =
-        parse_iso_8601_millis(&row.get::<String, _>("created_at")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!("Review {id} has an invalid created_at timestamp: {error}"),
-            )
-        })?;
-    let updated_at =
-        parse_iso_8601_millis(&row.get::<String, _>("updated_at")).map_err(|error| {
-            TrackError::new(
-                ErrorCode::TaskWriteFailed,
-                format!("Review {id} has an invalid updated_at timestamp: {error}"),
-            )
-        })?;
+fn review_from_record(record: records::ReviewRow) -> Result<ReviewRecord, TrackError> {
+    let id = record.id;
+    let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
+        TrackError::new(
+            ErrorCode::TaskWriteFailed,
+            format!("Review {id} has an invalid created_at timestamp: {error}"),
+        )
+    })?;
+    let updated_at = parse_iso_8601_millis(&record.updated_at).map_err(|error| {
+        TrackError::new(
+            ErrorCode::TaskWriteFailed,
+            format!("Review {id} has an invalid updated_at timestamp: {error}"),
+        )
+    })?;
 
     Ok(ReviewRecord {
         id,
-        pull_request_url: row.get::<String, _>("pull_request_url"),
-        pull_request_number: row.get::<i64, _>("pull_request_number") as u64,
-        pull_request_title: row.get::<String, _>("pull_request_title"),
-        repository_full_name: row.get::<String, _>("repository_full_name"),
-        repo_url: row.get::<String, _>("repo_url"),
-        git_url: row.get::<String, _>("git_url"),
-        base_branch: row.get::<String, _>("base_branch"),
-        workspace_key: row.get::<String, _>("workspace_key"),
-        preferred_tool: parse_preferred_tool(
-            row.try_get::<String, _>("preferred_tool")
-                .unwrap_or_else(|_| "codex".to_owned())
-                .as_str(),
-        )?,
-        project: row.get::<Option<String>, _>("project"),
-        main_user: row.get::<String, _>("main_user"),
-        default_review_prompt: row.get::<Option<String>, _>("default_review_prompt"),
-        extra_instructions: row.get::<Option<String>, _>("extra_instructions"),
+        pull_request_url: record.pull_request_url,
+        pull_request_number: record.pull_request_number as u64,
+        pull_request_title: record.pull_request_title,
+        repository_full_name: record.repository_full_name,
+        repo_url: record.repo_url,
+        git_url: record.git_url,
+        base_branch: record.base_branch,
+        workspace_key: record.workspace_key,
+        preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
+        project: record.project,
+        main_user: record.main_user,
+        default_review_prompt: record.default_review_prompt,
+        extra_instructions: record.extra_instructions,
         created_at,
         updated_at,
     })

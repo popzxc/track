@@ -11,6 +11,9 @@ testing/full_ci_smoke/.venv/
 frontend/test-results/
 target
 .codex
+crates/track-dal/sqlx-prepare.sqlite
+crates/track-dal/sqlx-prepare.sqlite-shm
+crates/track-dal/sqlx-prepare.sqlite-wal
 
 # For local development notes only
 planning/
