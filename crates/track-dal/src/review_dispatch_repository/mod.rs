@@ -22,16 +22,22 @@ impl ReviewDispatchRepository {
         Ok(Self { database })
     }
 
-    // TODO: populate right away and save, this method makes no sense.
-    pub fn create_dispatch(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_dispatch(
         &self,
         review: &ReviewRecord,
+        dispatch_id: &str,
         remote_host: &str,
         preferred_tool: RemoteAgentPreferredTool,
+        branch_name: &str,
+        worktree_path: &str,
+        follow_up_request: Option<&str>,
+        target_head_oid: Option<&str>,
+        summary: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
         let timestamp = now_utc();
         let record = ReviewRunRecord {
-            dispatch_id: format!("dispatch-{}", timestamp.unix_timestamp_nanos()),
+            dispatch_id: dispatch_id.to_owned(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -42,11 +48,11 @@ impl ReviewDispatchRepository {
             updated_at: timestamp,
             finished_at: None,
             remote_host: remote_host.to_owned(),
-            branch_name: None,
-            worktree_path: None,
-            follow_up_request: None,
-            target_head_oid: None,
-            summary: None,
+            branch_name: Some(branch_name.to_owned()),
+            worktree_path: Some(worktree_path.to_owned()),
+            follow_up_request: follow_up_request.map(ToOwned::to_owned),
+            target_head_oid: target_head_oid.map(ToOwned::to_owned),
+            summary: summary.map(ToOwned::to_owned),
             review_submitted: false,
             github_review_id: None,
             github_review_url: None,
@@ -54,10 +60,11 @@ impl ReviewDispatchRepository {
             error_message: None,
         };
 
-        // Review runs share the same queue-then-launch shape as task dispatches:
-        // the caller computes branch/worktree context next. Keeping the row
-        // in-memory until that context is populated avoids exposing an active
-        // run that reconciliation would mistake for a broken launch.
+        // Review runs now arrive with their queue-time context already
+        // assembled, so we can persist the exact launchable record in one
+        // write instead of manufacturing an incomplete row first.
+        self.save_dispatch(&record).await?;
+
         Ok(record)
     }
 
@@ -411,7 +418,7 @@ mod tests {
     use crate::test_support::{sample_review, sample_review_run, temporary_database_path};
 
     #[tokio::test]
-    async fn create_dispatch_keeps_new_review_run_in_memory_until_callers_save_launch_context() {
+    async fn create_dispatch_persists_queued_review_run_with_launch_context() {
         let (_directory, database_path) = temporary_database_path();
         let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
             .await
@@ -437,26 +444,18 @@ mod tests {
             .await
             .expect("review should save");
 
-        let mut record = repository
-            .create_dispatch(&review, "198.51.100.10", RemoteAgentPreferredTool::Codex)
-            .expect("review run should build");
-
-        assert!(
-            repository
-                .latest_dispatch_for_review(&review.id)
-                .await
-                .expect("review dispatch lookup should succeed")
-                .is_none(),
-            "a newly created review run should stay invisible until its launch context is saved",
-        );
-
-        record.branch_name = Some(format!("track-review/{}", record.dispatch_id));
-        record.worktree_path = Some(format!(
-            "/home/track/workspace/{}/review-worktrees/{}",
-            review.workspace_key, record.dispatch_id
-        ));
-        repository
-            .save_dispatch(&record)
+        let record = repository
+            .create_dispatch(
+                &review,
+                "dispatch-review-race-test",
+                "198.51.100.10",
+                RemoteAgentPreferredTool::Codex,
+                "track-review/dispatch-review-race-test",
+                "/home/track/workspace/octo-tools/review-worktrees/dispatch-review-race-test",
+                None,
+                None,
+                None,
+            )
             .await
             .expect("review run should save with launch context");
 
@@ -464,9 +463,10 @@ mod tests {
             .latest_dispatch_for_review(&review.id)
             .await
             .expect("review dispatch lookup should succeed")
-            .expect("saved review run should be visible");
+            .expect("queued review run should be visible immediately");
 
         assert_eq!(saved.dispatch_id, record.dispatch_id);
+        assert_eq!(saved.status, DispatchStatus::Preparing);
         assert_eq!(saved.branch_name, record.branch_name);
         assert_eq!(saved.worktree_path, record.worktree_path);
     }

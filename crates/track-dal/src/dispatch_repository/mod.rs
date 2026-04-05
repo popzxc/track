@@ -22,16 +22,24 @@ impl DispatchRepository {
         Ok(Self { database })
     }
 
-    // TODO: populate it right away and save
-    pub fn create_dispatch(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_dispatch(
         &self,
         task: &Task,
+        dispatch_id: &str,
         remote_host: &str,
         preferred_tool: RemoteAgentPreferredTool,
+        branch_name: &str,
+        worktree_path: &str,
+        pull_request_url: Option<&str>,
+        follow_up_request: Option<&str>,
+        summary: Option<&str>,
+        review_request_head_oid: Option<&str>,
+        review_request_user: Option<&str>,
     ) -> Result<TaskDispatchRecord, TrackError> {
         let timestamp = now_utc();
         let record = TaskDispatchRecord {
-            dispatch_id: format!("dispatch-{}", timestamp.unix_timestamp_nanos()),
+            dispatch_id: dispatch_id.to_owned(),
             task_id: task.id.clone(),
             preferred_tool,
             project: task.project.clone(),
@@ -40,21 +48,22 @@ impl DispatchRepository {
             updated_at: timestamp,
             finished_at: None,
             remote_host: remote_host.to_owned(),
-            branch_name: None,
-            worktree_path: None,
-            pull_request_url: None,
-            follow_up_request: None,
-            summary: None,
+            branch_name: Some(branch_name.to_owned()),
+            worktree_path: Some(worktree_path.to_owned()),
+            pull_request_url: pull_request_url.map(ToOwned::to_owned),
+            follow_up_request: follow_up_request.map(ToOwned::to_owned),
+            summary: summary.map(ToOwned::to_owned),
             notes: None,
             error_message: None,
-            review_request_head_oid: None,
-            review_request_user: None,
+            review_request_head_oid: review_request_head_oid.map(ToOwned::to_owned),
+            review_request_user: review_request_user.map(ToOwned::to_owned),
         };
 
-        // Queue flows fill in branch/worktree context immediately after
-        // creating the record. Persisting the half-populated row here makes it
-        // visible to concurrent reconciliation before that launch context
-        // exists, which can incorrectly release a brand-new dispatch.
+        // Queue-time dispatches now arrive with their launch context already
+        // resolved, so the first write can persist the exact queued record that
+        // launch and reconciliation will observe.
+        self.save_dispatch(&record).await?;
+
         Ok(record)
     }
 
@@ -396,7 +405,7 @@ mod tests {
     use crate::test_support::{sample_dispatch, sample_task, temporary_database_path};
 
     #[tokio::test]
-    async fn create_dispatch_keeps_new_record_in_memory_until_callers_save_launch_context() {
+    async fn create_dispatch_persists_queued_dispatch_with_launch_context() {
         let (_directory, database_path) = temporary_database_path();
         let repository = DispatchRepository::new(Some(database_path))
             .await
@@ -419,30 +428,20 @@ mod tests {
             ..task
         };
 
-        let mut record = repository
+        let record = repository
             .create_dispatch(
                 &task,
+                "dispatch-race-test",
                 "198.51.100.10",
                 track_types::types::RemoteAgentPreferredTool::Codex,
+                "track/dispatch-race-test",
+                "/home/track/workspace/project-a/worktrees/dispatch-race-test",
+                None,
+                None,
+                None,
+                None,
+                None,
             )
-            .expect("dispatch record should build");
-
-        assert!(
-            repository
-                .latest_dispatch_for_task(&task.id)
-                .await
-                .expect("dispatch lookup should succeed")
-                .is_none(),
-            "a newly created dispatch should stay invisible until its launch context is saved",
-        );
-
-        record.branch_name = Some(format!("track/{}", record.dispatch_id));
-        record.worktree_path = Some(format!(
-            "/home/track/workspace/{}/worktrees/{}",
-            task.project, record.dispatch_id
-        ));
-        repository
-            .save_dispatch(&record)
             .await
             .expect("dispatch should save with launch context");
 
@@ -450,9 +449,10 @@ mod tests {
             .latest_dispatch_for_task(&task.id)
             .await
             .expect("dispatch lookup should succeed")
-            .expect("saved dispatch should be visible");
+            .expect("queued dispatch should be visible immediately");
 
         assert_eq!(saved.dispatch_id, record.dispatch_id);
+        assert_eq!(saved.status, DispatchStatus::Preparing);
         assert_eq!(saved.branch_name, record.branch_name);
         assert_eq!(saved.worktree_path, record.worktree_path);
     }

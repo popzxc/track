@@ -193,14 +193,25 @@ impl TestContext {
     async fn create_running_dispatch(&self, task: &Task) -> TaskDispatchRecord {
         let mut dispatch = self
             .dispatch_repository
-            .create_dispatch(task, "198.51.100.10", RemoteAgentPreferredTool::Codex)
+            .create_dispatch(
+                task,
+                &format!("dispatch-{}-running", task.id),
+                "198.51.100.10",
+                RemoteAgentPreferredTool::Codex,
+                &format!("track/dispatch-{}-running", task.id),
+                &format!(
+                    "~/workspace/{}/worktrees/dispatch-{}-running",
+                    task.project, task.id
+                ),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
             .expect("dispatch should be created");
         dispatch.status = DispatchStatus::Running;
-        dispatch.branch_name = Some(format!("track/{}", dispatch.dispatch_id));
-        dispatch.worktree_path = Some(format!(
-            "~/workspace/{}/worktrees/{}",
-            task.project, dispatch.dispatch_id
-        ));
         dispatch.summary =
             Some("The remote agent is working in the prepared environment.".to_owned());
         dispatch.updated_at = now_utc();

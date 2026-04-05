@@ -417,7 +417,20 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         .task;
 
     let mut first_dispatch = dispatch_repository
-        .create_dispatch(&first_task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
+        .create_dispatch(
+            &first_task,
+            "dispatch-first",
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            "track/dispatch-first",
+            "/tmp/track/project-a/worktrees/dispatch-first",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .expect("first dispatch should be created");
     first_dispatch.status = DispatchStatus::Succeeded;
     first_dispatch.finished_at = Some(first_dispatch.updated_at);
@@ -427,7 +440,20 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         .expect("first dispatch should save");
 
     let mut second_dispatch = dispatch_repository
-        .create_dispatch(&second_task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
+        .create_dispatch(
+            &second_task,
+            "dispatch-second",
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            "track/dispatch-second",
+            "/tmp/track/project-b/worktrees/dispatch-second",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .expect("second dispatch should be created");
     second_dispatch.status = DispatchStatus::Succeeded;
     second_dispatch.finished_at = Some(second_dispatch.updated_at);
@@ -512,7 +538,20 @@ async fn lists_runs_with_task_context() {
         .expect("task should be created")
         .task;
     let mut dispatch = dispatch_repository
-        .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
+        .create_dispatch(
+            &task,
+            "dispatch-single",
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            "track/dispatch-single",
+            "/tmp/track/project-a/worktrees/dispatch-single",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .expect("dispatch should be created");
     dispatch.status = DispatchStatus::Succeeded;
     dispatch.finished_at = Some(dispatch.updated_at);
@@ -580,7 +619,20 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         .task;
 
     let mut first_dispatch = dispatch_repository
-        .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
+        .create_dispatch(
+            &task,
+            "dispatch-history-first",
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            "track/dispatch-history-first",
+            "/tmp/track/project-a/worktrees/dispatch-history-first",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .expect("first dispatch should be created");
     first_dispatch.status = DispatchStatus::Succeeded;
     first_dispatch.finished_at = Some(first_dispatch.updated_at);
@@ -590,7 +642,20 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         .expect("first dispatch should save");
 
     let mut second_dispatch = dispatch_repository
-        .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
+        .create_dispatch(
+            &task,
+            "dispatch-history-second",
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            "track/dispatch-history-second",
+            "/tmp/track/project-a/worktrees/dispatch-history-second",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .expect("second dispatch should be created");
     second_dispatch.status = DispatchStatus::Succeeded;
     second_dispatch.finished_at = Some(second_dispatch.updated_at);
@@ -778,7 +843,20 @@ async fn discards_dispatch_history_for_a_task() {
         .task;
 
     let mut dispatch = dispatch_repository
-        .create_dispatch(&task, "192.0.2.25", RemoteAgentPreferredTool::Codex)
+        .create_dispatch(
+            &task,
+            "dispatch-terminal",
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            "track/dispatch-terminal",
+            "/tmp/track/project-a/worktrees/dispatch-terminal",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .expect("dispatch should be created");
     dispatch.status = DispatchStatus::Failed;
     dispatch.finished_at = Some(dispatch.updated_at);

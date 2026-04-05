@@ -30,7 +30,7 @@ use super::remote_agent_services::{
 };
 
 pub(crate) use self::guard::TaskDispatchStartGuard;
-use self::record_ext::TaskDispatchRecordExt;
+use self::record_ext::{first_follow_up_line, TaskDispatchRecordExt};
 
 mod guard;
 mod record_ext;
@@ -61,13 +61,26 @@ impl<'a> RemoteDispatchService<'a> {
         let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
         self.ensure_no_blocking_active_dispatch(task_id).await?;
         let preferred_tool = preferred_tool.unwrap_or(remote_agent.preferred_tool);
+        let dispatch_id = new_dispatch_id();
+        let branch_name = queued_dispatch_branch_name(&dispatch_id);
+        let worktree_path =
+            queued_dispatch_worktree_path(&remote_agent, &task.project, &dispatch_id);
 
         let dispatch_record = self
             .dispatch_repository
-            .create_dispatch(&task, &remote_agent.host, preferred_tool)?
-            .populated(&remote_agent, &task);
-        self.dispatch_repository
-            .save_dispatch(&dispatch_record)
+            .create_dispatch(
+                &task,
+                &dispatch_id,
+                &remote_agent.host,
+                preferred_tool,
+                &branch_name,
+                &worktree_path,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await?;
 
         Ok(dispatch_record)
@@ -123,22 +136,26 @@ impl<'a> RemoteDispatchService<'a> {
             .await?;
         let pull_request_url = latest_pull_request_for_branch(&dispatch_history, &branch_name)
             .or(previous_dispatch.pull_request_url.clone());
+        let dispatch_id = new_dispatch_id();
+        let summary = format!(
+            "Follow-up request: {}",
+            first_follow_up_line(trimmed_follow_up_request)
+        );
         let dispatch_record = self
             .dispatch_repository
             .create_dispatch(
                 &updated_task,
+                &dispatch_id,
                 &remote_agent.host,
                 previous_dispatch.preferred_tool,
-            )?
-            .populated_follow_up(
-                branch_name,
-                worktree_path,
-                pull_request_url,
-                trimmed_follow_up_request,
-                &previous_dispatch,
-            );
-        self.dispatch_repository
-            .save_dispatch(&dispatch_record)
+                &branch_name,
+                &worktree_path,
+                pull_request_url.as_deref(),
+                Some(trimmed_follow_up_request),
+                Some(summary.as_str()),
+                previous_dispatch.review_request_head_oid.as_deref(),
+                previous_dispatch.review_request_user.as_deref(),
+            )
             .await?;
 
         Ok(dispatch_record)
@@ -881,6 +898,27 @@ fn dispatch_not_found(task_id: &str, detail: &str) -> TrackError {
     TrackError::new(
         ErrorCode::DispatchNotFound,
         format!("Task {task_id} {detail}"),
+    )
+}
+
+fn new_dispatch_id() -> String {
+    format!("dispatch-{}", now_utc().unix_timestamp_nanos())
+}
+
+fn queued_dispatch_branch_name(dispatch_id: &str) -> String {
+    format!("track/{dispatch_id}")
+}
+
+fn queued_dispatch_worktree_path(
+    remote_agent: &RemoteAgentRuntimeConfig,
+    project: &str,
+    dispatch_id: &str,
+) -> String {
+    format!(
+        "{}/{}/worktrees/{}",
+        remote_agent.workspace_root.trim_end_matches('/'),
+        project,
+        dispatch_id
     )
 }
 

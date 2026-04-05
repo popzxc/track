@@ -644,12 +644,35 @@ impl<'a> RemoteReviewService<'a> {
         follow_up_request: Option<&str>,
         target_head_oid: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
+        let dispatch_id = new_review_dispatch_id();
+        let branch_name = queued_review_branch_name(&dispatch_id);
+        let worktree_path =
+            queued_review_worktree_path(remote_agent, &review.workspace_key, &dispatch_id);
+        let follow_up_request = follow_up_request
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let target_head_oid = target_head_oid
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let summary = follow_up_request.map(|follow_up_request| {
+            format!(
+                "Re-review request: {}",
+                first_follow_up_line(follow_up_request)
+            )
+        });
         let dispatch_record = self
             .review_dispatch_repository
-            .create_dispatch(review, &remote_agent.host, review.preferred_tool)?
-            .populated(remote_agent, review, follow_up_request, target_head_oid);
-        self.review_dispatch_repository
-            .save_dispatch(&dispatch_record)
+            .create_dispatch(
+                review,
+                &dispatch_id,
+                &remote_agent.host,
+                review.preferred_tool,
+                &branch_name,
+                &worktree_path,
+                follow_up_request,
+                target_head_oid,
+                summary.as_deref(),
+            )
             .await?;
 
         Ok(dispatch_record)
@@ -903,13 +926,6 @@ impl<'a> RemoteReviewService<'a> {
 // methods makes the service read in terms of review-state changes instead of
 // field-by-field mutation.
 trait ReviewRunRecordExt {
-    fn populated(
-        self,
-        remote_agent: &RemoteAgentRuntimeConfig,
-        review: &ReviewRecord,
-        follow_up_request: Option<&str>,
-        target_head_oid: Option<&str>,
-    ) -> Self;
     fn into_preparing(self, summary: &str) -> Self;
     fn into_running(self) -> Self;
     fn into_failed(self, error_message: String) -> Self;
@@ -923,39 +939,6 @@ trait ReviewRunRecordExt {
 }
 
 impl ReviewRunRecordExt for ReviewRunRecord {
-    fn populated(
-        mut self,
-        remote_agent: &RemoteAgentRuntimeConfig,
-        review: &ReviewRecord,
-        follow_up_request: Option<&str>,
-        target_head_oid: Option<&str>,
-    ) -> Self {
-        self.branch_name = Some(format!("track-review/{}", self.dispatch_id));
-        self.worktree_path = Some(format!(
-            "{}/{}/{}/{}",
-            remote_agent.workspace_root.trim_end_matches('/'),
-            review.workspace_key,
-            REVIEW_WORKTREE_DIRECTORY_NAME,
-            self.dispatch_id
-        ));
-        self.follow_up_request = follow_up_request
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned);
-        self.target_head_oid = target_head_oid
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned);
-        if let Some(follow_up_request) = self.follow_up_request.as_deref() {
-            self.summary = Some(format!(
-                "Re-review request: {}",
-                first_follow_up_line(follow_up_request)
-            ));
-        }
-        self.updated_at = now_utc();
-        self
-    }
-
     fn into_preparing(mut self, summary: &str) -> Self {
         self.status = DispatchStatus::Preparing;
         self.summary = Some(summary.to_owned());
@@ -1001,6 +984,28 @@ impl ReviewRunRecordExt for ReviewRunRecord {
         self.error_message = error_message.map(ToOwned::to_owned);
         self
     }
+}
+
+fn new_review_dispatch_id() -> String {
+    format!("dispatch-{}", now_utc().unix_timestamp_nanos())
+}
+
+fn queued_review_branch_name(dispatch_id: &str) -> String {
+    format!("track-review/{dispatch_id}")
+}
+
+fn queued_review_worktree_path(
+    remote_agent: &RemoteAgentRuntimeConfig,
+    workspace_key: &str,
+    dispatch_id: &str,
+) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        remote_agent.workspace_root.trim_end_matches('/'),
+        workspace_key,
+        REVIEW_WORKTREE_DIRECTORY_NAME,
+        dispatch_id
+    )
 }
 
 fn review_dispatch_not_found<'a>(
