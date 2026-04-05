@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
-use track_types::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
-use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
+use track_types::time_utils::format_iso_8601_millis;
+use track_types::types::ReviewRecord;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
@@ -121,7 +121,7 @@ impl ReviewRepository {
         .await
         .database_error_with("Could not list reviews from SQLite")?;
 
-        rows.into_iter().map(review_from_record).collect()
+        rows.into_iter().map(ReviewRecord::try_from).collect()
     }
 
     pub async fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
@@ -168,7 +168,7 @@ impl ReviewRepository {
             )
         })?;
 
-        review_from_record(row)
+        ReviewRecord::try_from(row)
     }
 
     pub async fn delete_review(&self, id: &str) -> Result<(), TrackError> {
@@ -187,51 +187,6 @@ impl ReviewRepository {
 
         Ok(())
     }
-}
-
-fn review_from_record(record: records::ReviewRow) -> Result<ReviewRecord, TrackError> {
-    let id = record.id;
-    // TODO: Doesn't sqlite support native time format?
-    let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Review {id} has an invalid created_at timestamp: {error}"),
-        )
-    })?;
-    let updated_at = parse_iso_8601_millis(&record.updated_at).map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Review {id} has an invalid updated_at timestamp: {error}"),
-        )
-    })?;
-
-    Ok(ReviewRecord {
-        id,
-        pull_request_url: record.pull_request_url,
-        pull_request_number: record.pull_request_number as u64,
-        pull_request_title: record.pull_request_title,
-        repository_full_name: record.repository_full_name,
-        repo_url: record.repo_url,
-        git_url: record.git_url,
-        base_branch: record.base_branch,
-        workspace_key: record.workspace_key,
-        preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
-        project: record.project,
-        main_user: record.main_user,
-        default_review_prompt: record.default_review_prompt,
-        extra_instructions: record.extra_instructions,
-        created_at,
-        updated_at,
-    })
-}
-
-fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackError> {
-    RemoteAgentPreferredTool::from_str(value).ok_or_else(|| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Remote agent preferred tool `{value}` is not valid."),
-        )
-    })
 }
 
 #[cfg(test)]

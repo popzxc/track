@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
-use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
+use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDispatchRecord};
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
@@ -200,7 +200,7 @@ impl DispatchRepository {
             "Could not load dispatch history for task {task_id}"
         ))?;
 
-        rows.into_iter().map(task_dispatch_from_record).collect()
+        rows.into_iter().map(TaskDispatchRecord::try_from).collect()
     }
 
     pub async fn latest_dispatches_for_tasks(
@@ -286,7 +286,7 @@ impl DispatchRepository {
         }
         .database_error_with("Could not list dispatch records")?;
 
-        rows.into_iter().map(task_dispatch_from_record).collect()
+        rows.into_iter().map(TaskDispatchRecord::try_from).collect()
     }
 
     pub async fn task_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
@@ -359,7 +359,7 @@ impl DispatchRepository {
             "Could not load the dispatch record {dispatch_id} for task {task_id}"
         ))?;
 
-        row.map(task_dispatch_from_record).transpose()
+        row.map(TaskDispatchRecord::try_from).transpose()
     }
 
     pub async fn delete_dispatch_history_for_task(&self, task_id: &str) -> Result<(), TrackError> {
@@ -383,79 +383,6 @@ impl DispatchRepository {
 
         Ok(())
     }
-}
-
-fn task_dispatch_from_record(
-    record: records::TaskDispatchRow,
-) -> Result<TaskDispatchRecord, TrackError> {
-    let dispatch_id = record.dispatch_id;
-    let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
-        TrackError::new(
-            ErrorCode::DispatchWriteFailed,
-            format!("Dispatch {dispatch_id} has an invalid created_at timestamp: {error}"),
-        )
-    })?;
-    let updated_at = parse_iso_8601_millis(&record.updated_at).map_err(|error| {
-        TrackError::new(
-            ErrorCode::DispatchWriteFailed,
-            format!("Dispatch {dispatch_id} has an invalid updated_at timestamp: {error}"),
-        )
-    })?;
-    let finished_at = record
-        .finished_at
-        .map(|value| parse_iso_8601_millis(&value))
-        .transpose()
-        .map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!("Dispatch {dispatch_id} has an invalid finished_at timestamp: {error}"),
-            )
-        })?;
-
-    Ok(TaskDispatchRecord {
-        dispatch_id,
-        task_id: record.task_id,
-        preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
-        project: record.project,
-        status: parse_dispatch_status(record.status.as_str())?,
-        created_at,
-        updated_at,
-        finished_at,
-        remote_host: record.remote_host,
-        branch_name: record.branch_name,
-        worktree_path: record.worktree_path,
-        pull_request_url: record.pull_request_url,
-        follow_up_request: record.follow_up_request,
-        summary: record.summary,
-        notes: record.notes,
-        error_message: record.error_message,
-        review_request_head_oid: record.review_request_head_oid,
-        review_request_user: record.review_request_user,
-    })
-}
-
-fn parse_dispatch_status(value: &str) -> Result<DispatchStatus, TrackError> {
-    match value {
-        "preparing" => Ok(DispatchStatus::Preparing),
-        "running" => Ok(DispatchStatus::Running),
-        "succeeded" => Ok(DispatchStatus::Succeeded),
-        "canceled" => Ok(DispatchStatus::Canceled),
-        "failed" => Ok(DispatchStatus::Failed),
-        "blocked" => Ok(DispatchStatus::Blocked),
-        _ => Err(TrackError::new(
-            ErrorCode::DispatchWriteFailed,
-            format!("Dispatch status `{value}` is not valid."),
-        )),
-    }
-}
-
-fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackError> {
-    RemoteAgentPreferredTool::from_str(value).ok_or_else(|| {
-        TrackError::new(
-            ErrorCode::DispatchWriteFailed,
-            format!("Remote agent preferred tool `{value}` is not valid."),
-        )
-    })
 }
 
 #[cfg(test)]

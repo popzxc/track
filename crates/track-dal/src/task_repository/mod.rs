@@ -5,10 +5,8 @@ use std::path::PathBuf;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::path_component::validate_single_normal_path_component;
 use track_types::task_id::build_unique_task_id;
-use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_millis};
-use track_types::types::{
-    Priority, Status, StoredTask, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
-};
+use track_types::time_utils::{format_iso_8601_millis, now_utc};
+use track_types::types::{Status, StoredTask, Task, TaskCreateInput, TaskSource, TaskUpdateInput};
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
@@ -192,7 +190,7 @@ impl FileTaskRepository {
         }
         .database_error_with("Could not list tasks from SQLite")?;
 
-        rows.into_iter().map(task_from_record).collect()
+        rows.into_iter().map(Task::try_from).collect()
     }
 
     pub async fn get_task(&self, id: &str) -> Result<Task, TrackError> {
@@ -349,83 +347,15 @@ impl FileTaskRepository {
         })?;
 
         Ok(StoredTask {
-            task: task_from_record(row)?,
+            task: Task::try_from(row)?,
         })
     }
-}
-
-fn task_from_record(record: records::TaskRow) -> Result<Task, TrackError> {
-    let id = record.id;
-    let priority = parse_priority(record.priority.as_str())?;
-    let status = parse_status(record.status.as_str())?;
-    let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Task {id} has an invalid created_at timestamp: {error}"),
-        )
-    })?;
-    let updated_at = parse_iso_8601_millis(&record.updated_at).map_err(|error| {
-        TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Task {id} has an invalid updated_at timestamp: {error}"),
-        )
-    })?;
-    let source = record
-        .source
-        .as_deref()
-        .map(parse_task_source)
-        .transpose()?;
-
-    Ok(Task {
-        id,
-        project: record.project,
-        priority,
-        status,
-        description: record.description,
-        created_at,
-        updated_at,
-        source,
-    })
 }
 
 fn task_source_as_str(source: TaskSource) -> &'static str {
     match source {
         TaskSource::Cli => "cli",
         TaskSource::Web => "web",
-    }
-}
-
-fn parse_priority(value: &str) -> Result<Priority, TrackError> {
-    match value {
-        "high" => Ok(Priority::High),
-        "medium" => Ok(Priority::Medium),
-        "low" => Ok(Priority::Low),
-        _ => Err(TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Task priority `{value}` is not valid."),
-        )),
-    }
-}
-
-fn parse_status(value: &str) -> Result<Status, TrackError> {
-    match value {
-        "open" => Ok(Status::Open),
-        "closed" => Ok(Status::Closed),
-        _ => Err(TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Task status `{value}` is not valid."),
-        )),
-    }
-}
-
-fn parse_task_source(value: &str) -> Result<TaskSource, TrackError> {
-    match value {
-        "cli" => Ok(TaskSource::Cli),
-        "web" => Ok(TaskSource::Web),
-        _ => Err(TrackError::new(
-            ErrorCode::TaskWriteFailed,
-            format!("Task source `{value}` is not valid."),
-        )),
     }
 }
 
