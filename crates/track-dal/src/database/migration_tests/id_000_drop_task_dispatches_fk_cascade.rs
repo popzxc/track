@@ -51,8 +51,8 @@ impl TaskDispatchSnapshot {
     }
 }
 
-#[test]
-fn preserves_rows_and_values_when_task_dispatches_is_rebuilt_without_fk_cascade() {
+#[tokio::test]
+async fn preserves_rows_and_values_when_task_dispatches_is_rebuilt_without_fk_cascade() {
     let (_directory, database) = temporary_database();
 
     // First, recreate the exact table shape that production databases had
@@ -184,16 +184,19 @@ fn preserves_rows_and_values_when_task_dispatches_is_rebuilt_without_fk_cascade(
 
                 Ok(())
             })
-        })
+        }).await
         .expect("legacy state should be prepared");
 
-    database.initialize().expect("database should initialize");
+    database
+        .initialize()
+        .await
+        .expect("database should initialize");
 
     // Finally, assert both the schema change and the observable row contents.
     // This keeps the test focused on the migration contract: all rows survive,
     // and no column values slide into a neighbor during the table rebuild.
     assert_eq!(
-        load_task_dispatch_snapshots(&database),
+        load_task_dispatch_snapshots(&database).await,
         vec![
             TaskDispatchSnapshot {
                 dispatch_id: "dispatch-1".to_owned(),
@@ -244,13 +247,14 @@ fn preserves_rows_and_values_when_task_dispatches_is_rebuilt_without_fk_cascade(
     );
     assert!(
         !load_task_dispatch_schema_sql(&database)
+            .await
             .to_uppercase()
             .contains("ON DELETE CASCADE"),
         "task_dispatches should no longer use ON DELETE CASCADE",
     );
 }
 
-fn load_task_dispatch_snapshots(database: &DatabaseContext) -> Vec<TaskDispatchSnapshot> {
+async fn load_task_dispatch_snapshots(database: &DatabaseContext) -> Vec<TaskDispatchSnapshot> {
     database
         .run(|connection| {
             Box::pin(async move {
@@ -289,10 +293,11 @@ fn load_task_dispatch_snapshots(database: &DatabaseContext) -> Vec<TaskDispatchS
                     .collect())
             })
         })
+        .await
         .expect("migrated rows should be returned")
 }
 
-fn load_task_dispatch_schema_sql(database: &DatabaseContext) -> String {
+async fn load_task_dispatch_schema_sql(database: &DatabaseContext) -> String {
     database
         .run(|connection| {
             Box::pin(async move {
@@ -305,6 +310,6 @@ fn load_task_dispatch_schema_sql(database: &DatabaseContext) -> String {
 
                 Ok(row.get::<String, _>("sql"))
             })
-        })
+        }).await
         .expect("task_dispatches schema should be returned")
 }

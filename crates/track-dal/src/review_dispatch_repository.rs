@@ -14,9 +14,9 @@ pub struct ReviewDispatchRepository {
 }
 
 impl ReviewDispatchRepository {
-    pub fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
         let database = DatabaseContext::new(database_path)?;
-        database.initialize()?;
+        database.initialize().await?;
 
         Ok(Self { database })
     }
@@ -59,7 +59,7 @@ impl ReviewDispatchRepository {
         Ok(record)
     }
 
-    pub fn save_dispatch(&self, record: &ReviewRunRecord) -> Result<(), TrackError> {
+    pub async fn save_dispatch(&self, record: &ReviewRunRecord) -> Result<(), TrackError> {
         let record = record.clone();
         validate_single_normal_path_component(
             &record.review_id,
@@ -142,17 +142,21 @@ impl ReviewDispatchRepository {
 
                 Ok(())
             })
-        })
+        }).await
     }
 
-    pub fn latest_dispatch_for_review(
+    pub async fn latest_dispatch_for_review(
         &self,
         review_id: &str,
     ) -> Result<Option<ReviewRunRecord>, TrackError> {
-        Ok(self.dispatches_for_review(review_id)?.into_iter().next())
+        Ok(self
+            .dispatches_for_review(review_id)
+            .await?
+            .into_iter()
+            .next())
     }
 
-    pub fn dispatches_for_review(
+    pub async fn dispatches_for_review(
         &self,
         review_id: &str,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
@@ -162,101 +166,107 @@ impl ReviewDispatchRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = sqlx::query(
-                    r#"
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = sqlx::query(
+                        r#"
                     SELECT *
                     FROM review_runs
                     WHERE review_id = ?1
                     ORDER BY created_at DESC
                     "#,
-                )
-                .bind(&review_id)
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!("Could not load review runs for {review_id}: {error}"),
                     )
-                })?;
+                    .bind(&review_id)
+                    .fetch_all(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!("Could not load review runs for {review_id}: {error}"),
+                        )
+                    })?;
 
-                rows.into_iter().map(review_run_from_row).collect()
+                    rows.into_iter().map(review_run_from_row).collect()
+                })
             })
-        })
+            .await
     }
 
-    pub fn list_dispatches(
+    pub async fn list_dispatches(
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
         let limit = limit.map(|value| value as i64);
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = if let Some(limit) = limit {
-                    sqlx::query(
-                        r#"
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = if let Some(limit) = limit {
+                        sqlx::query(
+                            r#"
                         SELECT *
                         FROM review_runs
                         ORDER BY created_at DESC
                         LIMIT ?1
                         "#,
-                    )
-                    .bind(limit)
-                    .fetch_all(&mut *connection)
-                    .await
-                } else {
-                    sqlx::query(
-                        r#"
+                        )
+                        .bind(limit)
+                        .fetch_all(&mut *connection)
+                        .await
+                    } else {
+                        sqlx::query(
+                            r#"
                         SELECT *
                         FROM review_runs
                         ORDER BY created_at DESC
                         "#,
-                    )
-                    .fetch_all(&mut *connection)
-                    .await
-                }
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!("Could not list review run records: {error}"),
-                    )
-                })?;
+                        )
+                        .fetch_all(&mut *connection)
+                        .await
+                    }
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!("Could not list review run records: {error}"),
+                        )
+                    })?;
 
-                rows.into_iter().map(review_run_from_row).collect()
+                    rows.into_iter().map(review_run_from_row).collect()
+                })
             })
-        })
+            .await
     }
 
-    pub fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = sqlx::query(
-                    r#"
+    pub async fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = sqlx::query(
+                        r#"
                     SELECT DISTINCT review_id
                     FROM review_runs
                     ORDER BY review_id ASC
                     "#,
-                )
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!("Could not load review ids with run history: {error}"),
                     )
-                })?;
+                    .fetch_all(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!("Could not load review ids with run history: {error}"),
+                        )
+                    })?;
 
-                Ok(rows
-                    .into_iter()
-                    .map(|row| row.get::<String, _>("review_id"))
-                    .collect())
+                    Ok(rows
+                        .into_iter()
+                        .map(|row| row.get::<String, _>("review_id"))
+                        .collect())
+                })
             })
-        })
+            .await
     }
 
-    pub fn get_dispatch(
+    pub async fn get_dispatch(
         &self,
         review_id: &str,
         dispatch_id: &str,
@@ -296,10 +306,13 @@ impl ReviewDispatchRepository {
 
                 row.map(review_run_from_row).transpose()
             })
-        })
+        }).await
     }
 
-    pub fn delete_dispatch_history_for_review(&self, review_id: &str) -> Result<(), TrackError> {
+    pub async fn delete_dispatch_history_for_review(
+        &self,
+        review_id: &str,
+    ) -> Result<(), TrackError> {
         let review_id = validate_single_normal_path_component(
             review_id,
             "Review id",
@@ -323,7 +336,7 @@ impl ReviewDispatchRepository {
 
                 Ok(())
             })
-        })
+        }).await
     }
 }
 
@@ -416,14 +429,16 @@ mod tests {
     use super::ReviewDispatchRepository;
     use crate::review_repository::ReviewRepository;
 
-    #[test]
-    fn create_dispatch_keeps_new_review_run_in_memory_until_callers_save_launch_context() {
+    #[tokio::test]
+    async fn create_dispatch_keeps_new_review_run_in_memory_until_callers_save_launch_context() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let database_path = temp_dir.path().join("track.sqlite");
         let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .await
             .expect("repository should open");
-        let review_repository =
-            ReviewRepository::new(Some(database_path)).expect("review repository should open");
+        let review_repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should open");
 
         let timestamp = now_utc();
         let review = ReviewRecord {
@@ -446,6 +461,7 @@ mod tests {
         };
         review_repository
             .save_review(&review)
+            .await
             .expect("review should save");
 
         let mut record = repository
@@ -455,6 +471,7 @@ mod tests {
         assert!(
             repository
                 .latest_dispatch_for_review(&review.id)
+                .await
                 .expect("review dispatch lookup should succeed")
                 .is_none(),
             "a newly created review run should stay invisible until its launch context is saved",
@@ -467,10 +484,12 @@ mod tests {
         ));
         repository
             .save_dispatch(&record)
+            .await
             .expect("review run should save with launch context");
 
         let saved = repository
             .latest_dispatch_for_review(&review.id)
+            .await
             .expect("review dispatch lookup should succeed")
             .expect("saved review run should be visible");
 

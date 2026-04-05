@@ -121,6 +121,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             "/meta/server_version",
             get(routes::meta::get_server_version),
         )
+        // TODO: Migration should be no more more
         .route(
             "/migration/status",
             get(routes::migration::migration_status),

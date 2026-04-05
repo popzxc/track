@@ -13,33 +13,33 @@ pub fn build_task_slug(description: &str) -> String {
     }
 }
 
-pub fn build_unique_task_id<F>(
+// TODO: What the hell is this function (or rather 'was')
+pub fn build_unique_task_id(
     timestamp: time::OffsetDateTime,
     description: &str,
-    mut exists: F,
-) -> String
-where
-    F: FnMut(&str) -> bool,
-{
+    // mut exists: F,
+) -> String {
     let base_id = format!(
         "{}-{}",
         format_task_id_timestamp(timestamp),
         build_task_slug(description)
     );
 
-    if !exists(&base_id) {
-        return base_id;
-    }
+    base_id
 
-    let mut suffix = 2;
-    loop {
-        let candidate = format!("{base_id}-{suffix}");
-        if !exists(&candidate) {
-            return candidate;
-        }
+    // if !exists(&base_id) {
+    //     return base_id;
+    // }
 
-        suffix += 1;
-    }
+    // let mut suffix = 2;
+    // loop {
+    //     let candidate = format!("{base_id}-{suffix}");
+    //     if !exists(&candidate) {
+    //         return candidate;
+    //     }
+
+    //     suffix += 1;
+    // }
 }
 
 #[cfg(test)]
@@ -53,14 +53,14 @@ mod tests {
         assert_eq!(build_task_slug("!!!"), "task");
     }
 
-    #[test]
-    fn unique_id_appends_suffix_when_needed() {
-        let id = build_unique_task_id(
-            datetime!(2026-03-16 09:08:07 UTC),
-            "Fix issue",
-            |candidate| candidate == "20260316-090807-fix-issue",
-        );
+    // #[test]
+    // fn unique_id_appends_suffix_when_needed() {
+    //     let id = build_unique_task_id(
+    //         datetime!(2026-03-16 09:08:07 UTC),
+    //         "Fix issue",
+    //         |candidate| candidate == "20260316-090807-fix-issue",
+    //     );
 
-        assert_eq!(id, "20260316-090807-fix-issue-2");
-    }
+    //     assert_eq!(id, "20260316-090807-fix-issue-2");
+    // }
 }

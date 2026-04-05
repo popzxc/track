@@ -164,7 +164,7 @@ impl DatabaseContext {
         &self.database_path
     }
 
-    pub fn initialize(&self) -> Result<(), TrackError> {
+    pub async fn initialize(&self) -> Result<(), TrackError> {
         self.run(|connection| {
             Box::pin(async move {
                 for statement in SCHEMA_STATEMENTS {
@@ -185,9 +185,10 @@ impl DatabaseContext {
                 Ok(())
             })
         })
+        .await
     }
 
-    pub fn run<T>(
+    pub async fn run<T>(
         &self,
         operation: impl for<'a> FnOnce(&'a mut SqliteConnection) -> BoxDbFuture<'a, T> + Send + 'static,
     ) -> Result<T, TrackError>
@@ -197,23 +198,22 @@ impl DatabaseContext {
         let connect_options = self.connect_options()?;
         let database_path = self.database_path.clone();
 
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return std::thread::spawn(move || {
-                run_database_operation(connect_options, database_path, operation)
-            })
-            .join()
-            .map_err(|_| {
+        let mut connection = SqliteConnection::connect_with(&connect_options)
+            .await
+            .map_err(|error| {
                 TrackError::new(
                     ErrorCode::TaskWriteFailed,
-                    "The SQLite worker thread panicked.",
+                    format!(
+                        "Could not open the SQLite database at {}: {error}",
+                        path_to_string(&database_path)
+                    ),
                 )
             })?;
-        }
 
-        run_database_operation(connect_options, database_path, operation)
+        operation(&mut connection).await
     }
 
-    pub fn transaction<T>(
+    pub async fn transaction<T>(
         &self,
         operation: impl for<'a> FnOnce(&'a mut SqliteConnection) -> BoxDbFuture<'a, T> + Send + 'static,
     ) -> Result<T, TrackError>
@@ -246,6 +246,7 @@ impl DatabaseContext {
                 }
             })
         })
+        .await
     }
 
     fn connect_options(&self) -> Result<SqliteConnectOptions, TrackError> {

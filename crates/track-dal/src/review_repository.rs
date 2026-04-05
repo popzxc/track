@@ -14,9 +14,9 @@ pub struct ReviewRepository {
 }
 
 impl ReviewRepository {
-    pub fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
         let database = DatabaseContext::new(database_path)?;
-        database.initialize()?;
+        database.initialize().await?;
 
         Ok(Self { database })
     }
@@ -25,12 +25,13 @@ impl ReviewRepository {
         self.database.database_path()
     }
 
-    pub fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
+    pub async fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
         let review = review.clone();
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    r#"
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    sqlx::query(
+                        r#"
                     INSERT INTO reviews (
                         id, pull_request_url, pull_request_number, pull_request_title,
                         repository_full_name, repo_url, git_url, base_branch, workspace_key,
@@ -55,42 +56,44 @@ impl ReviewRepository {
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at
                     "#,
-                )
-                .bind(&review.id)
-                .bind(&review.pull_request_url)
-                .bind(review.pull_request_number as i64)
-                .bind(&review.pull_request_title)
-                .bind(&review.repository_full_name)
-                .bind(&review.repo_url)
-                .bind(&review.git_url)
-                .bind(&review.base_branch)
-                .bind(&review.workspace_key)
-                .bind(review.preferred_tool.as_str())
-                .bind(review.project.as_deref())
-                .bind(&review.main_user)
-                .bind(review.default_review_prompt.as_deref())
-                .bind(review.extra_instructions.as_deref())
-                .bind(format_iso_8601_millis(review.created_at))
-                .bind(format_iso_8601_millis(review.updated_at))
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not save review {}: {error}", review.id),
                     )
-                })?;
+                    .bind(&review.id)
+                    .bind(&review.pull_request_url)
+                    .bind(review.pull_request_number as i64)
+                    .bind(&review.pull_request_title)
+                    .bind(&review.repository_full_name)
+                    .bind(&review.repo_url)
+                    .bind(&review.git_url)
+                    .bind(&review.base_branch)
+                    .bind(&review.workspace_key)
+                    .bind(review.preferred_tool.as_str())
+                    .bind(review.project.as_deref())
+                    .bind(&review.main_user)
+                    .bind(review.default_review_prompt.as_deref())
+                    .bind(review.extra_instructions.as_deref())
+                    .bind(format_iso_8601_millis(review.created_at))
+                    .bind(format_iso_8601_millis(review.updated_at))
+                    .execute(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::TaskWriteFailed,
+                            format!("Could not save review {}: {error}", review.id),
+                        )
+                    })?;
 
-                Ok(())
+                    Ok(())
+                })
             })
-        })
+            .await
     }
 
-    pub fn list_reviews(&self) -> Result<Vec<ReviewRecord>, TrackError> {
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = sqlx::query(
-                    r#"
+    pub async fn list_reviews(&self) -> Result<Vec<ReviewRecord>, TrackError> {
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = sqlx::query(
+                        r#"
                     SELECT
                         id, pull_request_url, pull_request_number, pull_request_title,
                         repository_full_name, repo_url, git_url, base_branch, workspace_key,
@@ -99,32 +102,34 @@ impl ReviewRepository {
                     FROM reviews
                     ORDER BY updated_at DESC
                     "#,
-                )
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not list reviews from SQLite: {error}"),
                     )
-                })?;
+                    .fetch_all(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::TaskWriteFailed,
+                            format!("Could not list reviews from SQLite: {error}"),
+                        )
+                    })?;
 
-                rows.into_iter().map(review_from_row).collect()
+                    rows.into_iter().map(review_from_row).collect()
+                })
             })
-        })
+            .await
     }
 
-    pub fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
+    pub async fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
         let review_id = validate_single_normal_path_component(
             id,
             "Review id",
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let row = sqlx::query(
-                    r#"
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let row = sqlx::query(
+                        r#"
                     SELECT
                         id, pull_request_url, pull_request_number, pull_request_title,
                         repository_full_name, repo_url, git_url, base_branch, workspace_key,
@@ -133,51 +138,54 @@ impl ReviewRepository {
                     FROM reviews
                     WHERE id = ?1
                     "#,
-                )
-                .bind(&review_id)
-                .fetch_optional(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::TaskWriteFailed,
-                        format!("Could not load review {review_id}: {error}"),
                     )
-                })?
-                .ok_or_else(|| {
-                    TrackError::new(
-                        ErrorCode::TaskNotFound,
-                        format!("Review {review_id} was not found."),
-                    )
-                })?;
+                    .bind(&review_id)
+                    .fetch_optional(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::TaskWriteFailed,
+                            format!("Could not load review {review_id}: {error}"),
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        TrackError::new(
+                            ErrorCode::TaskNotFound,
+                            format!("Review {review_id} was not found."),
+                        )
+                    })?;
 
-                review_from_row(row)
+                    review_from_row(row)
+                })
             })
-        })
+            .await
     }
 
-    pub fn delete_review(&self, id: &str) -> Result<(), TrackError> {
+    pub async fn delete_review(&self, id: &str) -> Result<(), TrackError> {
         let review_id = validate_single_normal_path_component(
             id,
             "Review id",
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query("DELETE FROM reviews WHERE id = ?1")
-                    .bind(&review_id)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::TaskWriteFailed,
-                            format!("Could not delete review {review_id}: {error}"),
-                        )
-                    })?;
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    sqlx::query("DELETE FROM reviews WHERE id = ?1")
+                        .bind(&review_id)
+                        .execute(&mut *connection)
+                        .await
+                        .map_err(|error| {
+                            TrackError::new(
+                                ErrorCode::TaskWriteFailed,
+                                format!("Could not delete review {review_id}: {error}"),
+                            )
+                        })?;
 
-                Ok(())
+                    Ok(())
+                })
             })
-        })
+            .await
     }
 }
 

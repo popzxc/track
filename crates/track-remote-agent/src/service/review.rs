@@ -68,15 +68,30 @@ impl<'a> RemoteReviewService<'a> {
             .map(|project| project.canonical_name.clone())
             .unwrap_or_else(|| pull_request_metadata.workspace_key());
         let review_timestamp = now_utc();
-        let review_id = build_unique_task_id(
+        let mut review_id = build_unique_task_id(
             review_timestamp,
             &format!(
                 "review {} pr {}",
                 pull_request_metadata.repository_full_name,
                 pull_request_metadata.pull_request_number
             ),
-            |candidate| self.review_repository.get_review(candidate).is_ok(),
+            // |candidate| self.review_repository.get_review(candidate).is_ok(),
         );
+
+        // TODO: Do we need that?
+        if self.review_repository.get_review(&review_id).await.is_ok() {
+            let mut suffix = 2;
+            loop {
+                let candidate = format!("{review_id}-{suffix}");
+                // TODO: Why the hell we `unwrap_or(false)` here?
+                if !self.review_repository.get_review(&candidate).await.is_ok() {
+                    review_id = candidate;
+                    break;
+                }
+                suffix += 1;
+            }
+        }
+
         let review = ReviewRecord {
             id: review_id,
             pull_request_url: pull_request_metadata.pull_request_url,

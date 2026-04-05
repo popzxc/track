@@ -14,9 +14,9 @@ pub struct DispatchRepository {
 }
 
 impl DispatchRepository {
-    pub fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+    pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
         let database = DatabaseContext::new(database_path)?;
-        database.initialize()?;
+        database.initialize().await?;
 
         Ok(Self { database })
     }
@@ -56,7 +56,7 @@ impl DispatchRepository {
         Ok(record)
     }
 
-    pub fn save_dispatch(&self, record: &TaskDispatchRecord) -> Result<(), TrackError> {
+    pub async fn save_dispatch(&self, record: &TaskDispatchRecord) -> Result<(), TrackError> {
         let record = record.clone();
         validate_single_normal_path_component(
             &record.dispatch_id,
@@ -132,17 +132,17 @@ impl DispatchRepository {
 
                 Ok(())
             })
-        })
+        }).await
     }
 
-    pub fn latest_dispatch_for_task(
+    pub async fn latest_dispatch_for_task(
         &self,
         task_id: &str,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
-        Ok(self.dispatches_for_task(task_id)?.into_iter().next())
+        Ok(self.dispatches_for_task(task_id).await?.into_iter().next())
     }
 
-    pub fn dispatches_for_task(
+    pub async fn dispatches_for_task(
         &self,
         task_id: &str,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
@@ -152,38 +152,40 @@ impl DispatchRepository {
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = sqlx::query(
-                    r#"
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = sqlx::query(
+                        r#"
                     SELECT *
                     FROM task_dispatches
                     WHERE task_id = ?1
                     ORDER BY created_at DESC
                     "#,
-                )
-                .bind(&task_id)
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!("Could not load dispatch history for task {task_id}: {error}"),
                     )
-                })?;
+                    .bind(&task_id)
+                    .fetch_all(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!("Could not load dispatch history for task {task_id}: {error}"),
+                        )
+                    })?;
 
-                rows.into_iter().map(task_dispatch_from_row).collect()
+                    rows.into_iter().map(task_dispatch_from_row).collect()
+                })
             })
-        })
+            .await
     }
 
-    pub fn latest_dispatches_for_tasks(
+    pub async fn latest_dispatches_for_tasks(
         &self,
         task_ids: &[String],
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let mut records = Vec::new();
         for task_id in task_ids {
-            if let Some(record) = self.latest_dispatch_for_task(task_id)? {
+            if let Some(record) = self.latest_dispatch_for_task(task_id).await? {
                 records.push(record);
             }
         }
@@ -191,76 +193,80 @@ impl DispatchRepository {
         Ok(records)
     }
 
-    pub fn list_dispatches(
+    pub async fn list_dispatches(
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let limit = limit.map(|value| value as i64);
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = if let Some(limit) = limit {
-                    sqlx::query(
-                        r#"
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = if let Some(limit) = limit {
+                        sqlx::query(
+                            r#"
                         SELECT *
                         FROM task_dispatches
                         ORDER BY created_at DESC
                         LIMIT ?1
                         "#,
-                    )
-                    .bind(limit)
-                    .fetch_all(&mut *connection)
-                    .await
-                } else {
-                    sqlx::query(
-                        r#"
+                        )
+                        .bind(limit)
+                        .fetch_all(&mut *connection)
+                        .await
+                    } else {
+                        sqlx::query(
+                            r#"
                         SELECT *
                         FROM task_dispatches
                         ORDER BY created_at DESC
                         "#,
-                    )
-                    .fetch_all(&mut *connection)
-                    .await
-                }
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!("Could not list dispatch records: {error}"),
-                    )
-                })?;
+                        )
+                        .fetch_all(&mut *connection)
+                        .await
+                    }
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!("Could not list dispatch records: {error}"),
+                        )
+                    })?;
 
-                rows.into_iter().map(task_dispatch_from_row).collect()
+                    rows.into_iter().map(task_dispatch_from_row).collect()
+                })
             })
-        })
+            .await
     }
 
-    pub fn task_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                let rows = sqlx::query(
-                    r#"
+    pub async fn task_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    let rows = sqlx::query(
+                        r#"
                     SELECT DISTINCT task_id
                     FROM task_dispatches
                     ORDER BY task_id ASC
                     "#,
-                )
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|error| {
-                    TrackError::new(
-                        ErrorCode::DispatchWriteFailed,
-                        format!("Could not load task ids with dispatch history: {error}"),
                     )
-                })?;
+                    .fetch_all(&mut *connection)
+                    .await
+                    .map_err(|error| {
+                        TrackError::new(
+                            ErrorCode::DispatchWriteFailed,
+                            format!("Could not load task ids with dispatch history: {error}"),
+                        )
+                    })?;
 
-                Ok(rows
-                    .into_iter()
-                    .map(|row| row.get::<String, _>("task_id"))
-                    .collect())
+                    Ok(rows
+                        .into_iter()
+                        .map(|row| row.get::<String, _>("task_id"))
+                        .collect())
+                })
             })
-        })
+            .await
     }
 
-    pub fn get_dispatch(
+    pub async fn get_dispatch(
         &self,
         task_id: &str,
         dispatch_id: &str,
@@ -300,34 +306,36 @@ impl DispatchRepository {
 
                 row.map(task_dispatch_from_row).transpose()
             })
-        })
+        }).await
     }
 
-    pub fn delete_dispatch_history_for_task(&self, task_id: &str) -> Result<(), TrackError> {
+    pub async fn delete_dispatch_history_for_task(&self, task_id: &str) -> Result<(), TrackError> {
         let task_id = validate_single_normal_path_component(
             task_id,
             "Task id",
             ErrorCode::InvalidPathComponent,
         )?;
 
-        self.database.run(move |connection| {
-            Box::pin(async move {
-                sqlx::query("DELETE FROM task_dispatches WHERE task_id = ?1")
-                    .bind(&task_id)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|error| {
-                        TrackError::new(
-                            ErrorCode::DispatchWriteFailed,
-                            format!(
+        self.database
+            .run(move |connection| {
+                Box::pin(async move {
+                    sqlx::query("DELETE FROM task_dispatches WHERE task_id = ?1")
+                        .bind(&task_id)
+                        .execute(&mut *connection)
+                        .await
+                        .map_err(|error| {
+                            TrackError::new(
+                                ErrorCode::DispatchWriteFailed,
+                                format!(
                                 "Could not remove the dispatch history for task {task_id}: {error}"
                             ),
-                        )
-                    })?;
+                            )
+                        })?;
 
-                Ok(())
+                    Ok(())
+                })
             })
-        })
+            .await
     }
 }
 
@@ -417,17 +425,21 @@ mod tests {
     use super::DispatchRepository;
     use crate::database::DatabaseContext;
 
-    #[test]
-    fn create_dispatch_keeps_new_record_in_memory_until_callers_save_launch_context() {
+    #[tokio::test]
+    async fn create_dispatch_keeps_new_record_in_memory_until_callers_save_launch_context() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let database_path = temp_dir.path().join("track.sqlite");
-        let repository =
-            DispatchRepository::new(Some(database_path.clone())).expect("repository should open");
+        let repository = DispatchRepository::new(Some(database_path.clone()))
+            .await
+            .expect("repository should open");
 
         // The repository initializes its own schema, but we still need the
         // tasks table available so the test mirrors the real persisted shape.
-        DatabaseContext::new(Some(database_path))
-            .and_then(|database| database.initialize())
+        // TODO: doesn't new calls initialize???
+        let database = DatabaseContext::new(Some(database_path)).unwrap();
+        database
+            .initialize()
+            .await
             .expect("database schema should initialize");
 
         let timestamp = now_utc();
@@ -453,6 +465,7 @@ mod tests {
         assert!(
             repository
                 .latest_dispatch_for_task(&task.id)
+                .await
                 .expect("dispatch lookup should succeed")
                 .is_none(),
             "a newly created dispatch should stay invisible until its launch context is saved",
@@ -465,10 +478,12 @@ mod tests {
         ));
         repository
             .save_dispatch(&record)
+            .await
             .expect("dispatch should save with launch context");
 
         let saved = repository
             .latest_dispatch_for_task(&task.id)
+            .await
             .expect("dispatch lookup should succeed")
             .expect("saved dispatch should be visible");
 
