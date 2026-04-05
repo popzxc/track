@@ -2,6 +2,7 @@ use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use track_types::ids::{ProjectId, TaskId};
 use track_types::task_sort::sort_tasks;
 use track_types::time_utils::now_utc;
 use track_types::types::{
@@ -16,7 +17,7 @@ use crate::AppState;
 pub(crate) struct TaskListQuery {
     #[serde(rename = "includeClosed")]
     include_closed: Option<bool>,
-    project: Option<String>,
+    project: Option<ProjectId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,7 +50,7 @@ pub(crate) async fn list_tasks(
         .task_repository()
         .list_tasks(
             query.include_closed.unwrap_or(false),
-            query.project.as_deref(),
+            query.project.as_ref(),
         )
         .await
         .map_err(ApiError::from_track_error)?;
@@ -61,7 +62,7 @@ pub(crate) async fn list_tasks(
 
 pub(crate) async fn list_task_runs(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<super::runs::RunsResponse>, ApiError> {
     let task = state
         .database
@@ -120,7 +121,7 @@ pub(crate) async fn create_task(
 
 pub(crate) async fn patch_task(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
     body: Bytes,
 ) -> Result<Json<Task>, ApiError> {
     let input = serde_json::from_slice::<TaskUpdateInput>(&body)
@@ -140,7 +141,7 @@ pub(crate) async fn patch_task(
 
 pub(crate) async fn delete_task(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
     state
         .remote_agent_services()
@@ -155,7 +156,7 @@ pub(crate) async fn delete_task(
 
 pub(crate) async fn dispatch_task(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
     body: Bytes,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
     let input = if body.is_empty() {
@@ -179,7 +180,7 @@ pub(crate) async fn dispatch_task(
 
 pub(crate) async fn follow_up_task(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
     body: Bytes,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
@@ -200,7 +201,7 @@ pub(crate) async fn follow_up_task(
 
 pub(crate) async fn cancel_task_dispatch(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
     let canceled_dispatch = state
         .remote_agent_services()
@@ -214,7 +215,7 @@ pub(crate) async fn cancel_task_dispatch(
 
 pub(crate) async fn discard_task_dispatch(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
     state
         .remote_agent_services()

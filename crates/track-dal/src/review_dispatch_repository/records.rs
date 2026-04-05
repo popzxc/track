@@ -1,4 +1,5 @@
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::{DispatchId, ReviewId};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord};
 
@@ -58,8 +59,8 @@ impl TryFrom<ReviewRunRow> for ReviewRunRecord {
             })?;
 
         Ok(ReviewRunRecord {
-            dispatch_id,
-            review_id: record.review_id,
+            dispatch_id: DispatchId::from_db(dispatch_id),
+            review_id: ReviewId::from_db(record.review_id),
             pull_request_url: record.pull_request_url,
             repository_full_name: record.repository_full_name,
             workspace_key: record.workspace_key,

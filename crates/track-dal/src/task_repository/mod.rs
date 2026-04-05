@@ -1,8 +1,7 @@
 mod records;
 
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::path_component::validate_single_normal_path_component;
-use track_types::task_id::build_unique_task_id;
+use track_types::ids::{ProjectId, TaskId};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{Status, StoredTask, Task, TaskCreateInput, TaskSource, TaskUpdateInput};
 
@@ -24,13 +23,14 @@ impl<'a> FileTaskRepository<'a> {
 
         let timestamp = now_utc();
         let slug_source = first_non_empty_line(&input.description).unwrap_or(&input.description);
-        let mut id = build_unique_task_id(timestamp, slug_source);
+        let mut id = TaskId::unique(timestamp, slug_source);
 
         // TODO: Do we need that?
         if self.task_exists(&id).await.unwrap_or(false) {
             let mut suffix = 2;
             loop {
-                let candidate = format!("{id}-{suffix}");
+                let candidate = TaskId::new(format!("{id}-{suffix}"))
+                    .expect("generated task ids should be valid path components");
                 // TODO: Why the hell we `unwrap_or(false)` here?
                 if !self.task_exists(&candidate).await.unwrap_or(false) {
                     id = candidate;
@@ -125,21 +125,13 @@ impl<'a> FileTaskRepository<'a> {
     pub async fn list_tasks(
         &self,
         include_closed: bool,
-        project: Option<&str>,
+        project: Option<&ProjectId>,
     ) -> Result<Vec<Task>, TrackError> {
-        let project = project
-            .map(|project| {
-                validate_single_normal_path_component(
-                    project,
-                    "Task project",
-                    ErrorCode::InvalidPathComponent,
-                )
-            })
-            .transpose()?;
         let include_closed_flag = include_closed as i64;
 
         let mut connection = self.database.connect().await?;
         let rows = if let Some(project) = project {
+            let project_ref = project.as_str();
             sqlx::query_as!(
                 records::TaskRow,
                 r#"
@@ -156,7 +148,7 @@ impl<'a> FileTaskRepository<'a> {
                 WHERE project = ?1 AND (?2 = 1 OR status = 'open')
                 ORDER BY created_at DESC
                 "#,
-                project,
+                project_ref,
                 include_closed_flag,
             )
             .fetch_all(&mut *connection)
@@ -188,11 +180,15 @@ impl<'a> FileTaskRepository<'a> {
         rows.into_iter().map(Task::try_from).collect()
     }
 
-    pub async fn get_task(&self, id: &str) -> Result<Task, TrackError> {
+    pub async fn get_task(&self, id: &TaskId) -> Result<Task, TrackError> {
         Ok(self.find_task_by_id(id).await?.task)
     }
 
-    pub async fn update_task(&self, id: &str, input: TaskUpdateInput) -> Result<Task, TrackError> {
+    pub async fn update_task(
+        &self,
+        id: &TaskId,
+        input: TaskUpdateInput,
+    ) -> Result<Task, TrackError> {
         let validated_input = input.validate()?;
         let existing_record = self.find_task_by_id(id).await?;
         let next_status = validated_input
@@ -237,7 +233,7 @@ impl<'a> FileTaskRepository<'a> {
         Ok(updated_task)
     }
 
-    pub async fn delete_task(&self, id: &str) -> Result<(), TrackError> {
+    pub async fn delete_task(&self, id: &TaskId) -> Result<(), TrackError> {
         let existing = self.find_task_by_id(id).await?;
         let task_id = existing.task.id;
 
@@ -251,14 +247,8 @@ impl<'a> FileTaskRepository<'a> {
         Ok(())
     }
 
-    async fn ensure_project_exists(&self, project: &str) -> Result<(), TrackError> {
-        let project = validate_single_normal_path_component(
-            project,
-            "Task project",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
-        let missing_project_name = project.clone();
+    async fn ensure_project_exists(&self, project: &ProjectId) -> Result<(), TrackError> {
+        let missing_project_name = project.to_string();
         let mut connection = self.database.connect().await?;
         let project_ref = project.as_str();
         let exists = sqlx::query_scalar!(
@@ -286,11 +276,9 @@ impl<'a> FileTaskRepository<'a> {
         }
     }
 
-    async fn task_exists(&self, id: &str) -> Result<bool, TrackError> {
-        let task_id =
-            validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
+    async fn task_exists(&self, id: &TaskId) -> Result<bool, TrackError> {
+        let task_id = id.as_str();
         let mut connection = self.database.connect().await?;
-        let task_id_ref = task_id.as_str();
         let exists = sqlx::query_scalar!(
             r#"
             SELECT EXISTS(
@@ -299,7 +287,7 @@ impl<'a> FileTaskRepository<'a> {
                 WHERE id = ?1
             ) AS "exists!: i64"
             "#,
-            task_id_ref,
+            task_id,
         )
         .fetch_one(&mut *connection)
         .await
@@ -309,11 +297,9 @@ impl<'a> FileTaskRepository<'a> {
         Ok(exists)
     }
 
-    async fn find_task_by_id(&self, id: &str) -> Result<StoredTask, TrackError> {
-        let task_id =
-            validate_single_normal_path_component(id, "Task id", ErrorCode::InvalidPathComponent)?;
+    async fn find_task_by_id(&self, id: &TaskId) -> Result<StoredTask, TrackError> {
+        let task_id = id.as_str();
         let mut connection = self.database.connect().await?;
-        let task_id_ref = task_id.as_str();
         let row = sqlx::query_as!(
             records::TaskRow,
             r#"
@@ -329,7 +315,7 @@ impl<'a> FileTaskRepository<'a> {
             FROM tasks
             WHERE id = ?1
             "#,
-            task_id_ref,
+            task_id,
         )
         .fetch_optional(&mut *connection)
         .await
@@ -373,7 +359,9 @@ mod tests {
     use track_types::types::{Priority, Status, TaskCreateInput, TaskSource, TaskUpdateInput};
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{project_metadata, sample_task, temporary_database_path};
+    use crate::test_support::{
+        parse_project_id, project_metadata, sample_task, temporary_database_path,
+    };
 
     async fn database_with_projects(projects: &[&str]) -> (TempDir, DatabaseContext) {
         let (directory, database_path) = temporary_database_path();
@@ -384,7 +372,11 @@ mod tests {
 
         for project in projects {
             project_repository
-                .upsert_project_by_name(project, project_metadata(project), Vec::new())
+                .upsert_project_by_name(
+                    &parse_project_id(project),
+                    project_metadata(project),
+                    Vec::new(),
+                )
                 .await
                 .expect("project should save");
         }
@@ -399,7 +391,7 @@ mod tests {
 
         let stored = repository
             .create_task(TaskCreateInput {
-                project: "project-a".to_owned(),
+                project: parse_project_id("project-a"),
                 priority: Priority::High,
                 description: "  First line\n\nMore context  ".to_owned(),
                 source: Some(TaskSource::Cli),
@@ -443,7 +435,7 @@ mod tests {
 
         let error = repository
             .create_task(TaskCreateInput {
-                project: "missing-project".to_owned(),
+                project: parse_project_id("missing-project"),
                 priority: Priority::Medium,
                 description: "Investigate missing project".to_owned(),
                 source: Some(TaskSource::Web),
@@ -562,7 +554,7 @@ mod tests {
         );
 
         let project_a_tasks = repository
-            .list_tasks(true, Some("project-a"))
+            .list_tasks(true, Some(&parse_project_id("project-a")))
             .await
             .expect("project task list should load");
         assert_eq!(

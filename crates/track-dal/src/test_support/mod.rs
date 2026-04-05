@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
@@ -32,6 +33,22 @@ pub(crate) fn project_metadata(name: &str) -> ProjectMetadata {
     }
 }
 
+pub(crate) fn parse_task_id(value: &str) -> TaskId {
+    TaskId::new(value).expect("fixture task ids should be valid")
+}
+
+pub(crate) fn parse_project_id(value: &str) -> ProjectId {
+    ProjectId::new(value).expect("fixture project ids should be valid")
+}
+
+pub(crate) fn parse_review_id(value: &str) -> ReviewId {
+    ReviewId::new(value).expect("fixture review ids should be valid")
+}
+
+pub(crate) fn parse_dispatch_id(value: &str) -> DispatchId {
+    DispatchId::new(value).expect("fixture dispatch ids should be valid")
+}
+
 pub(crate) fn sample_task(
     id: &str,
     project: &str,
@@ -43,8 +60,8 @@ pub(crate) fn sample_task(
     source: Option<TaskSource>,
 ) -> Task {
     Task {
-        id: id.to_owned(),
-        project: project.to_owned(),
+        id: parse_task_id(id),
+        project: parse_project_id(project),
         priority,
         status,
         description: description.to_owned(),
@@ -64,10 +81,10 @@ pub(crate) fn sample_dispatch(
     updated_at: &str,
 ) -> TaskDispatchRecord {
     TaskDispatchRecord {
-        dispatch_id: dispatch_id.to_owned(),
-        task_id: task_id.to_owned(),
+        dispatch_id: parse_dispatch_id(dispatch_id),
+        task_id: parse_task_id(task_id),
         preferred_tool,
-        project: project.to_owned(),
+        project: parse_project_id(project),
         status,
         created_at: parse_iso_8601_millis(created_at).expect("fixture created_at should parse"),
         updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
@@ -93,7 +110,7 @@ pub(crate) fn sample_review(
     updated_at: &str,
 ) -> ReviewRecord {
     ReviewRecord {
-        id: id.to_owned(),
+        id: parse_review_id(id),
         pull_request_url: format!("https://github.com/acme/project-a/pull/{pull_request_number}"),
         pull_request_number,
         pull_request_title: format!("Review {pull_request_number}"),
@@ -103,7 +120,7 @@ pub(crate) fn sample_review(
         base_branch: "main".to_owned(),
         workspace_key: "project-a".to_owned(),
         preferred_tool,
-        project: Some("project-a".to_owned()),
+        project: Some(parse_project_id("project-a")),
         main_user: "octocat".to_owned(),
         default_review_prompt: Some("Focus on regressions.".to_owned()),
         extra_instructions: Some("Keep an eye on migrations.".to_owned()),
@@ -121,7 +138,7 @@ pub(crate) fn sample_review_run(
     updated_at: &str,
 ) -> ReviewRunRecord {
     ReviewRunRecord {
-        dispatch_id: dispatch_id.to_owned(),
+        dispatch_id: parse_dispatch_id(dispatch_id),
         review_id: review.id.clone(),
         pull_request_url: review.pull_request_url.clone(),
         repository_full_name: review.repository_full_name.clone(),

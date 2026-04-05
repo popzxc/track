@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use track_projects::project_metadata::{
     ProjectMetadataUpdateInput, ProjectRecord, ProjectUpsertInput,
 };
+use track_types::ids::ProjectId;
 
 use crate::api_error::ApiError;
 use crate::AppState;
@@ -29,7 +30,7 @@ pub(crate) async fn list_projects(
 
 pub(crate) async fn patch_project(
     State(state): State<AppState>,
-    AxumPath(canonical_name): AxumPath<String>,
+    AxumPath(canonical_name): AxumPath<ProjectId>,
     body: Bytes,
 ) -> Result<Json<ProjectRecord>, ApiError> {
     let input = serde_json::from_slice::<ProjectMetadataUpdateInput>(&body)
@@ -51,14 +52,14 @@ pub(crate) async fn patch_project(
 #[derive(Debug, Deserialize)]
 pub(crate) struct PutProjectInput {
     #[serde(default)]
-    aliases: Vec<String>,
+    aliases: Vec<ProjectId>,
     #[serde(flatten)]
     metadata: ProjectMetadataUpdateInput,
 }
 
 pub(crate) async fn put_project(
     State(state): State<AppState>,
-    AxumPath(canonical_name): AxumPath<String>,
+    AxumPath(canonical_name): AxumPath<ProjectId>,
     body: Bytes,
 ) -> Result<Json<ProjectRecord>, ApiError> {
     let input = serde_json::from_slice::<PutProjectInput>(&body)

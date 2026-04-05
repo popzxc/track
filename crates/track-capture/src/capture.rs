@@ -132,7 +132,7 @@ fn strip_capture_shorthand(
     if let Some((candidate_project, rest)) = split_first_token(remainder) {
         let matches_project = project_catalog
             .resolve(candidate_project)
-            .map(|project| project.canonical_name == canonical_project)
+            .map(|project| project.canonical_name.as_str() == canonical_project)
             .unwrap_or(false);
 
         if matches_project {
@@ -226,7 +226,7 @@ pub fn build_task_create_input_from_text(
         &body_markdown,
         raw_text,
         project_catalog,
-        &project.canonical_name,
+        project.canonical_name.as_str(),
         priority,
     );
 
@@ -242,6 +242,7 @@ mod tests {
     use std::path::PathBuf;
 
     use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+    use track_types::ids::ProjectId;
     use track_types::types::{Confidence, ParsedTaskCandidate, Priority};
 
     use super::{build_task_body, validate_parsed_task_candidate};
@@ -249,9 +250,10 @@ mod tests {
     #[test]
     fn resolves_aliases_to_canonical_project_names() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "project-x".to_owned(),
+            canonical_name: ProjectId::new("project-x")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/project-x"),
-            aliases: vec!["proj-x".to_owned()],
+            aliases: vec![ProjectId::new("proj-x").expect("fixture project ids should validate")],
         }]);
 
         let (project, priority, title, body_markdown) = validate_parsed_task_candidate(
@@ -276,9 +278,10 @@ mod tests {
     #[test]
     fn preserves_raw_capture_context_when_it_contains_more_than_the_summary() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "zksync-airbender".to_owned(),
+            canonical_name: ProjectId::new("zksync-airbender")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/zksync-airbender"),
-            aliases: vec!["airbender".to_owned()],
+            aliases: vec![ProjectId::new("airbender").expect("fixture project ids should validate")],
         }]);
 
         let body = build_task_body(
@@ -299,9 +302,10 @@ mod tests {
     #[test]
     fn avoids_duplicating_context_when_the_note_matches_the_summary() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "project-x".to_owned(),
+            canonical_name: ProjectId::new("project-x")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/project-x"),
-            aliases: vec!["proj-x".to_owned()],
+            aliases: vec![ProjectId::new("proj-x").expect("fixture project ids should validate")],
         }]);
 
         let body = build_task_body(
@@ -319,7 +323,8 @@ mod tests {
     #[test]
     fn removes_repeated_title_from_the_formatted_markdown_body() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "project-x".to_owned(),
+            canonical_name: ProjectId::new("project-x")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/project-x"),
             aliases: vec![],
         }]);

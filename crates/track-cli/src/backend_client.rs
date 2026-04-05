@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
 use track_types::build_info::BuildInfo;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::ProjectId;
 use track_types::migration::{MigrationImportSummary, MigrationStatus};
 use track_types::types::{Task, TaskCreateInput};
 
@@ -24,8 +25,8 @@ pub trait TrackBackend {
     ) -> Result<RemoteAgentSettingsResponse, TrackError>;
     fn register_project(
         &self,
-        canonical_name: &str,
-        aliases: Vec<String>,
+        canonical_name: &ProjectId,
+        aliases: Vec<ProjectId>,
         metadata: ProjectMetadata,
     ) -> Result<ProjectRecord, TrackError>;
 }
@@ -219,8 +220,8 @@ impl TrackBackend for HttpTrackBackend {
 
     fn register_project(
         &self,
-        canonical_name: &str,
-        aliases: Vec<String>,
+        canonical_name: &ProjectId,
+        aliases: Vec<ProjectId>,
         metadata: ProjectMetadata,
     ) -> Result<ProjectRecord, TrackError> {
         self.put_json(
@@ -265,7 +266,7 @@ struct ApiErrorPayload {
 
 #[derive(Debug, Serialize)]
 struct RegisterProjectRequest {
-    aliases: Vec<String>,
+    aliases: Vec<ProjectId>,
     #[serde(flatten)]
     metadata: ProjectMetadata,
 }

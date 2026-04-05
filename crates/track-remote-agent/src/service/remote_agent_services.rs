@@ -132,7 +132,7 @@ impl<'a> RemoteAgentServices<'a> {
             .list_projects()
             .await?
             .into_iter()
-            .map(|project| project.canonical_name)
+            .map(|project| project.canonical_name.to_string())
             .collect::<BTreeSet<_>>();
 
         let mut summary = RemoteCleanupSummary::default();
@@ -250,7 +250,7 @@ impl<'a> RemoteAgentServices<'a> {
         let reclaimable_review_workspace_keys = review_workspace_keys
             .into_iter()
             .filter(|workspace_key| {
-                !tracked_project_names.contains(workspace_key)
+                !tracked_project_names.contains(workspace_key.as_str())
                     && !active_review_workspace_keys.contains(workspace_key)
             })
             .collect::<Vec<_>>();

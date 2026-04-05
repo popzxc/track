@@ -13,8 +13,8 @@ use track_config::paths::collapse_home_path;
 use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
 use track_projects::project_metadata::{infer_project_metadata, ProjectRecord};
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::ProjectId;
 use track_types::migration::{MigrationImportSummary, MigrationState, MigrationStatus};
-use track_types::path_component::validate_single_normal_path_component;
 use track_types::types::{Task, TaskSource};
 
 use crate::backend_client::{
@@ -313,13 +313,11 @@ fn run_project_register_command_internal(
         ));
     }
 
-    let canonical_name = validate_single_normal_path_component(
+    let canonical_name = ProjectId::new(
         checkout_path
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default(),
-        "Project canonical name",
-        ErrorCode::InvalidPathComponent,
     )?;
     let aliases = canonicalize_aliases(args.aliases, &canonical_name)?;
     let project_info = ProjectInfo {
@@ -425,10 +423,10 @@ fn format_created_task_output(task: &Task) -> String {
         "Created task",
         SummaryTone::Success,
         &[
-            ("Project", task.project.clone(), ValueTone::Plain),
+            ("Project", task.project.to_string(), ValueTone::Plain),
             ("Priority", task.priority.as_str().to_owned(), priority_tone),
             ("Status", task.status.as_str().to_owned(), status_tone),
-            ("ID", task.id.clone(), ValueTone::Path),
+            ("ID", task.id.to_string(), ValueTone::Path),
         ],
     )
 }
@@ -437,14 +435,23 @@ fn format_registered_project_output(project: &ProjectRecord, checkout_path: &Pat
     let aliases = if project.aliases.is_empty() {
         "(none)".to_owned()
     } else {
-        project.aliases.join(", ")
+        project
+            .aliases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     format_summary(
         "Registered project",
         SummaryTone::Success,
         &[
-            ("Project", project.canonical_name.clone(), ValueTone::Plain),
+            (
+                "Project",
+                project.canonical_name.to_string(),
+                ValueTone::Plain,
+            ),
             ("Aliases", aliases, ValueTone::Plain),
             (
                 "Checkout",
@@ -755,17 +762,11 @@ fn read_optional_text_file(path: &Path, label: &str) -> Result<String, TrackErro
 
 fn canonicalize_aliases(
     aliases: Vec<String>,
-    canonical_name: &str,
-) -> Result<Vec<String>, TrackError> {
+    canonical_name: &ProjectId,
+) -> Result<Vec<ProjectId>, TrackError> {
     let mut aliases = aliases
         .into_iter()
-        .map(|alias| {
-            validate_single_normal_path_component(
-                &alias,
-                "Project alias",
-                ErrorCode::InvalidPathComponent,
-            )
-        })
+        .map(|alias| ProjectId::new(&alias))
         .collect::<Result<Vec<_>, _>>()?;
     aliases.retain(|alias| alias != canonical_name);
     aliases.sort();
@@ -782,6 +783,7 @@ mod tests {
     use track_projects::project_catalog::ProjectCatalog;
     use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
     use track_types::errors::{ErrorCode, TrackError};
+    use track_types::ids::{ProjectId, TaskId};
     use track_types::migration::{MigrationImportSummary, MigrationStatus};
     use track_types::time_utils::now_utc;
     use track_types::types::{
@@ -832,7 +834,7 @@ mod tests {
         projects: Vec<ProjectRecord>,
         created_tasks: Mutex<Vec<TaskCreateInput>>,
         configured_remote_agents: Mutex<Vec<ConfigureRemoteAgentRequest>>,
-        registered_projects: Mutex<Vec<(String, Vec<String>, ProjectMetadata)>>,
+        registered_projects: Mutex<Vec<(ProjectId, Vec<ProjectId>, ProjectMetadata)>>,
         fetch_projects_error: Option<TrackError>,
         create_task_error: Option<TrackError>,
     }
@@ -856,7 +858,8 @@ mod tests {
                 .push(input.clone());
 
             Ok(Task {
-                id: "20260330-project-x-fix-a-bug".to_owned(),
+                id: TaskId::new("20260330-project-x-fix-a-bug")
+                    .expect("fixture task ids should validate"),
                 project: input.project.clone(),
                 priority: input.priority,
                 status: Status::Open,
@@ -894,8 +897,8 @@ mod tests {
 
         fn register_project(
             &self,
-            canonical_name: &str,
-            aliases: Vec<String>,
+            canonical_name: &ProjectId,
+            aliases: Vec<ProjectId>,
             metadata: ProjectMetadata,
         ) -> Result<ProjectRecord, TrackError> {
             self.registered_projects
@@ -904,7 +907,7 @@ mod tests {
                 .push((canonical_name.to_owned(), aliases.clone(), metadata.clone()));
 
             Ok(ProjectRecord {
-                canonical_name: canonical_name.to_owned(),
+                canonical_name: canonical_name.clone(),
                 aliases,
                 metadata,
             })
@@ -921,8 +924,12 @@ mod tests {
 
     fn project_record(canonical_name: &str, aliases: Vec<&str>) -> ProjectRecord {
         ProjectRecord {
-            canonical_name: canonical_name.to_owned(),
-            aliases: aliases.into_iter().map(str::to_owned).collect(),
+            canonical_name: ProjectId::new(canonical_name)
+                .expect("fixture project ids should validate"),
+            aliases: aliases
+                .into_iter()
+                .map(|alias| ProjectId::new(alias).expect("fixture project ids should validate"))
+                .collect(),
             metadata: ProjectMetadata {
                 repo_url: format!("https://example.com/{canonical_name}"),
                 git_url: format!("git@example.com:{canonical_name}.git"),
@@ -1128,7 +1135,7 @@ mod tests {
                 "proj-x".to_owned(),
                 "project-x".to_owned(),
             ],
-            "project-x",
+            &ProjectId::new("project-x").expect("fixture project ids should validate"),
         )
         .expect("aliases should validate");
 
@@ -1138,8 +1145,9 @@ mod tests {
     #[test]
     fn renders_created_task_output_without_a_file_path() {
         let rendered = format_created_task_output(&Task {
-            id: "20260330-project-x-fix-a-bug".to_owned(),
-            project: "project-x".to_owned(),
+            id: TaskId::new("20260330-project-x-fix-a-bug")
+                .expect("fixture task ids should validate"),
+            project: ProjectId::new("project-x").expect("fixture project ids should validate"),
             priority: Priority::High,
             status: Status::Open,
             description: "Fix a bug".to_owned(),

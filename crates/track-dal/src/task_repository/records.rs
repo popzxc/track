@@ -1,4 +1,5 @@
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::{ProjectId, TaskId};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{Priority, Status, Task, TaskSource};
 
@@ -40,8 +41,8 @@ impl TryFrom<TaskRow> for Task {
             .transpose()?;
 
         Ok(Task {
-            id,
-            project: record.project,
+            id: TaskId::from_db(id),
+            project: ProjectId::from_db(record.project),
             priority,
             status,
             description: record.description,

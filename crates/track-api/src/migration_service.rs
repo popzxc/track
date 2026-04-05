@@ -17,6 +17,7 @@ use track_dal::database::{DatabaseContext, DatabaseResultExt};
 use track_projects::project_discovery::discover_projects_from_roots;
 use track_projects::project_metadata::{infer_project_metadata, ProjectMetadata};
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::{ProjectId, TaskId};
 use track_types::migration::{
     CleanupCandidate, LegacyScanSummary, MigrationImportSummary, MigrationState, MigrationStatus,
     SkippedLegacyRecord, MIGRATION_STATUS_SETTING_KEY,
@@ -437,7 +438,7 @@ fn filter_orphaned_history(snapshot: &mut LegacyImportSnapshot) {
 
         snapshot.skipped_records.push(SkippedLegacyRecord {
             kind: "task_dispatch".to_owned(),
-            path: dispatch.dispatch_id.clone(),
+            path: dispatch.dispatch_id.to_string(),
             error: format!(
                 "Task dispatch references missing task {} and cannot be imported.",
                 dispatch.task_id
@@ -458,7 +459,7 @@ fn filter_orphaned_history(snapshot: &mut LegacyImportSnapshot) {
 
         snapshot.skipped_records.push(SkippedLegacyRecord {
             kind: "review_run".to_owned(),
-            path: review_run.dispatch_id.clone(),
+            path: review_run.dispatch_id.to_string(),
             error: format!(
                 "Review run references missing review {} and cannot be imported.",
                 review_run.review_id
@@ -502,7 +503,7 @@ fn merge_discovered_legacy_projects(
         }
 
         snapshot.projects.push(LegacyProjectImport {
-            canonical_name: project.canonical_name.clone(),
+            canonical_name: project.canonical_name.to_string(),
             metadata: infer_project_metadata(&project),
         });
     }
@@ -790,8 +791,8 @@ async fn import_task(connection: &mut SqliteConnection, task: &Task) -> Result<(
             source = excluded.source
         "#,
     )
-    .bind(&task.id)
-    .bind(&task.project)
+    .bind(task.id.as_str())
+    .bind(task.project.as_str())
     .bind(task.priority.as_str())
     .bind(task.status.as_str())
     .bind(&task.description)
@@ -835,7 +836,7 @@ async fn import_review(
             updated_at = excluded.updated_at
         "#,
     )
-    .bind(&review.id)
+    .bind(review.id.as_str())
     .bind(&review.pull_request_url)
     .bind(review.pull_request_number as i64)
     .bind(&review.pull_request_title)
@@ -844,7 +845,7 @@ async fn import_review(
     .bind(&review.git_url)
     .bind(&review.base_branch)
     .bind(&review.workspace_key)
-    .bind(review.project.as_deref())
+    .bind(review.project.as_ref().map(|project| project.as_str()))
     .bind(&review.main_user)
     .bind(review.default_review_prompt.as_deref())
     .bind(review.extra_instructions.as_deref())
@@ -899,9 +900,9 @@ async fn import_task_dispatch(
             review_request_user = excluded.review_request_user
         "#,
     )
-    .bind(&dispatch.dispatch_id)
-    .bind(&dispatch.task_id)
-    .bind(&dispatch.project)
+    .bind(dispatch.dispatch_id.as_str())
+    .bind(dispatch.task_id.as_str())
+    .bind(dispatch.project.as_str())
     .bind(dispatch.status.as_str())
     .bind(format_iso_8601_millis(dispatch.created_at))
     .bind(format_iso_8601_millis(dispatch.updated_at))
@@ -973,8 +974,8 @@ async fn import_review_run(
             error_message = excluded.error_message
         "#,
     )
-    .bind(&review_run.dispatch_id)
-    .bind(&review_run.review_id)
+    .bind(review_run.dispatch_id.as_str())
+    .bind(review_run.review_id.as_str())
     .bind(&review_run.pull_request_url)
     .bind(&review_run.repository_full_name)
     .bind(&review_run.workspace_key)
@@ -1313,6 +1314,8 @@ fn parse_legacy_task_path(
                 ),
             )
         })?;
+    let id = TaskId::new(&id)?;
+    let project = ProjectId::new(&project)?;
 
     Ok(LegacyTaskPathMetadata {
         id,
@@ -1352,8 +1355,8 @@ struct ParsedProjectMetadataFrontmatter {
 
 #[derive(Debug)]
 struct LegacyTaskPathMetadata {
-    id: String,
-    project: String,
+    id: TaskId,
+    project: ProjectId,
     status: Status,
 }
 

@@ -1,7 +1,7 @@
 mod records;
 
-use track_types::errors::{ErrorCode, TrackError};
-use track_types::path_component::validate_single_normal_path_component;
+use track_types::errors::TrackError;
+use track_types::ids::{DispatchId, ReviewId};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord};
 
@@ -21,7 +21,7 @@ impl<'a> ReviewDispatchRepository<'a> {
     pub async fn create_dispatch(
         &self,
         review: &ReviewRecord,
-        dispatch_id: &str,
+        dispatch_id: &DispatchId,
         remote_host: &str,
         preferred_tool: RemoteAgentPreferredTool,
         branch_name: &str,
@@ -32,7 +32,7 @@ impl<'a> ReviewDispatchRepository<'a> {
     ) -> Result<ReviewRunRecord, TrackError> {
         let timestamp = now_utc();
         let record = ReviewRunRecord {
-            dispatch_id: dispatch_id.to_owned(),
+            dispatch_id: dispatch_id.clone(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -65,16 +65,6 @@ impl<'a> ReviewDispatchRepository<'a> {
 
     pub async fn save_dispatch(&self, record: &ReviewRunRecord) -> Result<(), TrackError> {
         let record = record.clone();
-        validate_single_normal_path_component(
-            &record.review_id,
-            "Review id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-        validate_single_normal_path_component(
-            &record.dispatch_id,
-            "Dispatch id",
-            ErrorCode::InvalidPathComponent,
-        )?;
 
         let mut connection = self.database.connect().await?;
         let dispatch_id = record.dispatch_id.as_str();
@@ -164,7 +154,7 @@ impl<'a> ReviewDispatchRepository<'a> {
 
     pub async fn latest_dispatch_for_review(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<Option<ReviewRunRecord>, TrackError> {
         Ok(self
             .dispatches_for_review(review_id)
@@ -175,14 +165,8 @@ impl<'a> ReviewDispatchRepository<'a> {
 
     pub async fn dispatches_for_review(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let review_id = validate_single_normal_path_component(
-            review_id,
-            "Review id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
         let mut connection = self.database.connect().await?;
         let review_id_ref = review_id.as_str();
         let rows = sqlx::query_as!(
@@ -301,7 +285,7 @@ impl<'a> ReviewDispatchRepository<'a> {
         rows.into_iter().map(ReviewRunRecord::try_from).collect()
     }
 
-    pub async fn review_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
+    pub async fn review_ids_with_history(&self) -> Result<Vec<ReviewId>, TrackError> {
         let mut connection = self.database.connect().await?;
         let rows = sqlx::query_as!(
             records::ReviewIdRow,
@@ -315,25 +299,17 @@ impl<'a> ReviewDispatchRepository<'a> {
         .await
         .database_error_with("Could not load review ids with run history")?;
 
-        Ok(rows.into_iter().map(|row| row.review_id).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| ReviewId::from_db(row.review_id))
+            .collect())
     }
 
     pub async fn get_dispatch(
         &self,
-        review_id: &str,
-        dispatch_id: &str,
+        review_id: &ReviewId,
+        dispatch_id: &DispatchId,
     ) -> Result<Option<ReviewRunRecord>, TrackError> {
-        let review_id = validate_single_normal_path_component(
-            review_id,
-            "Review id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-        let dispatch_id = validate_single_normal_path_component(
-            dispatch_id,
-            "Dispatch id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
         let mut connection = self.database.connect().await?;
         let review_id_ref = review_id.as_str();
         let dispatch_id_ref = dispatch_id.as_str();
@@ -379,14 +355,8 @@ impl<'a> ReviewDispatchRepository<'a> {
 
     pub async fn delete_dispatch_history_for_review(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<(), TrackError> {
-        let review_id = validate_single_normal_path_component(
-            review_id,
-            "Review id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
         let mut connection = self.database.connect().await?;
         let review_id_ref = review_id.as_str();
         sqlx::query!(
@@ -409,7 +379,9 @@ mod tests {
     use track_types::types::{DispatchStatus, RemoteAgentPreferredTool};
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{sample_review, sample_review_run, temporary_database_path};
+    use crate::test_support::{
+        parse_dispatch_id, sample_review, sample_review_run, temporary_database_path,
+    };
 
     #[tokio::test]
     async fn create_dispatch_persists_queued_review_run_with_launch_context() {
@@ -440,7 +412,7 @@ mod tests {
         let record = repository
             .create_dispatch(
                 &review,
-                "dispatch-review-race-test",
+                &parse_dispatch_id("dispatch-review-race-test"),
                 "198.51.100.10",
                 RemoteAgentPreferredTool::Codex,
                 "track-review/dispatch-review-race-test",
@@ -517,7 +489,7 @@ mod tests {
             .expect("updated review run should save");
 
         let loaded = repository
-            .get_dispatch(&review.id, "dispatch-1")
+            .get_dispatch(&review.id, &parse_dispatch_id("dispatch-1"))
             .await
             .expect("review run should load")
             .expect("review run should exist");

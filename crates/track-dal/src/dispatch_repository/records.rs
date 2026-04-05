@@ -1,4 +1,5 @@
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::{DispatchId, ProjectId, TaskId};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, TaskDispatchRecord};
 
@@ -53,10 +54,10 @@ impl TryFrom<TaskDispatchRow> for TaskDispatchRecord {
             })?;
 
         Ok(TaskDispatchRecord {
-            dispatch_id,
-            task_id: record.task_id,
+            dispatch_id: DispatchId::from_db(dispatch_id),
+            task_id: TaskId::from_db(record.task_id),
             preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
-            project: record.project,
+            project: ProjectId::from_db(record.project),
             status: parse_dispatch_status(record.status.as_str())?,
             created_at,
             updated_at,

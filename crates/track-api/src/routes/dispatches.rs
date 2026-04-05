@@ -2,6 +2,7 @@ use axum::extract::State;
 use axum::http::Uri;
 use axum::Json;
 use serde::Serialize;
+use track_types::ids::TaskId;
 use track_types::types::TaskDispatchRecord;
 
 use crate::api_error::ApiError;
@@ -40,7 +41,7 @@ pub(crate) async fn list_dispatches(
 // narrow and only extract repeated `taskId=` entries. A full percent-decoding
 // query parser would add complexity without buying us anything for this domain.
 // TODO: Expand this helper if dispatch lookups ever need arbitrary free-form ids.
-fn parse_dispatch_task_ids(raw_query: Option<&str>) -> Vec<String> {
+fn parse_dispatch_task_ids(raw_query: Option<&str>) -> Vec<TaskId> {
     let Some(raw_query) = raw_query else {
         return Vec::new();
     };
@@ -53,7 +54,7 @@ fn parse_dispatch_task_ids(raw_query: Option<&str>) -> Vec<String> {
                 return None;
             }
 
-            Some(value.to_owned())
+            TaskId::new(value).ok()
         })
         .collect()
 }

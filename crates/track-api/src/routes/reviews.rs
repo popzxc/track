@@ -2,6 +2,7 @@ use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use track_types::ids::ReviewId;
 use track_types::time_utils::now_utc;
 use track_types::types::{CreateReviewInput, ReviewRecord, ReviewRunRecord};
 
@@ -67,7 +68,7 @@ pub(crate) async fn list_reviews(
 
 pub(crate) async fn list_review_runs(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunsResponse>, ApiError> {
     let runs = state
         .remote_agent_services()
@@ -107,7 +108,7 @@ pub(crate) struct FollowUpRequestInput {
 
 pub(crate) async fn follow_up_review(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<ReviewId>,
     body: Bytes,
 ) -> Result<Json<ReviewRunRecord>, ApiError> {
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
@@ -133,7 +134,7 @@ pub(crate) struct DeleteReviewResponse {
 
 pub(crate) async fn delete_review(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<DeleteReviewResponse>, ApiError> {
     state
         .remote_agent_services()
@@ -148,7 +149,7 @@ pub(crate) async fn delete_review(
 
 pub(crate) async fn cancel_review_dispatch(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunRecord>, ApiError> {
     let canceled_dispatch = state
         .remote_agent_services()

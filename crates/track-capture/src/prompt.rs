@@ -68,7 +68,7 @@ pub fn build_task_parser_json_schema(project_catalog: &ProjectCatalog) -> serde_
                 "type": ["string", "null"],
                 "enum": allowed_projects
                     .into_iter()
-                    .map(serde_json::Value::String)
+                    .map(|project| serde_json::Value::String(project.into_inner()))
                     .chain(std::iter::once(serde_json::Value::Null))
                     .collect::<Vec<_>>(),
             },

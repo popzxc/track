@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::path_component::validate_single_normal_path_component;
+use track_types::ids::ProjectId;
 
 use crate::project_catalog::ProjectInfo;
 
@@ -24,8 +24,8 @@ pub struct ProjectMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectRecord {
     #[serde(rename = "canonicalName")]
-    pub canonical_name: String,
-    pub aliases: Vec<String>,
+    pub canonical_name: ProjectId,
+    pub aliases: Vec<ProjectId>,
     pub metadata: ProjectMetadata,
 }
 
@@ -69,31 +69,17 @@ impl ProjectMetadataUpdateInput {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ProjectUpsertInput {
     #[serde(rename = "canonicalName")]
-    pub canonical_name: String,
+    pub canonical_name: ProjectId,
     #[serde(default)]
-    pub aliases: Vec<String>,
+    pub aliases: Vec<ProjectId>,
     #[serde(flatten)]
     pub metadata: ProjectMetadataUpdateInput,
 }
 
 impl ProjectUpsertInput {
-    pub fn validate(self) -> Result<(String, Vec<String>, ProjectMetadata), TrackError> {
-        let canonical_name = validate_single_normal_path_component(
-            &self.canonical_name,
-            "Project canonical name",
-            ErrorCode::InvalidPathComponent,
-        )?;
-        let mut aliases = self
-            .aliases
-            .into_iter()
-            .map(|alias| {
-                validate_single_normal_path_component(
-                    &alias,
-                    "Project alias",
-                    ErrorCode::InvalidPathComponent,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+    pub fn validate(self) -> Result<(ProjectId, Vec<ProjectId>, ProjectMetadata), TrackError> {
+        let canonical_name = self.canonical_name;
+        let mut aliases = self.aliases.into_iter().collect::<Vec<_>>();
         aliases.sort();
         aliases.dedup();
 

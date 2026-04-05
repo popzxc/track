@@ -116,6 +116,7 @@ pub(crate) fn contextualize_track_error(
 
 #[cfg(test)]
 mod tests {
+    use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
     use track_types::time_utils::now_utc;
     use track_types::types::{
         DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord, TaskDispatchRecord,
@@ -124,6 +125,22 @@ mod tests {
     use crate::types::{GithubPullRequestMetadata, GithubPullRequestReference};
 
     use super::{describe_remote_reset_blockers, parse_github_repository_name};
+
+    fn parse_task_id(value: &str) -> TaskId {
+        TaskId::new(value).expect("test task ids should be valid")
+    }
+
+    fn parse_project_id(value: &str) -> ProjectId {
+        ProjectId::new(value).expect("test project ids should be valid")
+    }
+
+    fn parse_review_id(value: &str) -> ReviewId {
+        ReviewId::new(value).expect("test review ids should be valid")
+    }
+
+    fn parse_dispatch_id(value: &str) -> DispatchId {
+        DispatchId::new(value).expect("test dispatch ids should be valid")
+    }
 
     #[test]
     fn parses_github_repository_name() {
@@ -165,10 +182,10 @@ mod tests {
     fn reset_blockers_include_active_review_runs() {
         let created_at = now_utc();
         let task_dispatch = TaskDispatchRecord {
-            dispatch_id: "dispatch-1".to_owned(),
-            task_id: "task-1".to_owned(),
+            dispatch_id: parse_dispatch_id("dispatch-1"),
+            task_id: parse_task_id("task-1"),
             preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             status: DispatchStatus::Running,
             created_at,
             updated_at: created_at,
@@ -185,8 +202,8 @@ mod tests {
             review_request_user: None,
         };
         let review_dispatch = ReviewRunRecord {
-            dispatch_id: "review-dispatch-1".to_owned(),
-            review_id: "review-1".to_owned(),
+            dispatch_id: parse_dispatch_id("review-dispatch-1"),
+            review_id: parse_review_id("review-1"),
             pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
             repository_full_name: "acme/project-a".to_owned(),
             workspace_key: "project-a".to_owned(),

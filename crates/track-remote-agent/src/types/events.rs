@@ -59,8 +59,8 @@ impl RemoteReviewFollowUpEvent {
         Self {
             outcome: outcome.to_owned(),
             detail: detail.into(),
-            task_id: dispatch_record.task_id.clone(),
-            dispatch_id: dispatch_record.dispatch_id.clone(),
+            task_id: dispatch_record.task_id.to_string(),
+            dispatch_id: dispatch_record.dispatch_id.to_string(),
             dispatch_status: dispatch_record.status.as_str().to_owned(),
             remote_host: dispatch_record.remote_host.clone(),
             branch_name: dispatch_record.branch_name.clone(),

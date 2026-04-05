@@ -150,6 +150,7 @@ impl<'a> RemoteReviewPrompt<'a> {
 
 #[cfg(test)]
 mod tests {
+    use track_types::ids::{DispatchId, ProjectId, ReviewId};
     use track_types::time_utils::now_utc;
     use track_types::types::{
         DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
@@ -157,11 +158,23 @@ mod tests {
 
     use super::RemoteReviewPrompt;
 
+    fn parse_project_id(value: &str) -> ProjectId {
+        ProjectId::new(value).expect("test project ids should be valid")
+    }
+
+    fn parse_review_id(value: &str) -> ReviewId {
+        ReviewId::new(value).expect("test review ids should be valid")
+    }
+
+    fn parse_dispatch_id(value: &str) -> DispatchId {
+        DispatchId::new(value).expect("test dispatch ids should be valid")
+    }
+
     fn sample_review_record() -> ReviewRecord {
         let created_at = now_utc();
 
         ReviewRecord {
-            id: "20260326-120000-review-pr-42".to_owned(),
+            id: parse_review_id("20260326-120000-review-pr-42"),
             pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
             pull_request_number: 42,
             pull_request_title: "Fix queue layout".to_owned(),
@@ -171,7 +184,7 @@ mod tests {
             base_branch: "main".to_owned(),
             workspace_key: "project-x".to_owned(),
             preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: Some("project-x".to_owned()),
+            project: Some(parse_project_id("project-x")),
             main_user: "octocat".to_owned(),
             default_review_prompt: Some("Focus on regressions and missing tests.".to_owned()),
             extra_instructions: Some("Pay special attention to queue rendering.".to_owned()),
@@ -184,7 +197,7 @@ mod tests {
     fn builds_remote_review_prompt_with_follow_up_guidance_and_saved_context() {
         let review = sample_review_record();
         let previous_review_run = ReviewRunRecord {
-            dispatch_id: "review-dispatch-1".to_owned(),
+            dispatch_id: parse_dispatch_id("review-dispatch-1"),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -211,7 +224,7 @@ mod tests {
             error_message: None,
         };
         let current_review_run = ReviewRunRecord {
-            dispatch_id: "review-dispatch-2".to_owned(),
+            dispatch_id: parse_dispatch_id("review-dispatch-2"),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),

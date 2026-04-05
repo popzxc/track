@@ -1,7 +1,7 @@
 mod records;
 
-use track_types::errors::{ErrorCode, TrackError};
-use track_types::path_component::validate_single_normal_path_component;
+use track_types::errors::TrackError;
+use track_types::ids::{DispatchId, TaskId};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDispatchRecord};
 
@@ -21,7 +21,7 @@ impl<'a> DispatchRepository<'a> {
     pub async fn create_dispatch(
         &self,
         task: &Task,
-        dispatch_id: &str,
+        dispatch_id: &DispatchId,
         remote_host: &str,
         preferred_tool: RemoteAgentPreferredTool,
         branch_name: &str,
@@ -34,7 +34,7 @@ impl<'a> DispatchRepository<'a> {
     ) -> Result<TaskDispatchRecord, TrackError> {
         let timestamp = now_utc();
         let record = TaskDispatchRecord {
-            dispatch_id: dispatch_id.to_owned(),
+            dispatch_id: dispatch_id.clone(),
             task_id: task.id.clone(),
             preferred_tool,
             project: task.project.clone(),
@@ -60,16 +60,6 @@ impl<'a> DispatchRepository<'a> {
 
     pub async fn save_dispatch(&self, record: &TaskDispatchRecord) -> Result<(), TrackError> {
         let record = record.clone();
-        validate_single_normal_path_component(
-            &record.dispatch_id,
-            "Dispatch id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-        validate_single_normal_path_component(
-            &record.task_id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
 
         let mut connection = self.database.connect().await?;
         let dispatch_id = record.dispatch_id.as_str();
@@ -149,21 +139,15 @@ impl<'a> DispatchRepository<'a> {
 
     pub async fn latest_dispatch_for_task(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
         Ok(self.dispatches_for_task(task_id).await?.into_iter().next())
     }
 
     pub async fn dispatches_for_task(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let task_id = validate_single_normal_path_component(
-            task_id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
         let mut connection = self.database.connect().await?;
         let task_id_ref = task_id.as_str();
         let rows = sqlx::query_as!(
@@ -205,7 +189,7 @@ impl<'a> DispatchRepository<'a> {
 
     pub async fn latest_dispatches_for_tasks(
         &self,
-        task_ids: &[String],
+        task_ids: &[TaskId],
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let mut records = Vec::new();
         for task_id in task_ids {
@@ -289,7 +273,7 @@ impl<'a> DispatchRepository<'a> {
         rows.into_iter().map(TaskDispatchRecord::try_from).collect()
     }
 
-    pub async fn task_ids_with_history(&self) -> Result<Vec<String>, TrackError> {
+    pub async fn task_ids_with_history(&self) -> Result<Vec<TaskId>, TrackError> {
         let mut connection = self.database.connect().await?;
         let rows = sqlx::query_as!(
             records::TaskIdRow,
@@ -303,25 +287,17 @@ impl<'a> DispatchRepository<'a> {
         .await
         .database_error_with("Could not load task ids with dispatch history")?;
 
-        Ok(rows.into_iter().map(|row| row.task_id).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| TaskId::from_db(row.task_id))
+            .collect())
     }
 
     pub async fn get_dispatch(
         &self,
-        task_id: &str,
-        dispatch_id: &str,
+        task_id: &TaskId,
+        dispatch_id: &DispatchId,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
-        let task_id = validate_single_normal_path_component(
-            task_id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-        let dispatch_id = validate_single_normal_path_component(
-            dispatch_id,
-            "Dispatch id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
         let mut connection = self.database.connect().await?;
         let task_id_ref = task_id.as_str();
         let dispatch_id_ref = dispatch_id.as_str();
@@ -362,13 +338,10 @@ impl<'a> DispatchRepository<'a> {
         row.map(TaskDispatchRecord::try_from).transpose()
     }
 
-    pub async fn delete_dispatch_history_for_task(&self, task_id: &str) -> Result<(), TrackError> {
-        let task_id = validate_single_normal_path_component(
-            task_id,
-            "Task id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
+    pub async fn delete_dispatch_history_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<(), TrackError> {
         let mut connection = self.database.connect().await?;
         let task_id_ref = task_id.as_str();
         sqlx::query!(
@@ -393,7 +366,9 @@ mod tests {
     };
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{sample_dispatch, sample_task, temporary_database_path};
+    use crate::test_support::{
+        parse_dispatch_id, parse_task_id, sample_dispatch, sample_task, temporary_database_path,
+    };
 
     #[tokio::test]
     async fn create_dispatch_persists_queued_dispatch_with_launch_context() {
@@ -423,7 +398,7 @@ mod tests {
         let record = repository
             .create_dispatch(
                 &task,
-                "dispatch-race-test",
+                &parse_dispatch_id("dispatch-race-test"),
                 "198.51.100.10",
                 track_types::types::RemoteAgentPreferredTool::Codex,
                 "track/dispatch-race-test",
@@ -490,7 +465,7 @@ mod tests {
             .expect("updated dispatch should save");
 
         let loaded = repository
-            .get_dispatch("task-1", "dispatch-1")
+            .get_dispatch(&parse_task_id("task-1"), &parse_dispatch_id("dispatch-1"))
             .await
             .expect("dispatch should load")
             .expect("dispatch should exist");
@@ -533,7 +508,7 @@ mod tests {
             .expect("newer dispatch should save");
 
         let history = repository
-            .dispatches_for_task("task-1")
+            .dispatches_for_task(&parse_task_id("task-1"))
             .await
             .expect("dispatch history should load");
         assert_eq!(
@@ -545,7 +520,7 @@ mod tests {
         );
 
         let latest = repository
-            .latest_dispatch_for_task("task-1")
+            .latest_dispatch_for_task(&parse_task_id("task-1"))
             .await
             .expect("latest dispatch should load")
             .expect("latest dispatch should exist");
@@ -599,9 +574,9 @@ mod tests {
 
         let latest = repository
             .latest_dispatches_for_tasks(&[
-                "task-a".to_owned(),
-                "task-b".to_owned(),
-                "missing".to_owned(),
+                parse_task_id("task-a"),
+                parse_task_id("task-b"),
+                parse_task_id("missing"),
             ])
             .await
             .expect("latest dispatches should load");
@@ -729,7 +704,10 @@ mod tests {
             .task_ids_with_history()
             .await
             .expect("task ids should load");
-        assert_eq!(task_ids, vec!["task-a".to_owned(), "task-b".to_owned()]);
+        assert_eq!(
+            task_ids,
+            vec![parse_task_id("task-a"), parse_task_id("task-b")]
+        );
     }
 
     #[tokio::test]
@@ -766,18 +744,18 @@ mod tests {
             .expect("task b dispatch should save");
 
         repository
-            .delete_dispatch_history_for_task("task-a")
+            .delete_dispatch_history_for_task(&parse_task_id("task-a"))
             .await
             .expect("task a history should delete");
 
         assert!(repository
-            .dispatches_for_task("task-a")
+            .dispatches_for_task(&parse_task_id("task-a"))
             .await
             .expect("task a history should load")
             .is_empty());
         assert_eq!(
             repository
-                .dispatches_for_task("task-b")
+                .dispatches_for_task(&parse_task_id("task-b"))
                 .await
                 .expect("task b history should load")
                 .len(),

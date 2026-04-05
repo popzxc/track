@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use track_config::runtime::TrackRuntimeConfig;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::ProjectId;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::project_catalog::{ProjectCatalog, ProjectInfo};
@@ -87,11 +88,11 @@ pub fn discover_projects_from_roots(
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_default();
 
-            if canonical_name.is_empty() {
+            let Ok(canonical_name) = ProjectId::new(&canonical_name) else {
                 continue;
-            }
+            };
 
-            let key = canonical_name.to_lowercase();
+            let key = canonical_name.as_str().to_lowercase();
             discovered_projects
                 .entry(key)
                 .or_insert_with(|| ProjectInfo {
@@ -104,7 +105,7 @@ pub fn discover_projects_from_roots(
 
     for (alias, canonical_name) in project_aliases {
         if let Some(project) = discovered_projects.get_mut(&canonical_name.to_lowercase()) {
-            project.aliases.push(alias.clone());
+            project.aliases.push(ProjectId::new(alias)?);
         }
     }
 

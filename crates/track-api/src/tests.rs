@@ -17,6 +17,7 @@ use track_config::paths::{
 use track_dal::database::DatabaseContext;
 use track_projects::project_catalog::ProjectInfo;
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::ids::{DispatchId, ProjectId, ReviewId};
 use track_types::time_utils::now_utc;
 use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
@@ -38,6 +39,18 @@ fn static_root(directory: &TempDir) -> std::path::PathBuf {
 
 fn database_path(directory: &TempDir) -> PathBuf {
     directory.path().join("backend").join("track.sqlite")
+}
+
+fn parse_project_id(value: &str) -> ProjectId {
+    ProjectId::new(value).expect("test project ids should be valid")
+}
+
+fn parse_review_id(value: &str) -> ReviewId {
+    ReviewId::new(value).expect("test review ids should be valid")
+}
+
+fn parse_dispatch_id(value: &str) -> DispatchId {
+    DispatchId::new(value).expect("test dispatch ids should be valid")
 }
 
 struct TestEnvironment {
@@ -112,10 +125,11 @@ fn app_state(config_service: Arc<RemoteAgentConfigService>, database: DatabaseCo
 }
 
 async fn register_project(database: &DatabaseContext, canonical_name: &str) {
+    let canonical_name = parse_project_id(canonical_name);
     database
         .project_repository()
         .upsert_project_by_name(
-            canonical_name,
+            &canonical_name,
             ProjectMetadata {
                 repo_url: format!("https://example.com/{canonical_name}"),
                 git_url: format!("git@example.com:{canonical_name}.git"),
@@ -158,7 +172,7 @@ async fn lists_tasks_with_backend_sorting() {
     let repository = database.task_repository();
     repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::Medium,
             description: "Middle priority task".to_owned(),
             source: Some(TaskSource::Cli),
@@ -167,7 +181,7 @@ async fn lists_tasks_with_backend_sorting() {
         .expect("first task should be created");
     repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::High,
             description: "Top priority task".to_owned(),
             source: Some(TaskSource::Cli),
@@ -239,7 +253,7 @@ async fn creates_tasks_from_the_web_api() {
     assert_eq!(json["source"], "web");
 
     let stored = repository
-        .list_tasks(false, Some("project-a"))
+        .list_tasks(false, Some(&parse_project_id("project-a")))
         .await
         .expect("stored tasks should load");
     assert_eq!(stored.len(), 1);
@@ -283,7 +297,7 @@ async fn preserves_cli_source_when_task_is_created_through_the_api() {
     assert_eq!(json["source"], "cli");
 
     let stored = repository
-        .list_tasks(false, Some("project-a"))
+        .list_tasks(false, Some(&parse_project_id("project-a")))
         .await
         .expect("stored tasks should load");
     assert_eq!(stored.len(), 1);
@@ -303,7 +317,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
 
     let first_task = task_repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::High,
             description: "First dispatched task".to_owned(),
             source: Some(TaskSource::Cli),
@@ -313,7 +327,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         .task;
     let second_task = task_repository
         .create_task(TaskCreateInput {
-            project: "project-b".to_owned(),
+            project: parse_project_id("project-b"),
             priority: Priority::Medium,
             description: "Second dispatched task".to_owned(),
             source: Some(TaskSource::Cli),
@@ -325,7 +339,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
     let mut first_dispatch = dispatch_repository
         .create_dispatch(
             &first_task,
-            "dispatch-first",
+            &parse_dispatch_id("dispatch-first"),
             "192.0.2.25",
             RemoteAgentPreferredTool::Codex,
             "track/dispatch-first",
@@ -348,7 +362,7 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
     let mut second_dispatch = dispatch_repository
         .create_dispatch(
             &second_task,
-            "dispatch-second",
+            &parse_dispatch_id("dispatch-second"),
             "192.0.2.25",
             RemoteAgentPreferredTool::Codex,
             "track/dispatch-second",
@@ -390,7 +404,10 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
     let single_json: serde_json::Value =
         serde_json::from_slice(&single_body).expect("single-dispatch response should be json");
     assert_eq!(single_json["dispatches"].as_array().map(Vec::len), Some(1));
-    assert_eq!(single_json["dispatches"][0]["taskId"], first_task.id);
+    assert_eq!(
+        single_json["dispatches"][0]["taskId"],
+        first_task.id.as_str()
+    );
 
     let repeated_response = app
         .oneshot(
@@ -428,7 +445,7 @@ async fn lists_runs_with_task_context() {
 
     let task = task_repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::High,
             description: "Investigate an agent run".to_owned(),
             source: Some(TaskSource::Cli),
@@ -439,7 +456,7 @@ async fn lists_runs_with_task_context() {
     let mut dispatch = dispatch_repository
         .create_dispatch(
             &task,
-            "dispatch-single",
+            &parse_dispatch_id("dispatch-single"),
             "192.0.2.25",
             RemoteAgentPreferredTool::Codex,
             "track/dispatch-single",
@@ -482,10 +499,10 @@ async fn lists_runs_with_task_context() {
         serde_json::from_slice(&body).expect("runs response should be valid json");
 
     assert_eq!(json["runs"].as_array().map(Vec::len), Some(1));
-    assert_eq!(json["runs"][0]["task"]["id"], task.id);
+    assert_eq!(json["runs"][0]["task"]["id"], task.id.as_str());
     assert_eq!(
         json["runs"][0]["dispatch"]["dispatchId"],
-        dispatch.dispatch_id
+        dispatch.dispatch_id.as_str()
     );
 }
 
@@ -501,7 +518,7 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
 
     let task = task_repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::High,
             description: "Inspect task-scoped run history".to_owned(),
             source: Some(TaskSource::Cli),
@@ -513,7 +530,7 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
     let mut first_dispatch = dispatch_repository
         .create_dispatch(
             &task,
-            "dispatch-history-first",
+            &parse_dispatch_id("dispatch-history-first"),
             "192.0.2.25",
             RemoteAgentPreferredTool::Codex,
             "track/dispatch-history-first",
@@ -536,7 +553,7 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
     let mut second_dispatch = dispatch_repository
         .create_dispatch(
             &task,
-            "dispatch-history-second",
+            &parse_dispatch_id("dispatch-history-second"),
             "192.0.2.25",
             RemoteAgentPreferredTool::Codex,
             "track/dispatch-history-second",
@@ -583,7 +600,7 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         .as_array()
         .expect("runs should be an array")
         .iter()
-        .all(|run| run["task"]["id"] == task.id));
+        .all(|run| run["task"]["id"] == task.id.as_str()));
 }
 
 #[tokio::test]
@@ -596,7 +613,7 @@ async fn lists_reviews_with_latest_run_and_review_history() {
     let review_dispatch_repository = database.review_dispatch_repository();
     let created_at = now_utc();
     let review = ReviewRecord {
-        id: "20260326-120000-review-pr-42".to_owned(),
+        id: parse_review_id("20260326-120000-review-pr-42"),
         pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
         pull_request_number: 42,
         pull_request_title: "Fix queue layout".to_owned(),
@@ -606,7 +623,7 @@ async fn lists_reviews_with_latest_run_and_review_history() {
         base_branch: "main".to_owned(),
         workspace_key: "project-a".to_owned(),
         preferred_tool: RemoteAgentPreferredTool::Codex,
-        project: Some("project-a".to_owned()),
+        project: Some(parse_project_id("project-a")),
         main_user: "octocat".to_owned(),
         default_review_prompt: Some("Focus on regressions.".to_owned()),
         extra_instructions: Some("Pay attention to queue layout.".to_owned()),
@@ -619,7 +636,7 @@ async fn lists_reviews_with_latest_run_and_review_history() {
         .expect("review should save");
     review_dispatch_repository
         .save_dispatch(&ReviewRunRecord {
-            dispatch_id: "review-dispatch-1".to_owned(),
+            dispatch_id: parse_dispatch_id("review-dispatch-1"),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -712,7 +729,7 @@ async fn discards_dispatch_history_for_a_task() {
 
     let task = task_repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::High,
             description: "Discardable dispatch".to_owned(),
             source: Some(TaskSource::Cli),
@@ -724,7 +741,7 @@ async fn discards_dispatch_history_for_a_task() {
     let mut dispatch = dispatch_repository
         .create_dispatch(
             &task,
-            "dispatch-terminal",
+            &parse_dispatch_id("dispatch-terminal"),
             "192.0.2.25",
             RemoteAgentPreferredTool::Codex,
             "track/dispatch-terminal",
@@ -796,7 +813,7 @@ async fn patches_and_deletes_tasks() {
     let repository = database.task_repository();
     let created = repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::Medium,
             description: "Update the onboarding guide".to_owned(),
             source: Some(TaskSource::Web),
@@ -848,7 +865,7 @@ async fn bumps_task_change_version_for_notify_and_mutations() {
     let repository = database.task_repository();
     let created = repository
         .create_task(TaskCreateInput {
-            project: "project-a".to_owned(),
+            project: parse_project_id("project-a"),
             priority: Priority::Medium,
             description: "Versioned task".to_owned(),
             source: Some(TaskSource::Cli),
@@ -922,7 +939,7 @@ async fn lists_and_updates_project_metadata() {
     database
         .project_repository()
         .ensure_project(&ProjectInfo {
-            canonical_name: "project-a".to_owned(),
+            canonical_name: parse_project_id("project-a"),
             path: project_path,
             aliases: vec![],
         })

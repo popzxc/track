@@ -8,7 +8,7 @@ use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
 use track_dal::review_repository::ReviewRepository;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::task_id::build_unique_task_id;
+use track_types::ids::{DispatchId, ReviewId, TaskId};
 use track_types::time_utils::now_utc;
 use track_types::types::{
     CreateReviewInput, DispatchStatus, RemoteAgentReviewOutcome, ReviewRecord, ReviewRunRecord,
@@ -77,18 +77,21 @@ impl<'a> RemoteReviewService<'a> {
             .map(|project| project.metadata.clone());
         let workspace_key = project_match
             .as_ref()
-            .map(|project| project.canonical_name.clone())
+            .map(|project| project.canonical_name.to_string())
             .unwrap_or_else(|| pull_request_metadata.workspace_key());
         let review_timestamp = now_utc();
-        let mut review_id = build_unique_task_id(
-            review_timestamp,
-            &format!(
-                "review {} pr {}",
-                pull_request_metadata.repository_full_name,
-                pull_request_metadata.pull_request_number
-            ),
-            // |candidate| self.review_repository().get_review(candidate).is_ok(),
-        );
+        let mut review_id = ReviewId::new(
+            TaskId::unique(
+                review_timestamp,
+                &format!(
+                    "review {} pr {}",
+                    pull_request_metadata.repository_full_name,
+                    pull_request_metadata.pull_request_number
+                ),
+            )
+            .as_str(),
+        )
+        .expect("generated review ids should be valid path components");
 
         // TODO: Do we need that?
         if self
@@ -99,7 +102,8 @@ impl<'a> RemoteReviewService<'a> {
         {
             let mut suffix = 2;
             loop {
-                let candidate = format!("{review_id}-{suffix}");
+                let candidate = ReviewId::new(format!("{review_id}-{suffix}"))
+                    .expect("generated review ids should be valid path components");
                 // TODO: Why the hell we `unwrap_or(false)` here?
                 if !self
                     .review_repository()
@@ -174,7 +178,7 @@ impl<'a> RemoteReviewService<'a> {
     // initial request.
     pub async fn queue_follow_up_review_dispatch(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
         follow_up_request: &str,
     ) -> Result<ReviewRunRecord, TrackError> {
         let trimmed_follow_up_request = follow_up_request.trim();
@@ -370,7 +374,7 @@ impl<'a> RemoteReviewService<'a> {
 
     pub async fn latest_dispatches_for_reviews(
         &self,
-        review_ids: &[String],
+        review_ids: &[ReviewId],
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
         let mut records = Vec::new();
         for review_id in review_ids {
@@ -399,7 +403,7 @@ impl<'a> RemoteReviewService<'a> {
 
     pub async fn dispatch_history_for_review(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
         let mut records = self
             .review_dispatch_repository()
@@ -410,7 +414,7 @@ impl<'a> RemoteReviewService<'a> {
             .is_some_and(|record| record.status.is_active())
         {
             if let Some(refreshed_latest) = self
-                .latest_dispatches_for_reviews(&[review_id.to_owned()])
+                .latest_dispatches_for_reviews(std::slice::from_ref(review_id))
                 .await?
                 .into_iter()
                 .next()
@@ -424,9 +428,12 @@ impl<'a> RemoteReviewService<'a> {
         Ok(records)
     }
 
-    pub async fn cancel_dispatch(&self, review_id: &str) -> Result<ReviewRunRecord, TrackError> {
+    pub async fn cancel_dispatch(
+        &self,
+        review_id: &ReviewId,
+    ) -> Result<ReviewRunRecord, TrackError> {
         let mut latest_dispatch = self
-            .latest_dispatches_for_reviews(&[review_id.to_owned()])
+            .latest_dispatches_for_reviews(std::slice::from_ref(review_id))
             .await?
             .into_iter()
             .next()
@@ -453,7 +460,7 @@ impl<'a> RemoteReviewService<'a> {
         Ok(latest_dispatch)
     }
 
-    pub async fn delete_review(&self, review_id: &str) -> Result<(), TrackError> {
+    pub async fn delete_review(&self, review_id: &ReviewId) -> Result<(), TrackError> {
         let review = self.review_repository().get_review(review_id).await?;
         let dispatch_history = self
             .review_dispatch_repository()
@@ -499,7 +506,7 @@ impl<'a> RemoteReviewService<'a> {
                 continue;
             }
 
-            let Some(snapshot) = snapshots_by_dispatch_id.get(&record.dispatch_id) else {
+            let Some(snapshot) = snapshots_by_dispatch_id.get(record.dispatch_id.as_str()) else {
                 if let Some(updated) = record
                     .clone()
                     .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
@@ -637,10 +644,10 @@ impl<'a> RemoteReviewService<'a> {
 
     async fn ensure_no_blocking_active_review_dispatch(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<(), TrackError> {
         if let Some(existing_dispatch) = self
-            .latest_dispatches_for_reviews(&[review_id.to_owned()])
+            .latest_dispatches_for_reviews(std::slice::from_ref(review_id))
             .await?
             .into_iter()
             .next()
@@ -701,8 +708,8 @@ impl<'a> RemoteReviewService<'a> {
 
     async fn load_saved_review_dispatch(
         &self,
-        review_id: &str,
-        dispatch_id: &str,
+        review_id: &ReviewId,
+        dispatch_id: &DispatchId,
     ) -> Result<Option<ReviewRunRecord>, TrackError> {
         self.review_dispatch_repository()
             .get_dispatch(review_id, dispatch_id)
@@ -711,8 +718,8 @@ impl<'a> RemoteReviewService<'a> {
 
     async fn dispatch_is_still_active(
         &self,
-        review_id: &str,
-        dispatch_id: &str,
+        review_id: &ReviewId,
+        dispatch_id: &DispatchId,
     ) -> Result<bool, TrackError> {
         Ok(self
             .load_saved_review_dispatch(review_id, dispatch_id)
@@ -899,7 +906,7 @@ impl<'a> RemoteReviewService<'a> {
 
     pub(super) async fn load_review_dispatch_prerequisites(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<(RemoteAgentRuntimeConfig, ReviewRecord), TrackError> {
         let remote_agent = self.load_review_runner_prerequisites().await?;
         let review = self.review_repository().get_review(review_id).await?;
@@ -909,7 +916,7 @@ impl<'a> RemoteReviewService<'a> {
 
     async fn load_remote_agent_for_review_cleanup(
         &self,
-        review_id: &str,
+        review_id: &ReviewId,
     ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
@@ -1007,8 +1014,9 @@ impl ReviewRunRecordExt for ReviewRunRecord {
     }
 }
 
-fn new_review_dispatch_id() -> String {
-    format!("dispatch-{}", now_utc().unix_timestamp_nanos())
+fn new_review_dispatch_id() -> DispatchId {
+    DispatchId::new(format!("dispatch-{}", now_utc().unix_timestamp_nanos()))
+        .expect("generated dispatch ids should be valid path components")
 }
 
 fn queued_review_branch_name(dispatch_id: &str) -> String {
@@ -1052,10 +1060,10 @@ fn first_follow_up_line(follow_up_request: &str) -> String {
 
 pub(super) fn select_previous_submitted_review_run<'a>(
     dispatch_history: &'a [ReviewRunRecord],
-    current_dispatch_id: &str,
+    current_dispatch_id: &DispatchId,
 ) -> Option<&'a ReviewRunRecord> {
     dispatch_history.iter().find(|record| {
-        record.dispatch_id != current_dispatch_id
+        record.dispatch_id != *current_dispatch_id
             && record.review_submitted
             && (record.github_review_url.is_some() || record.github_review_id.is_some())
     })
@@ -1081,7 +1089,7 @@ fn load_review_snapshots_for_records(
             continue;
         };
 
-        dispatch_ids.push(record.dispatch_id.clone());
+        dispatch_ids.push(record.dispatch_id.to_string());
         run_directories.push(run_directory);
     }
 

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use track_types::ids::ProjectId;
 
 // =============================================================================
 // Project Catalog
@@ -18,10 +19,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectInfo {
     #[serde(rename = "canonicalName")]
-    pub canonical_name: String,
+    pub canonical_name: ProjectId,
     #[serde(with = "path_string")]
     pub path: PathBuf,
-    pub aliases: Vec<String>,
+    pub aliases: Vec<ProjectId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,14 +37,14 @@ impl ProjectCatalog {
 
         for (index, project) in projects.iter().enumerate() {
             lookup_by_name
-                .entry(normalize_lookup_key(&project.canonical_name))
+                .entry(normalize_lookup_key(project.canonical_name.as_str()))
                 .or_insert(index);
         }
 
         for (index, project) in projects.iter().enumerate() {
             for alias in &project.aliases {
                 lookup_by_name
-                    .entry(normalize_lookup_key(alias))
+                    .entry(normalize_lookup_key(alias.as_str()))
                     .or_insert(index);
             }
         }

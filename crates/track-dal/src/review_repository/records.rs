@@ -1,4 +1,5 @@
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::{ProjectId, ReviewId};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
 
@@ -41,7 +42,7 @@ impl TryFrom<ReviewRow> for ReviewRecord {
         })?;
 
         Ok(ReviewRecord {
-            id,
+            id: ReviewId::from_db(id),
             pull_request_url: record.pull_request_url,
             pull_request_number: record.pull_request_number as u64,
             pull_request_title: record.pull_request_title,
@@ -51,7 +52,7 @@ impl TryFrom<ReviewRow> for ReviewRecord {
             base_branch: record.base_branch,
             workspace_key: record.workspace_key,
             preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
-            project: record.project,
+            project: record.project.map(ProjectId::from_db),
             main_user: record.main_user,
             default_review_prompt: record.default_review_prompt,
             extra_instructions: record.extra_instructions,

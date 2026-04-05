@@ -8,6 +8,7 @@ use track_dal::project_repository::ProjectRepository;
 use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::ids::{DispatchId, TaskId};
 use track_types::task_description::append_follow_up_request;
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{
@@ -64,7 +65,7 @@ impl<'a> RemoteDispatchService<'a> {
     // inspect while the service boundaries settle.
     pub async fn queue_dispatch(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
         preferred_tool: Option<RemoteAgentPreferredTool>,
     ) -> Result<TaskDispatchRecord, TrackError> {
         let (remote_agent, task, _project_metadata) =
@@ -108,7 +109,7 @@ impl<'a> RemoteDispatchService<'a> {
     // generation can highlight the newest ask explicitly.
     pub async fn queue_follow_up_dispatch(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
         follow_up_request: &str,
     ) -> Result<TaskDispatchRecord, TrackError> {
         let trimmed_follow_up_request = follow_up_request.trim();
@@ -330,9 +331,13 @@ impl<'a> RemoteDispatchService<'a> {
     //
     // We keep them separate so the UI can expose both actions without
     // overloading one button with two meanings.
-    pub async fn cancel_dispatch(&self, task_id: &str) -> Result<TaskDispatchRecord, TrackError> {
+    pub async fn cancel_dispatch(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<TaskDispatchRecord, TrackError> {
+        let task_ids = [task_id.clone()];
         let mut latest_dispatch = self
-            .latest_dispatches_for_tasks(&[task_id.to_owned()])
+            .latest_dispatches_for_tasks(&task_ids)
             .await?
             .into_iter()
             .next()
@@ -358,7 +363,7 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(latest_dispatch)
     }
 
-    pub async fn discard_dispatch_history(&self, task_id: &str) -> Result<(), TrackError> {
+    pub async fn discard_dispatch_history(&self, task_id: &TaskId) -> Result<(), TrackError> {
         let latest_dispatch = self
             .dispatch_repository()
             .latest_dispatch_for_task(task_id)
@@ -390,7 +395,7 @@ impl<'a> RemoteDispatchService<'a> {
 
     pub async fn latest_dispatches_for_tasks(
         &self,
-        task_ids: &[String],
+        task_ids: &[TaskId],
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let records = self
             .dispatch_repository()
@@ -423,7 +428,7 @@ impl<'a> RemoteDispatchService<'a> {
     // pushed them past the global limit.
     pub async fn dispatch_history_for_task(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let mut records = self
             .dispatch_repository()
@@ -439,7 +444,7 @@ impl<'a> RemoteDispatchService<'a> {
             .is_some_and(|record| record.status.is_active())
         {
             if let Some(refreshed_latest) = self
-                .latest_dispatches_for_tasks(&[task_id.to_owned()])
+                .latest_dispatches_for_tasks(std::slice::from_ref(task_id))
                 .await?
                 .into_iter()
                 .next()
@@ -462,7 +467,7 @@ impl<'a> RemoteDispatchService<'a> {
     // the local tracker usable if the remote side has already gone away.
     pub async fn update_task(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
         input: TaskUpdateInput,
     ) -> Result<Task, TrackError> {
         let validated_input = input.validate()?;
@@ -514,7 +519,7 @@ impl<'a> RemoteDispatchService<'a> {
             .await
     }
 
-    pub async fn delete_task(&self, task_id: &str) -> Result<(), TrackError> {
+    pub async fn delete_task(&self, task_id: &TaskId) -> Result<(), TrackError> {
         let dispatch_history = self
             .dispatch_repository()
             .dispatches_for_task(task_id)
@@ -586,7 +591,7 @@ impl<'a> RemoteDispatchService<'a> {
                 continue;
             }
 
-            let Some(snapshot) = snapshots_by_dispatch_id.get(&record.dispatch_id) else {
+            let Some(snapshot) = snapshots_by_dispatch_id.get(record.dispatch_id.as_str()) else {
                 if let Some(updated) = record
                     .clone()
                     .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
@@ -670,7 +675,7 @@ impl<'a> RemoteDispatchService<'a> {
 
     pub(super) async fn cleanup_task_remote_artifacts(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
         dispatch_history: &[TaskDispatchRecord],
         cleanup_mode: RemoteTaskCleanupMode,
     ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
@@ -730,9 +735,9 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(updated_record)
     }
 
-    async fn ensure_no_blocking_active_dispatch(&self, task_id: &str) -> Result<(), TrackError> {
+    async fn ensure_no_blocking_active_dispatch(&self, task_id: &TaskId) -> Result<(), TrackError> {
         if let Some(existing_dispatch) = self
-            .latest_dispatches_for_tasks(&[task_id.to_owned()])
+            .latest_dispatches_for_tasks(std::slice::from_ref(task_id))
             .await?
             .into_iter()
             .next()
@@ -752,8 +757,8 @@ impl<'a> RemoteDispatchService<'a> {
 
     async fn dispatch_is_still_active(
         &self,
-        task_id: &str,
-        dispatch_id: &str,
+        task_id: &TaskId,
+        dispatch_id: &DispatchId,
     ) -> Result<bool, TrackError> {
         Ok(self
             .load_saved_dispatch(task_id, dispatch_id)
@@ -764,8 +769,8 @@ impl<'a> RemoteDispatchService<'a> {
 
     async fn load_saved_dispatch(
         &self,
-        task_id: &str,
-        dispatch_id: &str,
+        task_id: &TaskId,
+        dispatch_id: &DispatchId,
     ) -> Result<Option<TaskDispatchRecord>, TrackError> {
         self.dispatch_repository()
             .get_dispatch(task_id, dispatch_id)
@@ -812,7 +817,7 @@ impl<'a> RemoteDispatchService<'a> {
 
     async fn append_follow_up_request_to_task(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
         follow_up_request: &str,
     ) -> Result<Task, TrackError> {
         let task = self.task_repository().get_task(task_id).await?;
@@ -834,7 +839,7 @@ impl<'a> RemoteDispatchService<'a> {
 
     async fn load_dispatch_prerequisites(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
     ) -> Result<(RemoteAgentRuntimeConfig, Task, ProjectMetadata), TrackError> {
         let remote_agent = self.load_remote_agent(task_id).await?;
 
@@ -863,7 +868,7 @@ impl<'a> RemoteDispatchService<'a> {
 
     async fn load_remote_agent(
         &self,
-        task_id: &str,
+        task_id: &TaskId,
     ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
         let remote_agent = self
             .config_service
@@ -905,15 +910,16 @@ fn validate_project_metadata_for_dispatch(metadata: &ProjectMetadata) -> Result<
     Ok(())
 }
 
-fn dispatch_not_found(task_id: &str, detail: &str) -> TrackError {
+fn dispatch_not_found(task_id: &TaskId, detail: &str) -> TrackError {
     TrackError::new(
         ErrorCode::DispatchNotFound,
         format!("Task {task_id} {detail}"),
     )
 }
 
-fn new_dispatch_id() -> String {
-    format!("dispatch-{}", now_utc().unix_timestamp_nanos())
+fn new_dispatch_id() -> DispatchId {
+    DispatchId::new(format!("dispatch-{}", now_utc().unix_timestamp_nanos()))
+        .expect("generated dispatch ids should be valid path components")
 }
 
 fn queued_dispatch_branch_name(dispatch_id: &str) -> String {
@@ -934,7 +940,7 @@ fn queued_dispatch_worktree_path(
 }
 
 pub(super) fn select_follow_up_base_dispatch(
-    task_id: &str,
+    task_id: &TaskId,
     dispatch_history: &[TaskDispatchRecord],
 ) -> Result<TaskDispatchRecord, TrackError> {
     dispatch_history
@@ -991,7 +997,7 @@ fn load_dispatch_snapshots_for_records(
             continue;
         };
 
-        dispatch_ids.push(record.dispatch_id.clone());
+        dispatch_ids.push(record.dispatch_id.to_string());
         run_directories.push(run_directory);
     }
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
 use crate::errors::{ErrorCode, TrackError};
-use crate::path_component::validate_single_normal_path_component;
+use crate::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -106,8 +106,8 @@ impl DispatchStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
-    pub id: String,
-    pub project: String,
+    pub id: TaskId,
+    pub project: ProjectId,
     pub priority: Priority,
     pub status: Status,
     pub description: String,
@@ -140,7 +140,7 @@ pub enum Confidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskCreateInput {
-    pub project: String,
+    pub project: ProjectId,
     pub priority: Priority,
     pub description: String,
     pub source: Option<TaskSource>,
@@ -149,11 +149,7 @@ pub struct TaskCreateInput {
 impl TaskCreateInput {
     pub fn validate(self) -> Result<Self, TrackError> {
         let validated = Self {
-            project: validate_single_normal_path_component(
-                &self.project,
-                "Task project",
-                ErrorCode::InvalidPathComponent,
-            )?,
+            project: self.project,
             priority: self.priority,
             description: self.description.trim().to_owned(),
             source: self.source,
@@ -246,12 +242,12 @@ pub struct RemoteAgentReviewOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskDispatchRecord {
     #[serde(rename = "dispatchId")]
-    pub dispatch_id: String,
+    pub dispatch_id: DispatchId,
     #[serde(rename = "taskId")]
-    pub task_id: String,
+    pub task_id: TaskId,
     #[serde(rename = "preferredTool", default)]
     pub preferred_tool: RemoteAgentPreferredTool,
-    pub project: String,
+    pub project: ProjectId,
     pub status: DispatchStatus,
     #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
@@ -384,7 +380,7 @@ impl TaskDispatchRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRecord {
-    pub id: String,
+    pub id: ReviewId,
     #[serde(rename = "pullRequestUrl")]
     pub pull_request_url: String,
     #[serde(rename = "pullRequestNumber")]
@@ -404,7 +400,7 @@ pub struct ReviewRecord {
     #[serde(rename = "preferredTool", default)]
     pub preferred_tool: RemoteAgentPreferredTool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
+    pub project: Option<ProjectId>,
     #[serde(rename = "mainUser")]
     pub main_user: String,
     #[serde(
@@ -423,9 +419,9 @@ pub struct ReviewRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRunRecord {
     #[serde(rename = "dispatchId")]
-    pub dispatch_id: String,
+    pub dispatch_id: DispatchId,
     #[serde(rename = "reviewId")]
-    pub review_id: String,
+    pub review_id: ReviewId,
     #[serde(rename = "pullRequestUrl")]
     pub pull_request_url: String,
     #[serde(rename = "repositoryFullName")]

@@ -1,7 +1,7 @@
 mod records;
 
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::path_component::validate_single_normal_path_component;
+use track_types::ids::ReviewId;
 use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::ReviewRecord;
 
@@ -29,7 +29,7 @@ impl<'a> ReviewRepository<'a> {
         let base_branch = review.base_branch.as_str();
         let workspace_key = review.workspace_key.as_str();
         let preferred_tool = review.preferred_tool.as_str();
-        let project = review.project.as_deref();
+        let project = review.project.as_ref().map(|project| project.as_str());
         let main_user = review.main_user.as_str();
         let default_review_prompt = review.default_review_prompt.as_deref();
         let extra_instructions = review.extra_instructions.as_deref();
@@ -119,13 +119,7 @@ impl<'a> ReviewRepository<'a> {
         rows.into_iter().map(ReviewRecord::try_from).collect()
     }
 
-    pub async fn get_review(&self, id: &str) -> Result<ReviewRecord, TrackError> {
-        let review_id = validate_single_normal_path_component(
-            id,
-            "Review id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
+    pub async fn get_review(&self, review_id: &ReviewId) -> Result<ReviewRecord, TrackError> {
         let mut connection = self.database.connect().await?;
         let review_id_ref = review_id.as_str();
         let row = sqlx::query_as!(
@@ -166,13 +160,7 @@ impl<'a> ReviewRepository<'a> {
         ReviewRecord::try_from(row)
     }
 
-    pub async fn delete_review(&self, id: &str) -> Result<(), TrackError> {
-        let review_id = validate_single_normal_path_component(
-            id,
-            "Review id",
-            ErrorCode::InvalidPathComponent,
-        )?;
-
+    pub async fn delete_review(&self, review_id: &ReviewId) -> Result<(), TrackError> {
         let mut connection = self.database.connect().await?;
         let review_id_ref = review_id.as_str();
         sqlx::query!("DELETE FROM reviews WHERE id = ?1", review_id_ref)
@@ -190,7 +178,7 @@ mod tests {
     use track_types::types::RemoteAgentPreferredTool;
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{sample_review, temporary_database_path};
+    use crate::test_support::{parse_review_id, sample_review, temporary_database_path};
 
     #[tokio::test]
     async fn save_review_upserts_and_get_review_returns_latest_fields() {
@@ -227,7 +215,7 @@ mod tests {
             .expect("updated review should save");
 
         let loaded = repository
-            .get_review("review-42")
+            .get_review(&parse_review_id("review-42"))
             .await
             .expect("review should load");
         assert_eq!(loaded, updated);

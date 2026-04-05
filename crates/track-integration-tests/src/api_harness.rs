@@ -14,6 +14,7 @@ use track_api::BackendConfigRepository;
 use track_api::{build_app, AppState, MigrationService, RemoteAgentConfigService};
 use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::ids::{ProjectId, ReviewId, TaskId};
 use track_types::types::{
     Priority, ReviewRunRecord, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
 };
@@ -129,16 +130,17 @@ impl ApiHarness {
         project_metadata: ProjectMetadata,
         task_description: &str,
     ) -> Task {
+        let project_id = ProjectId::new(project_name).expect("project names should be valid");
         self.database
             .project_repository()
-            .upsert_project_by_name(project_name, project_metadata, Vec::new())
+            .upsert_project_by_name(&project_id, project_metadata, Vec::new())
             .await
             .expect("project metadata should save");
 
         self.database
             .task_repository()
             .create_task(TaskCreateInput {
-                project: project_name.to_owned(),
+                project: project_id,
                 priority: Priority::High,
                 description: task_description.to_owned(),
                 source: Some(TaskSource::Cli),
@@ -228,43 +230,48 @@ impl ApiHarness {
     }
 
     pub async fn load_task(&self, task_id: &str) -> Task {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
         self.database
             .task_repository()
-            .get_task(task_id)
+            .get_task(&task_id)
             .await
             .expect("task should load from the repository")
     }
 
     pub async fn task_exists(&self, task_id: &str) -> bool {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
         self.database
             .task_repository()
-            .get_task(task_id)
+            .get_task(&task_id)
             .await
             .is_ok()
     }
 
     pub async fn dispatch_history_exists(&self, task_id: &str) -> bool {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
         self.database
             .dispatch_repository()
-            .latest_dispatch_for_task(task_id)
+            .latest_dispatch_for_task(&task_id)
             .await
             .expect("dispatch history lookup should succeed")
             .is_some()
     }
 
     pub async fn review_history_exists(&self, review_id: &str) -> bool {
+        let review_id = ReviewId::new(review_id).expect("review ids should be valid");
         self.database
             .review_dispatch_repository()
-            .latest_dispatch_for_review(review_id)
+            .latest_dispatch_for_review(&review_id)
             .await
             .expect("review history lookup should succeed")
             .is_some()
     }
 
     pub async fn review_record_exists(&self, review_id: &str) -> bool {
+        let review_id = ReviewId::new(review_id).expect("review ids should be valid");
         self.database
             .review_repository()
-            .get_review(review_id)
+            .get_review(&review_id)
             .await
             .is_ok()
     }
@@ -515,10 +522,11 @@ impl ApiHarness {
     }
 
     pub async fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
         self.database
             .task_repository()
             .update_task(
-                task_id,
+                &task_id,
                 TaskUpdateInput {
                     description: None,
                     priority: None,
@@ -530,9 +538,10 @@ impl ApiHarness {
     }
 
     pub async fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
         self.database
             .task_repository()
-            .delete_task(task_id)
+            .delete_task(&task_id)
             .await
             .expect("task file should delete directly in the repository");
     }
@@ -542,17 +551,18 @@ impl ApiHarness {
         task_id: &str,
         timeout: Duration,
     ) -> serde_json::Value {
-        self.poll_dispatches_until_all_terminal(&[task_id.to_owned()], timeout)
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.poll_dispatches_until_all_terminal(&[task_id.clone()], timeout)
             .await
-            .remove(task_id)
+            .remove(&task_id)
             .expect("task should have a terminal dispatch")
     }
 
     pub async fn poll_dispatches_until_all_terminal(
         &self,
-        task_ids: &[String],
+        task_ids: &[TaskId],
         timeout: Duration,
-    ) -> BTreeMap<String, serde_json::Value> {
+    ) -> BTreeMap<TaskId, serde_json::Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let dispatches = self.list_dispatches(task_ids).await;
@@ -577,7 +587,7 @@ impl ApiHarness {
         }
     }
 
-    async fn list_dispatches(&self, task_ids: &[String]) -> BTreeMap<String, serde_json::Value> {
+    async fn list_dispatches(&self, task_ids: &[TaskId]) -> BTreeMap<TaskId, serde_json::Value> {
         let query = task_ids
             .iter()
             .map(|task_id| format!("taskId={task_id}"))
@@ -602,10 +612,12 @@ impl ApiHarness {
             .as_array()
             .expect("dispatch list should be an array")
         {
-            let task_id = dispatch["taskId"]
-                .as_str()
-                .expect("dispatch should contain taskId")
-                .to_owned();
+            let task_id = TaskId::new(
+                dispatch["taskId"]
+                    .as_str()
+                    .expect("dispatch should contain taskId"),
+            )
+            .expect("dispatch task ids should be valid");
             by_task_id.insert(task_id, dispatch.clone());
         }
 
