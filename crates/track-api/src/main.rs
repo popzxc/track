@@ -7,8 +7,8 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use track_api::BackendConfigRepository;
 use track_api::{
-    build_app, spawn_remote_review_follow_up_reconciler, AppState, MigrationService,
-    RemoteAgentConfigService, SERVER_VERSION_TEXT,
+    build_app, spawn_remote_review_follow_up_reconciler, AppState, RemoteAgentConfigService,
+    SERVER_VERSION_TEXT,
 };
 use track_dal::database::DatabaseContext;
 
@@ -37,10 +37,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await?,
     );
-    let migration_service = Arc::new(MigrationService::new(
-        (*config_service).clone(),
-        database.clone(),
-    )?);
     // Docker publishes the backend behind a localhost-only port mapping by
     // default, so the binary still binds all interfaces inside the container.
     // The macOS host-mode smoke runs the binary directly, though, so it needs
@@ -53,7 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         config_service,
         database,
-        migration_service,
         task_change_version: Arc::new(AtomicU64::new(0)),
     };
     spawn_remote_review_follow_up_reconciler(state.clone());

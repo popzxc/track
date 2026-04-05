@@ -11,7 +11,7 @@ use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
 use track_api::BackendConfigRepository;
-use track_api::{build_app, AppState, MigrationService, RemoteAgentConfigService};
+use track_api::{build_app, AppState, RemoteAgentConfigService};
 use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::ids::{ProjectId, ReviewId, TaskId};
@@ -34,8 +34,6 @@ pub struct ApiHarness {
     database: DatabaseContext,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
-    _track_legacy_config_guard: ScopedEnvVar,
-    _track_legacy_root_guard: ScopedEnvVar,
     _track_state_dir_guard: ScopedEnvVar,
 }
 
@@ -50,22 +48,6 @@ impl ApiHarness {
             ScopedEnvVar::set("TRACK_DATA_DIR", issues_dir.to_string_lossy().into_owned());
         let track_state_dir_guard =
             ScopedEnvVar::set("TRACK_STATE_DIR", track_root.to_string_lossy().into_owned());
-        let track_legacy_root_guard = ScopedEnvVar::set(
-            "TRACK_LEGACY_ROOT",
-            state_dir
-                .path()
-                .join("legacy-root")
-                .to_string_lossy()
-                .into_owned(),
-        );
-        let track_legacy_config_guard = ScopedEnvVar::set(
-            "TRACK_LEGACY_CONFIG_PATH",
-            state_dir
-                .path()
-                .join("legacy-config/config.json")
-                .to_string_lossy()
-                .into_owned(),
-        );
         let database_path = track_root.join("track.sqlite");
 
         let managed_remote_agent_dir = issues_dir
@@ -98,16 +80,10 @@ impl ApiHarness {
             .await
             .expect("remote-agent config should save");
 
-        let migration_service = Arc::new(
-            MigrationService::new((*config_service).clone(), database.clone())
-                .expect("migration service should resolve"),
-        );
-
         let app = build_app(
             AppState {
                 config_service,
                 database: database.clone(),
-                migration_service,
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
             &static_root,
@@ -118,8 +94,6 @@ impl ApiHarness {
             database,
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
-            _track_legacy_config_guard: track_legacy_config_guard,
-            _track_legacy_root_guard: track_legacy_root_guard,
             _track_state_dir_guard: track_state_dir_guard,
         }
     }

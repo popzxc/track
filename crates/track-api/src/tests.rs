@@ -26,7 +26,6 @@ use track_types::types::{
 
 use super::{build_app, AppState};
 use crate::backend_config::{BackendConfigRepository, RemoteAgentConfigService};
-use crate::migration_service::MigrationService;
 use crate::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
 
 fn static_root(directory: &TempDir) -> std::path::PathBuf {
@@ -57,8 +56,6 @@ struct TestEnvironment {
     _env_lock: std::sync::MutexGuard<'static, ()>,
     _track_data_dir_guard: EnvVarGuard,
     _track_state_dir_guard: EnvVarGuard,
-    _track_legacy_root_guard: EnvVarGuard,
-    _track_legacy_config_guard: EnvVarGuard,
 }
 
 impl TestEnvironment {
@@ -68,18 +65,11 @@ impl TestEnvironment {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let backend_state_dir = directory.path().join("backend");
         let backend_data_dir = backend_state_dir.join("issues");
-        let legacy_root = directory.path().join("legacy-root");
-        let legacy_config_path = directory.path().join("legacy-config/config.json");
 
         Self {
             _env_lock: env_lock,
             _track_data_dir_guard: set_env_var("TRACK_DATA_DIR", &backend_data_dir),
             _track_state_dir_guard: set_env_var("TRACK_STATE_DIR", &backend_state_dir),
-            _track_legacy_root_guard: set_env_var("TRACK_LEGACY_ROOT", &legacy_root),
-            _track_legacy_config_guard: set_env_var(
-                "TRACK_LEGACY_CONFIG_PATH",
-                &legacy_config_path,
-            ),
         }
     }
 }
@@ -103,23 +93,10 @@ async fn database(directory: &TempDir) -> DatabaseContext {
         .expect("database context should resolve")
 }
 
-fn migration_service(
-    config_service: &Arc<RemoteAgentConfigService>,
-    database: &DatabaseContext,
-) -> Arc<MigrationService> {
-    Arc::new(
-        MigrationService::new((**config_service).clone(), database.clone())
-            .expect("migration service should resolve"),
-    )
-}
-
 fn app_state(config_service: Arc<RemoteAgentConfigService>, database: DatabaseContext) -> AppState {
-    let migration_service = migration_service(&config_service, &database);
-
     AppState {
         config_service,
         database,
-        migration_service,
         task_change_version: Arc::new(AtomicU64::new(0)),
     }
 }

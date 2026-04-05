@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use axum::middleware::from_fn_with_state;
 use axum::routing::{get, patch, post, put};
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
@@ -105,12 +104,11 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
     // The deployed app still serves both API routes and the frontend from one
     // process so Docker can expose a single local port.
     let static_root = static_root.as_ref().to_path_buf();
-    let migration_router = Router::new()
+    let api_router = Router::new()
         .route(
             "/meta/server_version",
             get(routes::meta::get_server_version),
         )
-        // TODO: Migration should be no more more
         .route(
             "/migration/status",
             get(routes::migration::migration_status),
@@ -118,13 +116,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
         .route(
             "/migration/import",
             post(routes::migration::import_legacy_data),
-        );
-
-    // The migration release has two distinct backend modes. Migration routes
-    // stay available at all times so the UI and CLI can recover gracefully,
-    // while the rest of the API refuses normal work until the legacy import
-    // finishes.
-    let application_router = Router::new()
+        )
         .route("/projects", get(routes::projects::list_projects))
         .route(
             "/projects/{canonical_name}",
@@ -189,13 +181,7 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             "/events/tasks-changed",
             axum::routing::post(routes::events::notify_task_change),
         )
-        .fallback(async || ApiError::not_found())
-        .route_layer(from_fn_with_state(
-            state.clone(),
-            routes::migration::enforce_migration_gate,
-        ));
-
-    let api_router = migration_router.merge(application_router);
+        .fallback(async || ApiError::not_found());
 
     Router::new()
         .route("/health", get(routes::health::health))

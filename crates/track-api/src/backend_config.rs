@@ -11,7 +11,6 @@ use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentR
 use track_dal::database::DatabaseContext;
 use track_remote_agent::RemoteAgentConfigProvider;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::migration::{MigrationStatus, MIGRATION_STATUS_SETTING_KEY};
 use track_types::types::RemoteAgentPreferredTool;
 
 pub(crate) const REMOTE_AGENT_SETTING_KEY: &str = "remote_agent_config";
@@ -85,7 +84,7 @@ impl BackendConfigRepository {
         let mut config = self.load_remote_agent_config().await?.ok_or_else(|| {
             TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
-                "Remote dispatch is not configured yet. Import legacy data or register remote-agent settings first.",
+                "Remote dispatch is not configured yet. Register remote-agent settings first.",
             )
         })?;
 
@@ -97,22 +96,6 @@ impl BackendConfigRepository {
         self.save_remote_agent_config(Some(&config)).await?;
 
         Ok(config)
-    }
-
-    pub async fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
-        Ok(self
-            .database
-            .settings_repository()
-            .load_json(MIGRATION_STATUS_SETTING_KEY)
-            .await?
-            .unwrap_or_else(MigrationStatus::ready))
-    }
-
-    pub async fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
-        self.database
-            .settings_repository()
-            .save_json(MIGRATION_STATUS_SETTING_KEY, status)
-            .await
     }
 }
 
@@ -173,14 +156,6 @@ impl RemoteAgentConfigService {
             .await?
             .map(build_remote_agent_runtime_config)
             .transpose()
-    }
-
-    pub async fn load_migration_status(&self) -> Result<MigrationStatus, TrackError> {
-        self.repository.load_migration_status().await
-    }
-
-    pub async fn save_migration_status(&self, status: &MigrationStatus) -> Result<(), TrackError> {
-        self.repository.save_migration_status(status).await
     }
 }
 
@@ -303,58 +278,4 @@ fn install_backend_remote_agent_secrets(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::TempDir;
-
-    use super::BackendConfigRepository;
-    use track_dal::database::DatabaseContext;
-    use track_types::migration::{LegacyScanSummary, MigrationState, MigrationStatus};
-
-    async fn repository() -> (TempDir, BackendConfigRepository) {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
-            .await
-            .expect("database should resolve");
-
-        (
-            directory,
-            BackendConfigRepository::new(Some(database))
-                .await
-                .expect("backend config repository should resolve"),
-        )
-    }
-
-    fn status(state: MigrationState) -> MigrationStatus {
-        let requires_migration = matches!(state, MigrationState::ImportRequired);
-        MigrationStatus {
-            state,
-            requires_migration,
-            can_import: requires_migration,
-            legacy_detected: true,
-            summary: LegacyScanSummary::default(),
-            skipped_records: Vec::new(),
-            cleanup_candidates: Vec::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn saves_and_loads_imported_status() {
-        let (_directory, repository) = repository().await;
-        repository
-            .save_migration_status(&status(MigrationState::Imported))
-            .await
-            .expect("migration status should save");
-
-        let loaded = repository
-            .load_migration_status()
-            .await
-            .expect("migration status should load");
-
-        assert_eq!(loaded.state, MigrationState::Imported);
-        assert!(!loaded.requires_migration);
-        assert!(!loaded.can_import);
-    }
 }

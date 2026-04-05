@@ -6,7 +6,6 @@ use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
 use track_types::build_info::BuildInfo;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::ProjectId;
-use track_types::migration::{MigrationImportSummary, MigrationStatus};
 use track_types::types::{Task, TaskCreateInput};
 
 use crate::build_info::cli_build_info;
@@ -17,8 +16,6 @@ const SERVER_VERSION_PATH: &str = "/api/meta/server_version";
 pub trait TrackBackend {
     fn fetch_projects(&self) -> Result<Vec<ProjectRecord>, TrackError>;
     fn create_task(&self, input: &TaskCreateInput) -> Result<Task, TrackError>;
-    fn migration_status(&self) -> Result<MigrationStatus, TrackError>;
-    fn import_legacy_data(&self) -> Result<MigrationImportSummary, TrackError>;
     fn configure_remote_agent(
         &self,
         input: &ConfigureRemoteAgentRequest,
@@ -206,18 +203,6 @@ impl TrackBackend for HttpTrackBackend {
         self.post_json("/api/tasks", Some(input))
     }
 
-    fn migration_status(&self) -> Result<MigrationStatus, TrackError> {
-        Ok(self
-            .get_json::<MigrationStatusResponse>("/api/migration/status")?
-            .migration)
-    }
-
-    fn import_legacy_data(&self) -> Result<MigrationImportSummary, TrackError> {
-        Ok(self
-            .post_json::<serde_json::Value, MigrationImportResponse>("/api/migration/import", None)?
-            .summary)
-    }
-
     fn register_project(
         &self,
         canonical_name: &ProjectId,
@@ -241,16 +226,6 @@ impl TrackBackend for HttpTrackBackend {
 #[derive(Debug, Deserialize)]
 struct ProjectsResponse {
     projects: Vec<ProjectRecord>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MigrationStatusResponse {
-    migration: MigrationStatus,
-}
-
-#[derive(Debug, Deserialize)]
-struct MigrationImportResponse {
-    summary: MigrationImportSummary,
 }
 
 #[derive(Debug, Deserialize)]

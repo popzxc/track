@@ -14,7 +14,6 @@ use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
 use track_projects::project_metadata::{infer_project_metadata, ProjectRecord};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::ProjectId;
-use track_types::migration::{MigrationImportSummary, MigrationState, MigrationStatus};
 use track_types::types::{Task, TaskSource};
 
 use crate::backend_client::{
@@ -28,7 +27,6 @@ use crate::terminal_ui::{format_note, format_summary, SummaryTone, ValueTone};
 enum CliInvocation {
     Capture(Vec<String>),
     Configure(ConfigureArgs),
-    Migrate(MigrateCommand),
     ProjectRegister(ProjectRegisterArgs),
     RemoteAgentConfigure(RemoteAgentConfigureArgs),
 }
@@ -48,8 +46,6 @@ struct CommandLine {
 enum Command {
     Configure(ConfigureArgs),
     #[command(subcommand)]
-    Migrate(MigrateCommand),
-    #[command(subcommand)]
     Project(ProjectCommand),
     #[command(subcommand)]
     RemoteAgent(RemoteAgentCommand),
@@ -65,12 +61,6 @@ pub struct ConfigureArgs {
     model_hf_repo: Option<String>,
     #[arg(long = "model-hf-file", requires = "model_hf_repo")]
     model_hf_file: Option<String>,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum MigrateCommand {
-    Status,
-    Import,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -146,11 +136,6 @@ pub fn run_from_os_args(raw_args: Vec<OsString>) -> Result<String, TrackError> {
             )
         }
         CliInvocation::Configure(args) => run_configure_command(&config_service, args),
-        CliInvocation::Migrate(command) => {
-            let loaded = config_service.load_or_initialize()?;
-            let backend = HttpTrackBackend::new(&loaded.runtime.backend_base_url);
-            run_migration_command(&config_service, &loaded, &backend, command)
-        }
         CliInvocation::ProjectRegister(args) => {
             let loaded = config_service.load_or_initialize()?;
             let backend = HttpTrackBackend::new(&loaded.runtime.backend_base_url);
@@ -179,13 +164,12 @@ fn parse_invocation(raw_args: Vec<OsString>) -> Result<CliInvocation, TrackError
     }
     if matches!(
         first_argument.as_ref(),
-        "configure" | "migrate" | "project" | "remote-agent"
+        "configure" | "project" | "remote-agent"
     ) {
         let parsed = CommandLine::try_parse_from(raw_args)
             .map_err(|error| TrackError::new(ErrorCode::InvalidConfigInput, error.to_string()))?;
         return Ok(match parsed.command {
             Command::Configure(args) => CliInvocation::Configure(args),
-            Command::Migrate(command) => CliInvocation::Migrate(command),
             Command::Project(ProjectCommand::Register(args)) => {
                 CliInvocation::ProjectRegister(args)
             }
@@ -274,26 +258,6 @@ fn run_configure_command(
             ),
         ],
     ))
-}
-
-fn run_migration_command(
-    config_service: &CliConfigService,
-    loaded_config: &LoadedCliConfig,
-    backend: &dyn TrackBackend,
-    command: MigrateCommand,
-) -> Result<String, TrackError> {
-    let rendered = match command {
-        MigrateCommand::Status => {
-            let migration = backend.migration_status()?;
-            format_migration_status(&migration)
-        }
-        MigrateCommand::Import => {
-            let summary = backend.import_legacy_data()?;
-            format_migration_import_summary(&summary)
-        }
-    };
-
-    render_output_with_config_notes(config_service, loaded_config, rendered)
 }
 
 fn run_project_register_command_internal(
@@ -509,134 +473,6 @@ fn format_remote_agent_configured_output(
     )
 }
 
-fn format_migration_status(status: &MigrationStatus) -> String {
-    let title = if status.requires_migration {
-        "Migration required"
-    } else {
-        "Migration status"
-    };
-    let tone = if status.requires_migration {
-        SummaryTone::Info
-    } else {
-        SummaryTone::Success
-    };
-    let state = match status.state {
-        MigrationState::Ready => "ready",
-        MigrationState::ImportRequired => "import_required",
-        MigrationState::Imported => "imported",
-        MigrationState::Skipped => "skipped",
-    };
-    let skipped_count = status.skipped_records.len().to_string();
-    let cleanup_count = status.cleanup_candidates.len().to_string();
-    let mut rendered = format_summary(
-        title,
-        tone,
-        &[
-            ("State", state.to_owned(), ValueTone::Plain),
-            (
-                "Projects",
-                status.summary.projects_found.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Tasks",
-                status.summary.tasks_found.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Reviews",
-                status.summary.reviews_found.to_string(),
-                ValueTone::Plain,
-            ),
-            ("Skipped", skipped_count, ValueTone::Plain),
-            ("Cleanup", cleanup_count, ValueTone::Plain),
-        ],
-    );
-
-    if status.requires_migration {
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Next",
-            "Run `track migrate import` to copy legacy data into the SQLite backend.",
-        ));
-    }
-
-    rendered
-}
-
-fn format_migration_import_summary(summary: &MigrationImportSummary) -> String {
-    let mut rendered = format_summary(
-        "Imported legacy data",
-        SummaryTone::Success,
-        &[
-            (
-                "Projects",
-                summary.imported_projects.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Aliases",
-                summary.imported_aliases.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Tasks",
-                summary.imported_tasks.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Reviews",
-                summary.imported_reviews.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Secrets",
-                summary.copied_secret_files.len().to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Skipped",
-                summary.skipped_records.len().to_string(),
-                ValueTone::Plain,
-            ),
-        ],
-    );
-    if !summary.cleanup_candidates.is_empty() {
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Next",
-            "Run `track configure` to materialize `~/.config/track/cli.json` before removing legacy config.",
-        ));
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Install",
-            "From your `airbender-platform` checkout, run `cargo install --path crates/cargo-airbender --force`.",
-        ));
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Keep",
-            "Preserve `~/.track/models` if you use local capture.",
-        ));
-        for candidate in &summary.cleanup_candidates {
-            rendered.push('\n');
-            rendered.push_str(&format_note(
-                "Remove",
-                &migration_cleanup_command(&candidate.path),
-            ));
-        }
-    }
-
-    rendered
-}
-
-fn migration_cleanup_command(path: &str) -> String {
-    if path.ends_with(".json") {
-        format!("rm -f {path}")
-    } else {
-        format!("rm -rf {path}")
-    }
-}
-
 fn render_output_with_config_notes(
     config_service: &CliConfigService,
     loaded_config: &LoadedCliConfig,
@@ -696,7 +532,7 @@ fn enrich_backend_error_for_cli(error: TrackError) -> TrackError {
     match error.code {
         ErrorCode::MigrationRequired => TrackError::new(
             ErrorCode::MigrationRequired,
-            "Backend migration is required. Run `track migrate status` to inspect it, then `track migrate import` before using capture commands.",
+            "Backend migration is required. Complete the legacy import in the web UI before using CLI commands.",
         ),
         ErrorCode::ProjectNotFound => TrackError::new(
             ErrorCode::ProjectNotFound,
@@ -784,16 +620,16 @@ mod tests {
     use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
     use track_types::errors::{ErrorCode, TrackError};
     use track_types::ids::{ProjectId, TaskId};
-    use track_types::migration::{MigrationImportSummary, MigrationStatus};
     use track_types::time_utils::now_utc;
     use track_types::types::{
         Confidence, ParsedTaskCandidate, Priority, Status, Task, TaskCreateInput, TaskSource,
     };
 
     use super::{
-        canonicalize_aliases, format_created_task_output, run_capture_command_internal,
-        run_project_register_command_internal, run_remote_agent_configure_command_internal,
-        CliConfigService, LoadedCliConfig, ProjectRegisterArgs, RemoteAgentConfigureArgs,
+        canonicalize_aliases, format_created_task_output, parse_invocation,
+        run_capture_command_internal, run_project_register_command_internal,
+        run_remote_agent_configure_command_internal, CliConfigService, LoadedCliConfig,
+        ProjectRegisterArgs, RemoteAgentConfigureArgs,
     };
     use crate::backend_client::{
         ConfigureRemoteAgentRequest, RemoteAgentSettingsResponse, TrackBackend,
@@ -868,14 +704,6 @@ mod tests {
                 updated_at: now_utc(),
                 source: input.source,
             })
-        }
-
-        fn migration_status(&self) -> Result<MigrationStatus, TrackError> {
-            unimplemented!("migration_status is not used in these tests");
-        }
-
-        fn import_legacy_data(&self) -> Result<MigrationImportSummary, TrackError> {
-            unimplemented!("import_legacy_data is not used in these tests");
         }
 
         fn configure_remote_agent(
@@ -1017,7 +845,16 @@ mod tests {
         .expect_err("capture should fail while migration is required");
 
         assert_eq!(error.code, ErrorCode::MigrationRequired);
-        assert!(error.to_string().contains("track migrate status"));
+        assert!(error.to_string().contains("web UI"));
+    }
+
+    #[test]
+    fn removed_migrate_command_returns_guidance_error() {
+        let error = parse_invocation(vec!["track".into(), "migrate".into()])
+            .expect_err("removed migrate command should not fall through to capture");
+
+        assert_eq!(error.code, ErrorCode::InvalidConfigInput);
+        assert!(error.to_string().contains("web UI"));
     }
 
     #[test]

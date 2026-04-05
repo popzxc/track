@@ -1,7 +1,6 @@
 pub mod build_info;
 pub mod errors;
 pub mod ids;
-pub mod migration;
 pub mod path_component;
 pub mod task_description;
 pub mod task_id;
