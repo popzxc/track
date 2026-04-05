@@ -1,0 +1,39 @@
+---
+source: crates/track-remote-agent/src/scripts/dispatch/remote_agent_launcher.rs
+expression: launcher
+---
+#!/usr/bin/env bash
+set -e
+export NVM_DIR="$HOME/.nvm"
+. "$HOME/.cargo/env"
+
+set -eu
+RUN_DIR="$1"
+WORKTREE_PATH="$2"
+printf '%s\n' "$$" > "$RUN_DIR/launcher.pid"
+cancel_run() {
+  if [ -f "$RUN_DIR/codex.pid" ]; then
+    CODEX_PID="$(tr -d '[:space:]' < "$RUN_DIR/codex.pid")"
+    if [ -n "$CODEX_PID" ] && kill -0 "$CODEX_PID" 2>/dev/null; then
+      kill "$CODEX_PID" 2>/dev/null || true
+    fi
+  fi
+  printf 'canceled\n' > "$RUN_DIR/status.txt"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/finished-at.txt"
+  exit 130
+}
+trap cancel_run TERM INT
+printf 'running\n' > "$RUN_DIR/status.txt"
+codex --search exec --dangerously-bypass-approvals-and-sandbox -C "$WORKTREE_PATH" --json --output-schema "$RUN_DIR/result-schema.json" -o "$RUN_DIR/result.json" - < "$RUN_DIR/prompt.md" > "$RUN_DIR/events.jsonl" 2> "$RUN_DIR/stderr.log" &
+CODEX_PID="$!"
+printf '%s\n' "$CODEX_PID" > "$RUN_DIR/codex.pid"
+if wait "$CODEX_PID"; then
+  printf 'completed\n' > "$RUN_DIR/status.txt"
+else
+  EXIT_CODE="$?"
+  CURRENT_STATUS="$(tr -d '[:space:]' < "$RUN_DIR/status.txt" 2>/dev/null || true)"
+  if [ "$CURRENT_STATUS" != "canceled" ] && [ "$EXIT_CODE" -ne 130 ]; then
+    printf 'launcher_failed\n' > "$RUN_DIR/status.txt"
+  fi
+fi
+date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/finished-at.txt"

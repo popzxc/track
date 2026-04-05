@@ -5,6 +5,7 @@ mod schemas;
 mod scripts;
 mod service;
 mod ssh;
+mod template_renderer;
 mod types;
 mod utils;
 

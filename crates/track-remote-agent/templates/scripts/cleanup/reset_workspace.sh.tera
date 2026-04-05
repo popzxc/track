@@ -1,0 +1,31 @@
+set -eu
+{{ path_helpers }}WORKSPACE_ROOT="$(expand_remote_path "$1")"
+REGISTRY_PATH="$(expand_remote_path "$2")"
+WORKSPACE_ENTRIES_REMOVED=0
+REGISTRY_REMOVED=false
+
+if [ -z "$WORKSPACE_ROOT" ] || [ "$WORKSPACE_ROOT" = "/" ] || [ "$WORKSPACE_ROOT" = "$HOME" ]; then
+  echo "Refusing to reset an unsafe remote workspace root at $WORKSPACE_ROOT." >&2
+  exit 1
+fi
+
+mkdir -p "$WORKSPACE_ROOT"
+
+for ENTRY in "$WORKSPACE_ROOT"/* "$WORKSPACE_ROOT"/.[!.]* "$WORKSPACE_ROOT"/..?*; do
+  [ -e "$ENTRY" ] || continue
+  rm -rf "$ENTRY"
+  if [ ! -e "$ENTRY" ]; then
+    WORKSPACE_ENTRIES_REMOVED=$((WORKSPACE_ENTRIES_REMOVED + 1))
+  fi
+done
+
+if [ -e "$REGISTRY_PATH" ]; then
+  rm -f "$REGISTRY_PATH"
+  if [ ! -e "$REGISTRY_PATH" ]; then
+    REGISTRY_REMOVED=true
+  fi
+fi
+
+printf '{"workspaceEntriesRemoved":%s,"registryRemoved":%s}\n' \
+  "$WORKSPACE_ENTRIES_REMOVED" \
+  "$REGISTRY_REMOVED"

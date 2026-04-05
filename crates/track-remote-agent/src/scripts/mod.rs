@@ -3,10 +3,16 @@
 //! Each script is represented as its own type so the service layer can talk in
 //! terms of named remote operations instead of opaque shell snippets.
 
+use std::borrow::Cow;
+
+use serde::Serialize;
+
 mod checkout;
 mod cleanup;
 mod dispatch;
 mod files;
+
+use crate::template_renderer::render_template;
 
 pub(crate) use checkout::{
     CreateReviewWorktreeScript, CreateWorktreeScript, EnsureCheckoutScript,
@@ -22,6 +28,9 @@ pub(crate) use dispatch::{
     RemoteAgentLauncherScript,
 };
 pub(crate) use files::{PrepareRemoteUploadScript, ReadRemoteFileScript};
+
+const REMOTE_SCRIPT_WRAPPER_TEMPLATE: &str =
+    include_str!("../../templates/scripts/remote_script_wrapper.sh.tera");
 
 /// Returns the shared shell function used by remote scripts to expand
 /// home-relative paths in a predictable, non-interactive way.
@@ -51,18 +60,29 @@ expand_remote_path() {
 }
 
 pub(crate) fn render_remote_script_with_shell_prelude(script: &str, shell_prelude: &str) -> String {
-    let mut rendered = String::from("set -e\n");
+    let normalized_shell_prelude = normalize_shell_prelude(shell_prelude);
+    let template_context = RemoteScriptWrapperTemplate {
+        shell_prelude: normalized_shell_prelude.as_ref(),
+        script_body: script.trim_start_matches('\n'),
+    };
 
-    if !shell_prelude.trim().is_empty() {
-        rendered.push_str(shell_prelude);
-        if !shell_prelude.ends_with('\n') {
-            rendered.push('\n');
-        }
+    render_template(REMOTE_SCRIPT_WRAPPER_TEMPLATE, &template_context)
+}
+
+#[derive(Serialize)]
+struct RemoteScriptWrapperTemplate<'a> {
+    shell_prelude: &'a str,
+    script_body: &'a str,
+}
+
+fn normalize_shell_prelude(shell_prelude: &str) -> Cow<'_, str> {
+    if shell_prelude.trim().is_empty() {
+        Cow::Borrowed("")
+    } else if shell_prelude.ends_with('\n') {
+        Cow::Borrowed(shell_prelude)
+    } else {
+        Cow::Owned(format!("{shell_prelude}\n"))
     }
-
-    rendered.push('\n');
-    rendered.push_str(script.trim_start_matches('\n'));
-    rendered
 }
 
 #[cfg(test)]

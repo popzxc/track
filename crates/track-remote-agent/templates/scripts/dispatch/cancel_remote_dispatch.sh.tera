@@ -1,0 +1,27 @@
+set -eu
+{{ path_helpers }}RUN_DIR="$(expand_remote_path "$1")"
+LAUNCHER_PID_FILE="$RUN_DIR/{{ launcher_pid_file }}"
+CODEX_PID_FILE="$RUN_DIR/{{ codex_pid_file }}"
+STATUS_FILE="$RUN_DIR/{{ status_file }}"
+FINISHED_AT_FILE="$RUN_DIR/{{ finished_at_file }}"
+
+kill_if_running() {
+  PID="$1"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID" 2>/dev/null || true
+  fi
+}
+
+if [ -f "$LAUNCHER_PID_FILE" ]; then
+  LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
+  kill_if_running "$LAUNCHER_PID"
+fi
+
+if [ -f "$CODEX_PID_FILE" ]; then
+  CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
+  kill_if_running "$CODEX_PID"
+fi
+
+mkdir -p "$RUN_DIR"
+printf 'canceled\n' > "$STATUS_FILE"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$FINISHED_AT_FILE"

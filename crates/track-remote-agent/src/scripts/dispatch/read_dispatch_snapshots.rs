@@ -1,3 +1,4 @@
+use serde::Serialize;
 use track_types::errors::{ErrorCode, TrackError};
 
 use crate::constants::{
@@ -5,7 +6,11 @@ use crate::constants::{
     REMOTE_STDERR_FILE_NAME,
 };
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
 use crate::types::RemoteDispatchSnapshot;
+
+const READ_DISPATCH_SNAPSHOTS_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/dispatch/read_dispatch_snapshots.sh.tera");
 
 /// Reads the status files for one or more remote run directories and decodes
 /// them into structured snapshots.
@@ -14,39 +19,15 @@ pub(crate) struct ReadDispatchSnapshotsScript;
 
 impl ReadDispatchSnapshotsScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-
-emit_file() {{
-  LABEL="$1"
-  FILE_PATH="$(expand_remote_path "$2")"
-
-  printf '%s\t' "$LABEL"
-  if [ -f "$FILE_PATH" ]; then
-    printf 'present\t'
-    od -An -tx1 -v "$FILE_PATH" | tr -d ' \n'
-  else
-    printf 'missing\t'
-  fi
-  printf '\n'
-}}
-
-for RAW_RUN_DIR in "$@"; do
-  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
-  printf 'run\t%s\n' "$RAW_RUN_DIR"
-  emit_file "status" "$RUN_DIR/{status_file}"
-  emit_file "result" "$RUN_DIR/{result_file}"
-  emit_file "stderr" "$RUN_DIR/{stderr_file}"
-  emit_file "finished_at" "$RUN_DIR/{finished_at_file}"
-done
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            status_file = REMOTE_STATUS_FILE_NAME,
-            result_file = REMOTE_RESULT_FILE_NAME,
-            stderr_file = REMOTE_STDERR_FILE_NAME,
-            finished_at_file = REMOTE_FINISHED_AT_FILE_NAME,
+        render_template(
+            READ_DISPATCH_SNAPSHOTS_TEMPLATE,
+            &ReadDispatchSnapshotsTemplate {
+                path_helpers: remote_path_helpers_shell(),
+                status_file: REMOTE_STATUS_FILE_NAME,
+                result_file: REMOTE_RESULT_FILE_NAME,
+                stderr_file: REMOTE_STDERR_FILE_NAME,
+                finished_at_file: REMOTE_FINISHED_AT_FILE_NAME,
+            },
         )
     }
 
@@ -123,6 +104,15 @@ done
 
         Ok(snapshots)
     }
+}
+
+#[derive(Serialize)]
+struct ReadDispatchSnapshotsTemplate<'a> {
+    path_helpers: &'a str,
+    status_file: &'a str,
+    result_file: &'a str,
+    stderr_file: &'a str,
+    finished_at_file: &'a str,
 }
 
 fn decode_hex_string(hex: &str) -> Result<String, TrackError> {

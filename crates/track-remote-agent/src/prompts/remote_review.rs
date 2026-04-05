@@ -1,4 +1,10 @@
+use serde::Serialize;
 use track_types::types::{ReviewRecord, ReviewRunRecord};
+
+use crate::template_renderer::render_template;
+
+const REMOTE_REVIEW_PROMPT_TEMPLATE: &str =
+    include_str!("../../templates/prompts/remote_review.md.tera");
 
 /// Renders the review instructions for a prepared remote PR-review run.
 ///
@@ -35,117 +41,53 @@ impl<'a> RemoteReviewPrompt<'a> {
             .worktree_path
             .as_deref()
             .expect("queued review dispatches should always have a worktree path");
+        let template_context = RemoteReviewPromptTemplate {
+            pull_request_url: &self.review.pull_request_url,
+            pull_request_title: &self.review.pull_request_title,
+            repository_full_name: &self.review.repository_full_name,
+            repo_url: &self.review.repo_url,
+            base_branch: &self.review.base_branch,
+            prepared_branch: branch_name,
+            worktree_path,
+            target_head_oid: self.dispatch_record.target_head_oid.as_deref(),
+            main_user: &self.review.main_user,
+            follow_up_request: self.dispatch_record.follow_up_request.as_deref(),
+            show_previous_review_context: self.previous_submitted_review.is_some(),
+            previous_github_review_url: self
+                .previous_submitted_review
+                .and_then(|review| review.github_review_url.as_deref()),
+            previous_github_review_id: self
+                .previous_submitted_review
+                .and_then(|review| review.github_review_id.as_deref()),
+            previous_target_head_oid: self
+                .previous_submitted_review
+                .and_then(|review| review.target_head_oid.as_deref()),
+            default_review_prompt: self.review.default_review_prompt.as_deref(),
+            extra_instructions: self.review.extra_instructions.as_deref(),
+        };
 
-        let mut prompt = String::new();
-        prompt.push_str("# Remote PR review\n\n");
-        prompt.push_str(
-            "You are reviewing an existing GitHub pull request from a prepared repository worktree.\n",
-        );
-        prompt.push_str(
-            "The repository checkout and review worktree are already prepared for you.\n",
-        );
-        prompt
-            .push_str("You have full filesystem access, internet access, and `gh` is available.\n");
-        prompt.push_str("This run is for review only: do not push commits, open PRs, or request reviewers yourself.\n");
-        prompt.push_str("You are responsible for submitting the GitHub review yourself before you return the final JSON.\n\n");
-        prompt.push_str("## Pull request context\n\n");
-        prompt.push_str(&format!(
-            "- Pull request: {}\n",
-            self.review.pull_request_url
-        ));
-        prompt.push_str(&format!("- Title: {}\n", self.review.pull_request_title));
-        prompt.push_str(&format!(
-            "- Repository: {}\n",
-            self.review.repository_full_name
-        ));
-        prompt.push_str(&format!("- Repo URL: {}\n", self.review.repo_url));
-        prompt.push_str(&format!("- Base branch: {}\n", self.review.base_branch));
-        prompt.push_str(&format!("- Prepared branch: {branch_name}\n"));
-        prompt.push_str(&format!("- Working directory: {worktree_path}\n"));
-        if let Some(target_head_oid) = self.dispatch_record.target_head_oid.as_deref() {
-            prompt.push_str(&format!("- Pinned review commit: {target_head_oid}\n"));
-        }
-        prompt.push('\n');
-        prompt.push_str("## Review instructions\n\n");
-        prompt.push_str("- Submit one GitHub review in COMMENT mode.\n");
-        prompt.push_str(&format!(
-            "- The first line of the top-level review body must be `@{} requested me to review this PR.`\n",
-            self.review.main_user
-        ));
-        prompt.push_str("- Prefer inline review comments for concrete file/line findings so people can reply in GitHub threads.\n");
-        prompt.push_str("- Use the top-level review body for the overall summary, major risks, and any no-findings conclusion.\n");
-        prompt.push_str(
-            "- Focus on bugs, regressions, risky behavior changes, missing tests, and edge cases.\n",
-        );
-        prompt.push_str("- Use the checked-out code and `gh` to inspect the PR diff and context instead of guessing.\n");
-        prompt.push_str("- If a pinned review commit is listed above, the prepared worktree is intended to match that exact commit. If it does not, stop and explain the mismatch instead of reviewing a newer head silently.\n");
-        prompt.push_str("- Keep the review concise but concrete.\n");
-        prompt.push_str(
-            "- If you do not find problems, say so explicitly in the top-level review body.\n",
-        );
-        prompt.push_str("- If you cannot complete the review responsibly, explain the blocker in the summary and do not claim the review was submitted.\n");
-        prompt.push_str("- Capture the submitted GitHub review's durable handle from the `gh` response and return it as `githubReviewId` and `githubReviewUrl` when submission succeeds.\n");
-        prompt.push_str("- Return `reviewSubmitted` as `true` only after GitHub confirms that the review submission succeeded.\n\n");
-
-        if let Some(follow_up_request) = self.dispatch_record.follow_up_request.as_deref() {
-            prompt.push_str("## Current re-review request\n\n");
-            prompt.push_str(follow_up_request.trim());
-            prompt.push_str("\n\n");
-        }
-
-        if let Some(previous_submitted_review) = self.previous_submitted_review {
-            prompt.push_str("## Previous bot review context\n\n");
-            if let Some(github_review_url) = previous_submitted_review.github_review_url.as_deref()
-            {
-                prompt.push_str(&format!(
-                    "- Previous submitted review: {github_review_url}\n"
-                ));
-            }
-            if let Some(github_review_id) = previous_submitted_review.github_review_id.as_deref() {
-                prompt.push_str(&format!(
-                    "- Previous submitted review id: {github_review_id}\n"
-                ));
-            }
-            if let Some(target_head_oid) = previous_submitted_review.target_head_oid.as_deref() {
-                prompt.push_str(&format!(
-                    "- Previous review pinned commit: {target_head_oid}\n"
-                ));
-            }
-            prompt.push('\n');
-            prompt.push_str("## Re-review guidance\n\n");
-            prompt.push_str("- Inspect the current PR conversation on GitHub before deciding whether an older bot finding still matters.\n");
-            prompt.push_str(&format!(
-                "- For context: your previous comments are always non-blocking input at the discretion of the reviewee unless @{} explicitly commented that a finding is valid and should be fixed.\n",
-                self.review.main_user
-            ));
-            prompt.push_str(&format!(
-                "- Only treat an older bot finding as something you must actively verify and potentially elevate into a primary finding if @{} explicitly said it is valid and should be fixed.\n",
-                self.review.main_user
-            ));
-            prompt.push_str(&format!(
-                "- If @{} or the reviewee explicitly said an older bot finding is not important, disputed it, or chose not to address it, do not repeat it as a primary finding just because it appeared in a previous bot review.\n",
-                self.review.main_user
-            ));
-            prompt.push_str("- You may mention unresolved prior bot comments as brief context in the top-level summary when helpful, but re-evaluate the current code on its own merits.\n\n");
-        }
-
-        if let Some(default_review_prompt) = self.review.default_review_prompt.as_deref() {
-            prompt.push_str("## Default review prompt\n\n");
-            prompt.push_str(default_review_prompt);
-            prompt.push_str("\n\n");
-        }
-
-        if let Some(extra_instructions) = self.review.extra_instructions.as_deref() {
-            prompt.push_str("## Extra instructions\n\n");
-            prompt.push_str(extra_instructions);
-            prompt.push_str("\n\n");
-        }
-
-        prompt.push_str("## Final response\n\n");
-        prompt.push_str("Return JSON only. The response must match the provided schema exactly.\n");
-
-        prompt
+        render_template(REMOTE_REVIEW_PROMPT_TEMPLATE, &template_context)
     }
+}
+
+#[derive(Serialize)]
+struct RemoteReviewPromptTemplate<'a> {
+    pull_request_url: &'a str,
+    pull_request_title: &'a str,
+    repository_full_name: &'a str,
+    repo_url: &'a str,
+    base_branch: &'a str,
+    prepared_branch: &'a str,
+    worktree_path: &'a str,
+    target_head_oid: Option<&'a str>,
+    main_user: &'a str,
+    follow_up_request: Option<&'a str>,
+    show_previous_review_context: bool,
+    previous_github_review_url: Option<&'a str>,
+    previous_github_review_id: Option<&'a str>,
+    previous_target_head_oid: Option<&'a str>,
+    default_review_prompt: Option<&'a str>,
+    extra_instructions: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -257,28 +199,9 @@ mod tests {
             RemoteReviewPrompt::new(&review, &current_review_run, Some(&previous_review_run))
                 .render();
 
-        assert!(prompt.contains("You are responsible for submitting the GitHub review yourself"));
-        assert!(prompt.contains("Submit one GitHub review in COMMENT mode."));
-        assert!(prompt.contains("Prefer inline review comments"));
-        assert!(prompt.contains(
-            "The first line of the top-level review body must be `@octocat requested me to review this PR.`"
-        ));
-        assert!(prompt.contains("- Pinned review commit: fedcba654321"));
-        assert!(prompt.contains("the prepared worktree is intended to match that exact commit"));
-        assert!(prompt.contains("Capture the submitted GitHub review's durable handle"));
-        assert!(prompt.contains("Return `reviewSubmitted` as `true` only after GitHub confirms"));
-        assert!(prompt.contains("## Current re-review request"));
-        assert!(prompt.contains("Check whether the main review comments were actually resolved."));
-        assert!(prompt.contains("## Previous bot review context"));
-        assert!(prompt.contains("https://github.com/acme/project-x/pull/42#pullrequestreview-1001"));
-        assert!(prompt.contains("## Re-review guidance"));
-        assert!(prompt.contains(
-            "non-blocking input at the discretion of the reviewee unless @octocat explicitly commented"
-        ));
-        assert!(prompt.contains("do not repeat it as a primary finding"));
-        assert!(prompt.contains("## Default review prompt"));
-        assert!(prompt.contains("Focus on regressions and missing tests."));
-        assert!(prompt.contains("## Extra instructions"));
-        assert!(prompt.contains("Pay special attention to queue rendering."));
+        insta::assert_snapshot!(
+            "remote_review_prompt_with_follow_up_and_previous_review_context",
+            prompt
+        );
     }
 }

@@ -1,4 +1,10 @@
+use serde::Serialize;
+
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
+
+const READ_REMOTE_FILE_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/files/read_remote_file.sh.tera");
 
 /// Reads a single remote file if it exists and signals a distinct exit code
 /// when it does not.
@@ -12,23 +18,22 @@ impl ReadRemoteFileScript {
     pub(crate) const MISSING_FILE_EXIT_CODE: i32 = 3;
 
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-REMOTE_PATH="$(expand_remote_path "$1")"
-if [ -f "$REMOTE_PATH" ]; then
-  cat "$REMOTE_PATH"
-else
-  exit {missing_exit_code}
-fi
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            missing_exit_code = Self::MISSING_FILE_EXIT_CODE,
+        render_template(
+            READ_REMOTE_FILE_TEMPLATE,
+            &ReadRemoteFileTemplate {
+                path_helpers: remote_path_helpers_shell(),
+                missing_exit_code: Self::MISSING_FILE_EXIT_CODE,
+            },
         )
     }
 
     pub(crate) fn arguments(&self, remote_path: &str) -> Vec<String> {
         vec![remote_path.to_owned()]
     }
+}
+
+#[derive(Serialize)]
+struct ReadRemoteFileTemplate<'a> {
+    path_helpers: &'a str,
+    missing_exit_code: i32,
 }

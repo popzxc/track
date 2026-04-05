@@ -1,3 +1,8 @@
+use crate::template_renderer::render_static_template;
+
+const FETCH_GITHUB_LOGIN_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/dispatch/fetch_github_login.sh.tera");
+
 /// Reads the authenticated GitHub login on the remote host.
 ///
 /// The remote-agent crate uses this to discover fork ownership on the remote
@@ -8,11 +13,6 @@ pub(crate) struct FetchGithubLoginScript;
 
 impl FetchGithubLoginScript {
     pub(crate) fn render(&self) -> String {
-        String::from(
-            r#"
-set -eu
-gh api user --jq .login
-"#,
-        )
+        render_static_template(FETCH_GITHUB_LOGIN_TEMPLATE)
     }
 }

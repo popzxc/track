@@ -1,0 +1,1 @@
+codex --search exec --dangerously-bypass-approvals-and-sandbox -C "$WORKTREE_PATH" --json --output-schema "$RUN_DIR/{{ schema_file }}" -o "$RUN_DIR/{{ result_file }}" - < "$RUN_DIR/{{ prompt_file }}" > "$RUN_DIR/events.jsonl" 2> "$RUN_DIR/{{ stderr_file }}" &

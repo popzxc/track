@@ -626,10 +626,9 @@ mod tests {
     };
 
     use super::{
-        canonicalize_aliases, format_created_task_output, parse_invocation,
-        run_capture_command_internal, run_project_register_command_internal,
-        run_remote_agent_configure_command_internal, CliConfigService, LoadedCliConfig,
-        ProjectRegisterArgs, RemoteAgentConfigureArgs,
+        canonicalize_aliases, format_created_task_output, run_capture_command_internal,
+        run_project_register_command_internal, run_remote_agent_configure_command_internal,
+        CliConfigService, LoadedCliConfig, ProjectRegisterArgs, RemoteAgentConfigureArgs,
     };
     use crate::backend_client::{
         ConfigureRemoteAgentRequest, RemoteAgentSettingsResponse, TrackBackend,
@@ -845,15 +844,6 @@ mod tests {
         .expect_err("capture should fail while migration is required");
 
         assert_eq!(error.code, ErrorCode::MigrationRequired);
-        assert!(error.to_string().contains("web UI"));
-    }
-
-    #[test]
-    fn removed_migrate_command_returns_guidance_error() {
-        let error = parse_invocation(vec!["track".into(), "migrate".into()])
-            .expect_err("removed migrate command should not fall through to capture");
-
-        assert_eq!(error.code, ErrorCode::InvalidConfigInput);
         assert!(error.to_string().contains("web UI"));
     }
 

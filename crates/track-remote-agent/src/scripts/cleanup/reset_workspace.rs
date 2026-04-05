@@ -1,8 +1,13 @@
+use serde::Serialize;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::types::RemoteResetSummary;
 
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
 use crate::types::RemoteWorkspaceResetReport;
+
+const RESET_WORKSPACE_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/cleanup/reset_workspace.sh.tera");
 
 /// Resets the entire remote workspace root and the project registry that maps
 /// logical projects to remote checkouts.
@@ -11,42 +16,11 @@ pub(crate) struct ResetWorkspaceScript;
 
 impl ResetWorkspaceScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-WORKSPACE_ROOT="$(expand_remote_path "$1")"
-REGISTRY_PATH="$(expand_remote_path "$2")"
-WORKSPACE_ENTRIES_REMOVED=0
-REGISTRY_REMOVED=false
-
-if [ -z "$WORKSPACE_ROOT" ] || [ "$WORKSPACE_ROOT" = "/" ] || [ "$WORKSPACE_ROOT" = "$HOME" ]; then
-  echo "Refusing to reset an unsafe remote workspace root at $WORKSPACE_ROOT." >&2
-  exit 1
-fi
-
-mkdir -p "$WORKSPACE_ROOT"
-
-for ENTRY in "$WORKSPACE_ROOT"/* "$WORKSPACE_ROOT"/.[!.]* "$WORKSPACE_ROOT"/..?*; do
-  [ -e "$ENTRY" ] || continue
-  rm -rf "$ENTRY"
-  if [ ! -e "$ENTRY" ]; then
-    WORKSPACE_ENTRIES_REMOVED=$((WORKSPACE_ENTRIES_REMOVED + 1))
-  fi
-done
-
-if [ -e "$REGISTRY_PATH" ]; then
-  rm -f "$REGISTRY_PATH"
-  if [ ! -e "$REGISTRY_PATH" ]; then
-    REGISTRY_REMOVED=true
-  fi
-fi
-
-printf '{{"workspaceEntriesRemoved":%s,"registryRemoved":%s}}\n' \
-  "$WORKSPACE_ENTRIES_REMOVED" \
-  "$REGISTRY_REMOVED"
-"#,
-            path_helpers = remote_path_helpers_shell(),
+        render_template(
+            RESET_WORKSPACE_TEMPLATE,
+            &PathHelpersTemplate {
+                path_helpers: remote_path_helpers_shell(),
+            },
         )
     }
 
@@ -69,4 +43,9 @@ printf '{{"workspaceEntriesRemoved":%s,"registryRemoved":%s}}\n' \
 
         Ok(parsed_report.into_summary())
     }
+}
+
+#[derive(Serialize)]
+struct PathHelpersTemplate<'a> {
+    path_helpers: &'a str,
 }

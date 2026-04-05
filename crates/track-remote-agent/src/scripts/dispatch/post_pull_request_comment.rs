@@ -1,3 +1,8 @@
+use crate::template_renderer::render_static_template;
+
+const POST_PULL_REQUEST_COMMENT_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/dispatch/post_pull_request_comment.sh.tera");
+
 /// Posts a top-level GitHub comment to the pull request's issue thread.
 ///
 /// Review follow-up uses this to notify the configured reviewer about a new PR
@@ -7,14 +12,7 @@ pub(crate) struct PostPullRequestCommentScript;
 
 impl PostPullRequestCommentScript {
     pub(crate) fn render(&self) -> String {
-        String::from(
-            r#"
-set -eu
-ENDPOINT="$1"
-BODY="$2"
-gh api --method POST "$ENDPOINT" -f body="$BODY" >/dev/null
-"#,
-        )
+        render_static_template(POST_PULL_REQUEST_COMMENT_TEMPLATE)
     }
 
     pub(crate) fn arguments(&self, endpoint: &str, body: &str) -> Vec<String> {

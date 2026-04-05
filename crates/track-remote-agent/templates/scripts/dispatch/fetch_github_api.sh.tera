@@ -1,0 +1,3 @@
+set -eu
+ENDPOINT="$1"
+gh api "$ENDPOINT"

@@ -1,0 +1,3 @@
+SCHEMA_CONTENT="$(tr -d '\n' < "$RUN_DIR/{{ schema_file }}")"
+cd "$WORKTREE_PATH"
+claude -p --dangerously-skip-permissions --add-dir "$WORKTREE_PATH" --output-format json --json-schema "$SCHEMA_CONTENT" < "$RUN_DIR/{{ prompt_file }}" > "$RUN_DIR/{{ result_file }}" 2> "$RUN_DIR/{{ stderr_file }}" &

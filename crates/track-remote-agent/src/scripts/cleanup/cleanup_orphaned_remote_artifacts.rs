@@ -1,3 +1,4 @@
+use serde::Serialize;
 use track_types::errors::TrackError;
 
 use crate::constants::{
@@ -5,9 +6,13 @@ use crate::constants::{
     REVIEW_WORKTREE_DIRECTORY_NAME,
 };
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
 use crate::types::RemoteArtifactCleanupCounts;
 
 use super::parse_remote_cleanup_counts;
+
+const CLEANUP_ORPHANED_REMOTE_ARTIFACTS_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/cleanup/cleanup_orphaned_remote_artifacts.sh.tera");
 
 /// Removes forgotten dispatch and review artifacts that no longer have local
 /// records keeping them alive.
@@ -16,145 +21,15 @@ pub(crate) struct CleanupOrphanedRemoteArtifactsScript;
 
 impl CleanupOrphanedRemoteArtifactsScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-WORKSPACE_ROOT="$(expand_remote_path "$1")"
-shift
-
-KEEP_WORKTREE_PATHS=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--" ]; then
-    shift
-    break
-  fi
-
-  KEEP_WORKTREE_PATHS+=("$(expand_remote_path "$1")")
-  shift
-done
-
-KEEP_RUN_DIRECTORIES=()
-for RAW_RUN_DIR in "$@"; do
-  KEEP_RUN_DIRECTORIES+=("$(expand_remote_path "$RAW_RUN_DIR")")
-done
-
-WORKTREES_REMOVED=0
-RUN_DIRECTORIES_REMOVED=0
-
-path_is_kept() {{
-  TARGET_PATH="$1"
-  shift
-
-  for KEPT_PATH in "$@"; do
-    if [ "$KEPT_PATH" = "$TARGET_PATH" ]; then
-      return 0
-    fi
-  done
-
-  return 1
-}}
-
-kill_if_running() {{
-  PID="$1"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-  fi
-}}
-
-remove_run_directory() {{
-  RUN_DIR="$1"
-  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
-  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
-
-  if [ -f "$LAUNCHER_PID_FILE" ]; then
-    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
-    kill_if_running "$LAUNCHER_PID"
-  fi
-
-  if [ -f "$CODEX_PID_FILE" ]; then
-    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
-    kill_if_running "$CODEX_PID"
-  fi
-
-  if [ -e "$RUN_DIR" ]; then
-    rm -rf "$RUN_DIR"
-  fi
-
-  if [ ! -e "$RUN_DIR" ]; then
-    RUN_DIRECTORIES_REMOVED=$((RUN_DIRECTORIES_REMOVED + 1))
-  fi
-}}
-
-remove_worktree_path() {{
-  WORKTREE_PATH="$1"
-  PROJECT_DIRECTORY="$(dirname "$(dirname "$WORKTREE_PATH")")"
-  PROJECT_NAME="$(basename "$PROJECT_DIRECTORY")"
-  CHECKOUT_PATH="$PROJECT_DIRECTORY/$PROJECT_NAME"
-
-  if [ -d "$CHECKOUT_PATH/.git" ]; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-    git -C "$CHECKOUT_PATH" worktree prune >&2 || true
-  fi
-
-  if [ -e "$WORKTREE_PATH" ]; then
-    rm -rf "$WORKTREE_PATH"
-  fi
-
-  if [ ! -e "$WORKTREE_PATH" ]; then
-    WORKTREES_REMOVED=$((WORKTREES_REMOVED + 1))
-  fi
-}}
-
-for PROJECT_DIRECTORY in "$WORKSPACE_ROOT"/*; do
-  [ -d "$PROJECT_DIRECTORY" ] || continue
-
-  for RUN_DIR in "$PROJECT_DIRECTORY"/dispatches/dispatch-*; do
-    [ -e "$RUN_DIR" ] || continue
-    if path_is_kept "$RUN_DIR" "${{KEEP_RUN_DIRECTORIES[@]}}"; then
-      continue
-    fi
-
-    remove_run_directory "$RUN_DIR"
-  done
-
-  for WORKTREE_PATH in "$PROJECT_DIRECTORY"/worktrees/dispatch-*; do
-    [ -e "$WORKTREE_PATH" ] || continue
-    if path_is_kept "$WORKTREE_PATH" "${{KEEP_WORKTREE_PATHS[@]}}"; then
-      continue
-    fi
-
-    remove_worktree_path "$WORKTREE_PATH"
-  done
-
-  for RUN_DIR in "$PROJECT_DIRECTORY"/{review_run_directory}/dispatch-*; do
-    [ -e "$RUN_DIR" ] || continue
-    if path_is_kept "$RUN_DIR" "${{KEEP_RUN_DIRECTORIES[@]}}"; then
-      continue
-    fi
-
-    remove_run_directory "$RUN_DIR"
-  done
-
-  for WORKTREE_PATH in "$PROJECT_DIRECTORY"/{review_worktree_directory}/dispatch-*; do
-    [ -e "$WORKTREE_PATH" ] || continue
-    if path_is_kept "$WORKTREE_PATH" "${{KEEP_WORKTREE_PATHS[@]}}"; then
-      continue
-    fi
-
-    remove_worktree_path "$WORKTREE_PATH"
-  done
-done
-
-printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
-  "$WORKTREES_REMOVED" \
-  "$RUN_DIRECTORIES_REMOVED"
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            review_run_directory = REVIEW_RUN_DIRECTORY_NAME,
-            review_worktree_directory = REVIEW_WORKTREE_DIRECTORY_NAME,
-            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
-            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
+        render_template(
+            CLEANUP_ORPHANED_REMOTE_ARTIFACTS_TEMPLATE,
+            &CleanupOrphanedRemoteArtifactsTemplate {
+                path_helpers: remote_path_helpers_shell(),
+                review_run_directory: REVIEW_RUN_DIRECTORY_NAME,
+                review_worktree_directory: REVIEW_WORKTREE_DIRECTORY_NAME,
+                launcher_pid_file: REMOTE_LAUNCHER_PID_FILE_NAME,
+                codex_pid_file: REMOTE_CODEX_PID_FILE_NAME,
+            },
         )
     }
 
@@ -177,4 +52,13 @@ printf '{{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}}\n' \
     ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
         parse_remote_cleanup_counts(report)
     }
+}
+
+#[derive(Serialize)]
+struct CleanupOrphanedRemoteArtifactsTemplate<'a> {
+    path_helpers: &'a str,
+    review_run_directory: &'a str,
+    review_worktree_directory: &'a str,
+    launcher_pid_file: &'a str,
+    codex_pid_file: &'a str,
 }

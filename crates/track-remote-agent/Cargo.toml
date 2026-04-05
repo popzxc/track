@@ -14,6 +14,7 @@ async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 slug = { workspace = true }
+tera = { workspace = true }
 time = { workspace = true }
 track-config = { workspace = true }
 track-dal = { workspace = true }
@@ -21,5 +22,6 @@ track-projects = { workspace = true }
 track-types = { workspace = true }
 
 [dev-dependencies]
+insta = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

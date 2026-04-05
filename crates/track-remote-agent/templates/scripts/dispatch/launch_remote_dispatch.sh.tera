@@ -1,0 +1,8 @@
+set -eu
+{{ path_helpers }}RUN_DIR="$(expand_remote_path "$1")"
+WORKTREE_PATH="$(expand_remote_path "$2")"
+
+mkdir -p "$RUN_DIR"
+LAUNCHER_PATH="$RUN_DIR/launch.sh"
+chmod +x "$LAUNCHER_PATH"
+nohup bash "$LAUNCHER_PATH" "$RUN_DIR" "$WORKTREE_PATH" >/dev/null 2>&1 </dev/null &

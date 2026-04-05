@@ -1,0 +1,68 @@
+---
+source: crates/track-remote-agent/src/scripts/checkout/create_review_worktree.rs
+expression: script
+---
+set -eu
+
+expand_remote_path() {
+  case "$1" in
+    "~")
+      printf '%s\n' "$HOME"
+      ;;
+    "~/"*)
+      # Strip the literal `~/` prefix before joining with $HOME. Bash expands
+      # an unescaped `~` inside `${var#pattern}` to the current home path,
+      # which leaves the original `~/...` intact and produces `$HOME/~/...`.
+      printf '%s/%s\n' "$HOME" "${1#\~/}"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+CHECKOUT_PATH="$(expand_remote_path "$1")"
+PULL_REQUEST_NUMBER="$2"
+BRANCH_NAME="$3"
+WORKTREE_PATH="$(expand_remote_path "$4")"
+TARGET_HEAD_OID="${5:-}"
+
+mkdir -p "$(dirname "$WORKTREE_PATH")"
+
+worktree_is_registered() {
+  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
+}
+
+if [ -e "$WORKTREE_PATH" ]; then
+  if worktree_is_registered; then
+    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
+  else
+    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a review worktree." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" worktree prune >&2
+git -C "$CHECKOUT_PATH" fetch upstream "pull/$PULL_REQUEST_NUMBER/head:$BRANCH_NAME" >&2
+
+# Review runs persist the exact PR head they were queued against. We still
+# refresh the PR ref so the checkout has current GitHub context, but then we
+# pin the local review branch back to the recorded commit when that object is
+# available. If the commit is gone, we fail explicitly instead of silently
+# reviewing a newer PR head than the user requested.
+TARGET_REF="$BRANCH_NAME"
+if [ -n "$TARGET_HEAD_OID" ]; then
+  if ! git -C "$CHECKOUT_PATH" cat-file -e "$TARGET_HEAD_OID^{commit}" 2>/dev/null; then
+    git -C "$CHECKOUT_PATH" fetch upstream "$TARGET_HEAD_OID" >&2 || true
+  fi
+
+  if git -C "$CHECKOUT_PATH" cat-file -e "$TARGET_HEAD_OID^{commit}" 2>/dev/null; then
+    TARGET_REF="$TARGET_HEAD_OID"
+  else
+    FETCHED_HEAD_OID="$(git -C "$CHECKOUT_PATH" rev-parse "$BRANCH_NAME^{commit}")"
+    echo "Requested review commit $TARGET_HEAD_OID is not available locally. The fetched PR head is $FETCHED_HEAD_OID, so the review would drift to a newer commit." >&2
+    exit 1
+  fi
+fi
+
+git -C "$CHECKOUT_PATH" branch -f "$BRANCH_NAME" "$TARGET_REF" >&2
+git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "$TARGET_REF" >&2

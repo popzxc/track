@@ -1,4 +1,10 @@
+use serde::Serialize;
+
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
+
+const ENSURE_FOLLOW_UP_WORKTREE_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/checkout/ensure_follow_up_worktree.sh.tera");
 
 /// Reuses the existing branch worktree for a follow-up dispatch when possible.
 ///
@@ -10,49 +16,11 @@ pub(crate) struct EnsureFollowUpWorktreeScript;
 
 impl EnsureFollowUpWorktreeScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-BRANCH_NAME="$2"
-WORKTREE_PATH="$(expand_remote_path "$3")"
-
-mkdir -p "$(dirname "$WORKTREE_PATH")"
-git -C "$CHECKOUT_PATH" fetch origin --prune >&2 || true
-git -C "$CHECKOUT_PATH" fetch upstream --prune >&2 || true
-
-if [ -e "$WORKTREE_PATH/.git" ]; then
-  if ! git -C "$WORKTREE_PATH" rev-parse --show-toplevel >/dev/null 2>&1; then
-    echo "Existing follow-up worktree path $WORKTREE_PATH is not a valid Git worktree." >&2
-    exit 1
-  fi
-
-  git -C "$WORKTREE_PATH" checkout "$BRANCH_NAME" >&2
-  exit 0
-fi
-
-if [ -e "$WORKTREE_PATH" ]; then
-  echo "Follow-up worktree path $WORKTREE_PATH already exists but is not a Git worktree." >&2
-  exit 1
-fi
-
-git -C "$CHECKOUT_PATH" worktree prune >&2
-
-if git -C "$CHECKOUT_PATH" show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-  git -C "$CHECKOUT_PATH" worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >&2
-  exit 0
-fi
-
-if git -C "$CHECKOUT_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
-  git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2
-  exit 0
-fi
-
-echo "Could not restore the follow-up worktree for branch $BRANCH_NAME." >&2
-exit 1
-"#,
-            path_helpers = remote_path_helpers_shell(),
+        render_template(
+            ENSURE_FOLLOW_UP_WORKTREE_TEMPLATE,
+            &PathHelpersTemplate {
+                path_helpers: remote_path_helpers_shell(),
+            },
         )
     }
 
@@ -68,4 +36,9 @@ exit 1
             worktree_path.to_owned(),
         ]
     }
+}
+
+#[derive(Serialize)]
+struct PathHelpersTemplate<'a> {
+    path_helpers: &'a str,
 }

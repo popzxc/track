@@ -1,4 +1,10 @@
+use serde::Serialize;
+
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
+
+const CREATE_WORKTREE_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/checkout/create_worktree.sh.tera");
 
 /// Creates a fresh task worktree from the project's upstream base branch.
 ///
@@ -10,34 +16,11 @@ pub(crate) struct CreateWorktreeScript;
 
 impl CreateWorktreeScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-BASE_BRANCH="$2"
-BRANCH_NAME="$3"
-WORKTREE_PATH="$(expand_remote_path "$4")"
-
-mkdir -p "$(dirname "$WORKTREE_PATH")"
-
-worktree_is_registered() {{
-  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $WORKTREE_PATH" >/dev/null 2>&1
-}}
-
-if [ -e "$WORKTREE_PATH" ]; then
-  if worktree_is_registered; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-  else
-    echo "Refusing to overwrite unexpected existing path at $WORKTREE_PATH while preparing a fresh dispatch worktree." >&2
-    exit 1
-  fi
-fi
-
-git -C "$CHECKOUT_PATH" worktree prune >&2
-git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstream/$BASE_BRANCH" >&2
-"#,
-            path_helpers = remote_path_helpers_shell(),
+        render_template(
+            CREATE_WORKTREE_TEMPLATE,
+            &PathHelpersTemplate {
+                path_helpers: remote_path_helpers_shell(),
+            },
         )
     }
 
@@ -55,4 +38,9 @@ git -C "$CHECKOUT_PATH" worktree add -B "$BRANCH_NAME" "$WORKTREE_PATH" "upstrea
             worktree_path.to_owned(),
         ]
     }
+}
+
+#[derive(Serialize)]
+struct PathHelpersTemplate<'a> {
+    path_helpers: &'a str,
 }

@@ -1,5 +1,11 @@
+use serde::Serialize;
+
 use crate::constants::{REMOTE_CODEX_PID_FILE_NAME, REMOTE_LAUNCHER_PID_FILE_NAME};
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
+
+const CLEANUP_REVIEW_ARTIFACTS_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/cleanup/cleanup_review_artifacts.sh.tera");
 
 /// Removes review worktrees, review branches, and their run directories.
 #[derive(Debug, Clone, Copy, Default)]
@@ -7,94 +13,13 @@ pub(crate) struct CleanupReviewArtifactsScript;
 
 impl CleanupReviewArtifactsScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-CHECKOUT_PATH="$(expand_remote_path "$1")"
-shift
-
-BRANCH_NAMES=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--worktrees" ]; then
-    shift
-    break
-  fi
-
-  BRANCH_NAMES+=("$1")
-  shift
-done
-
-WORKTREE_PATHS=()
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--runs" ]; then
-    shift
-    break
-  fi
-
-  WORKTREE_PATHS+=("$1")
-  shift
-done
-
-RUN_DIRECTORIES=("$@")
-
-kill_if_running() {{
-  PID="$1"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-  fi
-}}
-
-worktree_is_registered() {{
-  TARGET_WORKTREE="$1"
-  git -C "$CHECKOUT_PATH" worktree list --porcelain | grep -F "worktree $TARGET_WORKTREE" >/dev/null 2>&1
-}}
-
-for RAW_RUN_DIR in "${{RUN_DIRECTORIES[@]}}"; do
-  RUN_DIR="$(expand_remote_path "$RAW_RUN_DIR")"
-  LAUNCHER_PID_FILE="$RUN_DIR/{launcher_pid_file}"
-  CODEX_PID_FILE="$RUN_DIR/{codex_pid_file}"
-
-  if [ -f "$LAUNCHER_PID_FILE" ]; then
-    LAUNCHER_PID="$(tr -d '[:space:]' < "$LAUNCHER_PID_FILE")"
-    kill_if_running "$LAUNCHER_PID"
-  fi
-
-  if [ -f "$CODEX_PID_FILE" ]; then
-    CODEX_PID="$(tr -d '[:space:]' < "$CODEX_PID_FILE")"
-    kill_if_running "$CODEX_PID"
-  fi
-
-  if [ -e "$RUN_DIR" ]; then
-    rm -rf "$RUN_DIR"
-  fi
-done
-
-for RAW_WORKTREE_PATH in "${{WORKTREE_PATHS[@]}}"; do
-  WORKTREE_PATH="$(expand_remote_path "$RAW_WORKTREE_PATH")"
-
-  if [ -d "$CHECKOUT_PATH/.git" ] && worktree_is_registered "$WORKTREE_PATH"; then
-    git -C "$CHECKOUT_PATH" worktree remove --force "$WORKTREE_PATH" >&2 || true
-  fi
-
-  if [ -e "$WORKTREE_PATH" ]; then
-    rm -rf "$WORKTREE_PATH"
-  fi
-done
-
-for BRANCH_NAME in "${{BRANCH_NAMES[@]}}"; do
-  if [ -d "$CHECKOUT_PATH/.git" ]; then
-    git -C "$CHECKOUT_PATH" branch -D "$BRANCH_NAME" >&2 || true
-  fi
-done
-
-if [ -d "$CHECKOUT_PATH/.git" ]; then
-  git -C "$CHECKOUT_PATH" worktree prune >&2 || true
-fi
-"#,
-            path_helpers = remote_path_helpers_shell(),
-            launcher_pid_file = REMOTE_LAUNCHER_PID_FILE_NAME,
-            codex_pid_file = REMOTE_CODEX_PID_FILE_NAME,
+        render_template(
+            CLEANUP_REVIEW_ARTIFACTS_TEMPLATE,
+            &CleanupReviewArtifactsTemplate {
+                path_helpers: remote_path_helpers_shell(),
+                launcher_pid_file: REMOTE_LAUNCHER_PID_FILE_NAME,
+                codex_pid_file: REMOTE_CODEX_PID_FILE_NAME,
+            },
         )
     }
 
@@ -113,4 +38,11 @@ fi
         arguments.extend(run_directories.iter().cloned());
         arguments
     }
+}
+
+#[derive(Serialize)]
+struct CleanupReviewArtifactsTemplate<'a> {
+    path_helpers: &'a str,
+    launcher_pid_file: &'a str,
+    codex_pid_file: &'a str,
 }

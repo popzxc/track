@@ -1,6 +1,11 @@
+use serde::Serialize;
 use track_projects::project_metadata::ProjectMetadata;
 
 use crate::scripts::remote_path_helpers_shell;
+use crate::template_renderer::render_template;
+
+const ENSURE_CHECKOUT_TEMPLATE: &str =
+    include_str!("../../../templates/scripts/checkout/ensure_checkout.sh.tera");
 
 /// Prepares the canonical remote checkout for a project.
 ///
@@ -13,79 +18,11 @@ pub(crate) struct EnsureCheckoutScript;
 
 impl EnsureCheckoutScript {
     pub(crate) fn render(&self) -> String {
-        format!(
-            r#"
-set -eu
-{path_helpers}
-REPO_URL="$1"
-REPOSITORY_NAME="$2"
-GIT_URL="$3"
-BASE_BRANCH="$4"
-CHECKOUT_PATH="$(expand_remote_path "$5")"
-GITHUB_LOGIN="$6"
-
-mkdir -p "$(dirname "$CHECKOUT_PATH")"
-
-# Remote automation runs on fresh machines too, so Git cannot assume that
-# GitHub already exists in the remote user's known_hosts file. We explicitly
-# manage a predictable known_hosts path here and tell Git to accept the first
-# key it sees. That keeps the initial clone/fetch flow unattended while still
-# recording the host key for the next command.
-REMOTE_SSH_DIR="$HOME/.ssh"
-REMOTE_KNOWN_HOSTS_PATH="$REMOTE_SSH_DIR/known_hosts"
-mkdir -p "$REMOTE_SSH_DIR"
-chmod 700 "$REMOTE_SSH_DIR"
-touch "$REMOTE_KNOWN_HOSTS_PATH"
-chmod 600 "$REMOTE_KNOWN_HOSTS_PATH"
-export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$REMOTE_KNOWN_HOSTS_PATH"
-
-resolve_fork_git_url() {{
-  gh repo view "$GITHUB_LOGIN/$REPOSITORY_NAME" --json sshUrl --jq .sshUrl 2>/dev/null || true
-}}
-
-FORK_GIT_URL="$(resolve_fork_git_url)"
-if [ -z "$FORK_GIT_URL" ]; then
-  gh repo fork "$REPO_URL" >/dev/null
-  FORK_GIT_URL="$(resolve_fork_git_url)"
-fi
-
-if [ -z "$FORK_GIT_URL" ]; then
-  echo "Could not determine the fork SSH URL for $GITHUB_LOGIN/$REPOSITORY_NAME after creating the fork." >&2
-  exit 1
-fi
-
-if [ ! -d "$CHECKOUT_PATH/.git" ]; then
-  git clone "$FORK_GIT_URL" "$CHECKOUT_PATH" >&2
-fi
-
-cd "$CHECKOUT_PATH"
-if git remote get-url origin >/dev/null 2>&1; then
-  git remote set-url origin "$FORK_GIT_URL"
-else
-  git remote add origin "$FORK_GIT_URL"
-fi
-
-if git remote get-url upstream >/dev/null 2>&1; then
-  git remote set-url upstream "$GIT_URL"
-else
-  git remote add upstream "$GIT_URL"
-fi
-
-git fetch origin --prune >&2
-git fetch upstream --prune >&2
-
-if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
-  git checkout "$BASE_BRANCH" >&2
-else
-  git checkout -B "$BASE_BRANCH" "upstream/$BASE_BRANCH" >&2
-fi
-
-git reset --hard "upstream/$BASE_BRANCH" >&2
-git clean -fd >&2
-
-printf '%s\n' "$FORK_GIT_URL"
-"#,
-            path_helpers = remote_path_helpers_shell(),
+        render_template(
+            ENSURE_CHECKOUT_TEMPLATE,
+            &PathHelpersTemplate {
+                path_helpers: remote_path_helpers_shell(),
+            },
         )
     }
 
@@ -105,4 +42,9 @@ printf '%s\n' "$FORK_GIT_URL"
             github_login.to_owned(),
         ]
     }
+}
+
+#[derive(Serialize)]
+struct PathHelpersTemplate<'a> {
+    path_helpers: &'a str,
 }

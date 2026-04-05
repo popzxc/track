@@ -1,0 +1,6 @@
+Respond to new review feedback from @{{ main_user }} on the existing PR.
+
+Use `gh` to fetch submitted PR reviews and inline review comments from @{{ main_user }} only.
+Only use reviews with state COMMENTED or CHANGES_REQUESTED that were submitted after {{ dispatch_started_at }}.
+Ignore APPROVED reviews and all feedback from other users.
+Keep using the existing PR at {{ pull_request_url }} unless you explain why that is impossible.

@@ -1,6 +1,14 @@
+use serde::Serialize;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::task_description::parse_task_description;
 use track_types::time_utils::format_iso_8601_millis;
+
+use crate::template_renderer::render_template;
+
+const REMOTE_DISPATCH_PROMPT_TEMPLATE: &str =
+    include_str!("../../templates/prompts/remote_dispatch.md.tera");
+const REVIEW_FOLLOW_UP_REQUEST_TEMPLATE: &str =
+    include_str!("../../templates/prompts/review_follow_up_request.txt.tera");
 
 /// Renders the task-execution instructions for a prepared remote dispatch run.
 ///
@@ -40,79 +48,21 @@ impl<'a> RemoteDispatchPrompt<'a> {
 
     pub(crate) fn render(&self) -> String {
         let sections = parse_task_description(self.task_description);
-        let mut prompt = String::new();
-        prompt.push_str("# Remote task dispatch\n\n");
-        prompt.push_str(
-            "You are working in a fully autonomous mode on a prepared repository worktree.\n",
-        );
-        prompt
-            .push_str("The repository checkout, fork, and worktree are already set up for you.\n");
-        prompt
-            .push_str("You have full filesystem access, internet access, and `gh` is available.\n");
-        prompt.push_str("Make the decisions needed to complete the task responsibly.\n");
-        prompt.push_str(
-            "The desired outcome is a GitHub PR unless the task is blocked or cannot be solved.\n\n",
-        );
-        prompt.push_str("## Repository context\n\n");
-        prompt.push_str(&format!("- Project: {}\n", self.project_name));
-        prompt.push_str(&format!("- Repo URL: {}\n", self.metadata.repo_url));
-        prompt.push_str(&format!("- Git URL: {}\n", self.metadata.git_url));
-        prompt.push_str(&format!("- Base branch: {}\n", self.metadata.base_branch));
-        prompt.push_str(&format!("- Prepared branch: {}\n", self.branch_name));
-        prompt.push_str(&format!("- Working directory: {}\n\n", self.worktree_path));
+        let template_context = RemoteDispatchPromptTemplate {
+            project_name: self.project_name,
+            repo_url: &self.metadata.repo_url,
+            git_url: &self.metadata.git_url,
+            base_branch: &self.metadata.base_branch,
+            branch_name: self.branch_name,
+            worktree_path: self.worktree_path,
+            pull_request_url: self.pull_request_url.and_then(non_empty_trimmed),
+            task_title: &sections.title,
+            summary_markdown: sections.summary_markdown.as_deref(),
+            original_note: sections.original_note.as_deref(),
+            follow_up_request: self.follow_up_request.and_then(non_empty_trimmed),
+        };
 
-        if let Some(pull_request_url) = self
-            .pull_request_url
-            .filter(|value| !value.trim().is_empty())
-        {
-            prompt.push_str("## Existing PR\n\n");
-            prompt.push_str(&format!("- Pull request: {pull_request_url}\n"));
-            prompt.push_str(
-                "- Continue working on this existing PR with the same prepared branch and worktree.\n",
-            );
-            prompt.push_str(
-                "- Do not open a second PR unless the current PR is unusable and you explain why.\n\n",
-            );
-        }
-
-        prompt.push_str("## Expectations\n\n");
-        prompt.push_str("- Pull the task through to a GitHub PR when possible.\n");
-        prompt.push_str("- Use the current worktree as the only place to make changes.\n");
-        prompt.push_str("- Use conventional commits for both commit messages and the PR title, for example `feat: Add X`, `fix: Correct Y`, or `chore: Update Z`.\n");
-        prompt.push_str("- If the follow-up mentions review comments or reviewer feedback, fetch that context with `gh` instead of guessing.\n");
-        prompt.push_str("- If the follow-up names a reviewer, only act on that reviewer's feedback unless the request explicitly says otherwise.\n");
-        prompt.push_str(
-            "- If the task is blocked, explain the blocker clearly in the final JSON.\n\n",
-        );
-        prompt.push_str("## Task title\n\n");
-        prompt.push_str(&sections.title);
-        prompt.push_str("\n\n");
-
-        if let Some(summary_markdown) = sections.summary_markdown.as_deref() {
-            prompt.push_str("## Summary\n\n");
-            prompt.push_str(summary_markdown);
-            prompt.push_str("\n\n");
-        }
-
-        if let Some(original_note) = sections.original_note.as_deref() {
-            prompt.push_str("## Original note\n\n");
-            prompt.push_str(original_note);
-            prompt.push_str("\n\n");
-        }
-
-        if let Some(follow_up_request) = self
-            .follow_up_request
-            .filter(|value| !value.trim().is_empty())
-        {
-            prompt.push_str("## Current follow-up request\n\n");
-            prompt.push_str(follow_up_request.trim());
-            prompt.push_str("\n\n");
-        }
-
-        prompt.push_str("## Final response\n\n");
-        prompt.push_str("Return JSON only. The response must match the provided schema exactly.\n");
-
-        prompt
+        render_template(REMOTE_DISPATCH_PROMPT_TEMPLATE, &template_context)
     }
 
     /// Renders the follow-up request that asks the remote agent to continue an
@@ -126,15 +76,42 @@ impl<'a> RemoteDispatchPrompt<'a> {
         main_user: &str,
         dispatch_started_at: time::OffsetDateTime,
     ) -> String {
-        format!(
-            "Respond to new review feedback from @{main_user} on the existing PR.\n\n\
-Use `gh` to fetch submitted PR reviews and inline review comments from @{main_user} only.\n\
-Only use reviews with state COMMENTED or CHANGES_REQUESTED that were submitted after {dispatch_started_at}.\n\
-Ignore APPROVED reviews and all feedback from other users.\n\
-Keep using the existing PR at {pull_request_url} unless you explain why that is impossible.",
-            dispatch_started_at = format_iso_8601_millis(dispatch_started_at),
+        render_template(
+            REVIEW_FOLLOW_UP_REQUEST_TEMPLATE,
+            &ReviewFollowUpRequestTemplate {
+                pull_request_url,
+                main_user,
+                dispatch_started_at: format_iso_8601_millis(dispatch_started_at),
+            },
         )
     }
+}
+
+#[derive(Serialize)]
+struct RemoteDispatchPromptTemplate<'a> {
+    project_name: &'a str,
+    repo_url: &'a str,
+    git_url: &'a str,
+    base_branch: &'a str,
+    branch_name: &'a str,
+    worktree_path: &'a str,
+    pull_request_url: Option<&'a str>,
+    task_title: &'a str,
+    summary_markdown: Option<&'a str>,
+    original_note: Option<&'a str>,
+    follow_up_request: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ReviewFollowUpRequestTemplate<'a> {
+    pull_request_url: &'a str,
+    main_user: &'a str,
+    dispatch_started_at: String,
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 #[cfg(test)]
@@ -167,15 +144,9 @@ mod tests {
         )
         .render();
 
-        assert!(prompt.contains("## Summary"));
-        assert!(prompt.contains("## Original note"));
-        assert!(prompt.contains("## Existing PR"));
-        assert!(prompt.contains("## Current follow-up request"));
-        assert!(prompt.contains("fetch that context with `gh`"));
-        assert!(prompt.contains("only act on that reviewer's feedback"));
-        assert!(prompt.contains("track/dispatch-1"));
-        assert!(
-            prompt.contains("Use conventional commits for both commit messages and the PR title")
+        insta::assert_snapshot!(
+            "remote_dispatch_prompt_with_existing_pr_and_follow_up",
+            prompt
         );
     }
 
@@ -187,9 +158,6 @@ mod tests {
             parse_iso_8601_seconds("2026-03-25T12:00:00Z").expect("timestamp should parse"),
         );
 
-        assert!(request.contains("@octocat"));
-        assert!(request.contains("COMMENTED or CHANGES_REQUESTED"));
-        assert!(request.contains("Ignore APPROVED reviews"));
-        assert!(request.contains("https://github.com/acme/project-x/pull/42"));
+        insta::assert_snapshot!("review_follow_up_request", request);
     }
 }
