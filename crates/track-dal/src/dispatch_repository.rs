@@ -418,40 +418,36 @@ fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackEr
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
-    use track_types::time_utils::now_utc;
-    use track_types::types::{Priority, Status, Task, TaskSource};
+    use track_types::time_utils::{now_utc, parse_iso_8601_millis};
+    use track_types::types::{
+        DispatchStatus, Priority, RemoteAgentPreferredTool, Status, TaskSource,
+    };
 
     use super::DispatchRepository;
-    use crate::database::DatabaseContext;
+    use crate::test_support::{sample_dispatch, sample_task, temporary_database_path};
 
     #[tokio::test]
     async fn create_dispatch_keeps_new_record_in_memory_until_callers_save_launch_context() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let database_path = temp_dir.path().join("track.sqlite");
-        let repository = DispatchRepository::new(Some(database_path.clone()))
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
             .await
             .expect("repository should open");
 
-        // The repository initializes its own schema, but we still need the
-        // tasks table available so the test mirrors the real persisted shape.
-        // TODO: doesn't new calls initialize???
-        let database = DatabaseContext::new(Some(database_path)).unwrap();
-        database
-            .initialize()
-            .await
-            .expect("database schema should initialize");
-
         let timestamp = now_utc();
-        let task = Task {
-            id: "20260403-111700-dispatch-race".to_owned(),
-            project: "project-a".to_owned(),
-            priority: Priority::High,
-            status: Status::Open,
-            description: "Dispatch race regression test".to_owned(),
+        let task = sample_task(
+            "20260403-111700-dispatch-race",
+            "project-a",
+            Priority::High,
+            Status::Open,
+            "Dispatch race regression test",
+            "2026-04-03T11:17:00.000Z",
+            "2026-04-03T11:17:00.000Z",
+            Some(TaskSource::Web),
+        );
+        let task = track_types::types::Task {
             created_at: timestamp,
             updated_at: timestamp,
-            source: Some(TaskSource::Web),
+            ..task
         };
 
         let mut record = repository
@@ -490,5 +486,335 @@ mod tests {
         assert_eq!(saved.dispatch_id, record.dispatch_id);
         assert_eq!(saved.branch_name, record.branch_name);
         assert_eq!(saved.worktree_path, record.worktree_path);
+    }
+
+    #[tokio::test]
+    async fn save_dispatch_upserts_and_get_dispatch_returns_latest_fields() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
+            .await
+            .expect("repository should open");
+
+        let original = sample_dispatch(
+            "dispatch-1",
+            "task-1",
+            "project-a",
+            RemoteAgentPreferredTool::Codex,
+            DispatchStatus::Preparing,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        repository
+            .save_dispatch(&original)
+            .await
+            .expect("original dispatch should save");
+
+        let mut updated = sample_dispatch(
+            "dispatch-1",
+            "task-1",
+            "project-a",
+            RemoteAgentPreferredTool::Claude,
+            DispatchStatus::Succeeded,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T11:00:00.000Z",
+        );
+        updated.finished_at =
+            Some(parse_iso_8601_millis("2026-04-05T11:00:00.000Z").expect("fixture should parse"));
+        updated.summary = Some("Applied fix remotely".to_owned());
+        updated.pull_request_url = Some("https://github.com/acme/project-a/pull/42".to_owned());
+        repository
+            .save_dispatch(&updated)
+            .await
+            .expect("updated dispatch should save");
+
+        let loaded = repository
+            .get_dispatch("task-1", "dispatch-1")
+            .await
+            .expect("dispatch should load")
+            .expect("dispatch should exist");
+        assert_eq!(loaded, updated);
+    }
+
+    #[tokio::test]
+    async fn dispatches_for_task_and_latest_dispatch_order_by_created_at_desc() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
+            .await
+            .expect("repository should open");
+
+        let older = sample_dispatch(
+            "dispatch-older",
+            "task-1",
+            "project-a",
+            RemoteAgentPreferredTool::Codex,
+            DispatchStatus::Failed,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T09:10:00.000Z",
+        );
+        let newer = sample_dispatch(
+            "dispatch-newer",
+            "task-1",
+            "project-a",
+            RemoteAgentPreferredTool::Claude,
+            DispatchStatus::Running,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:05:00.000Z",
+        );
+        repository
+            .save_dispatch(&older)
+            .await
+            .expect("older dispatch should save");
+        repository
+            .save_dispatch(&newer)
+            .await
+            .expect("newer dispatch should save");
+
+        let history = repository
+            .dispatches_for_task("task-1")
+            .await
+            .expect("dispatch history should load");
+        assert_eq!(
+            history
+                .iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-newer", "dispatch-older"],
+        );
+
+        let latest = repository
+            .latest_dispatch_for_task("task-1")
+            .await
+            .expect("latest dispatch should load")
+            .expect("latest dispatch should exist");
+        assert_eq!(latest.dispatch_id, "dispatch-newer");
+    }
+
+    #[tokio::test]
+    async fn latest_dispatches_for_tasks_returns_one_latest_record_per_task() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
+            .await
+            .expect("repository should open");
+
+        repository
+            .save_dispatch(&sample_dispatch(
+                "dispatch-a1",
+                "task-a",
+                "project-a",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Failed,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ))
+            .await
+            .expect("older task a dispatch should save");
+        repository
+            .save_dispatch(&sample_dispatch(
+                "dispatch-a2",
+                "task-a",
+                "project-a",
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Succeeded,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ))
+            .await
+            .expect("newer task a dispatch should save");
+        repository
+            .save_dispatch(&sample_dispatch(
+                "dispatch-b1",
+                "task-b",
+                "project-b",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Running,
+                "2026-04-05T11:00:00.000Z",
+                "2026-04-05T11:05:00.000Z",
+            ))
+            .await
+            .expect("task b dispatch should save");
+
+        let latest = repository
+            .latest_dispatches_for_tasks(&[
+                "task-a".to_owned(),
+                "task-b".to_owned(),
+                "missing".to_owned(),
+            ])
+            .await
+            .expect("latest dispatches should load");
+
+        assert_eq!(
+            latest
+                .iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-a2", "dispatch-b1"],
+        );
+    }
+
+    #[tokio::test]
+    async fn list_dispatches_honors_optional_limit() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
+            .await
+            .expect("repository should open");
+
+        for record in [
+            sample_dispatch(
+                "dispatch-1",
+                "task-a",
+                "project-a",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Failed,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ),
+            sample_dispatch(
+                "dispatch-2",
+                "task-b",
+                "project-b",
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Running,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ),
+            sample_dispatch(
+                "dispatch-3",
+                "task-c",
+                "project-c",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Succeeded,
+                "2026-04-05T11:00:00.000Z",
+                "2026-04-05T11:05:00.000Z",
+            ),
+        ] {
+            repository
+                .save_dispatch(&record)
+                .await
+                .expect("dispatch should save");
+        }
+
+        let all = repository
+            .list_dispatches(None)
+            .await
+            .expect("dispatch list should load");
+        assert_eq!(
+            all.iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-3", "dispatch-2", "dispatch-1"],
+        );
+
+        let limited = repository
+            .list_dispatches(Some(2))
+            .await
+            .expect("limited dispatch list should load");
+        assert_eq!(
+            limited
+                .iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-3", "dispatch-2"],
+        );
+    }
+
+    #[tokio::test]
+    async fn task_ids_with_history_returns_sorted_unique_ids() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
+            .await
+            .expect("repository should open");
+
+        for record in [
+            sample_dispatch(
+                "dispatch-1",
+                "task-b",
+                "project-b",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Preparing,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ),
+            sample_dispatch(
+                "dispatch-2",
+                "task-a",
+                "project-a",
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Running,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ),
+            sample_dispatch(
+                "dispatch-3",
+                "task-b",
+                "project-b",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Succeeded,
+                "2026-04-05T11:00:00.000Z",
+                "2026-04-05T11:05:00.000Z",
+            ),
+        ] {
+            repository
+                .save_dispatch(&record)
+                .await
+                .expect("dispatch should save");
+        }
+
+        let task_ids = repository
+            .task_ids_with_history()
+            .await
+            .expect("task ids should load");
+        assert_eq!(task_ids, vec!["task-a".to_owned(), "task-b".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn delete_dispatch_history_for_task_removes_only_target_rows() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = DispatchRepository::new(Some(database_path))
+            .await
+            .expect("repository should open");
+
+        repository
+            .save_dispatch(&sample_dispatch(
+                "dispatch-a1",
+                "task-a",
+                "project-a",
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Failed,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ))
+            .await
+            .expect("task a dispatch should save");
+        repository
+            .save_dispatch(&sample_dispatch(
+                "dispatch-b1",
+                "task-b",
+                "project-b",
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Running,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ))
+            .await
+            .expect("task b dispatch should save");
+
+        repository
+            .delete_dispatch_history_for_task("task-a")
+            .await
+            .expect("task a history should delete");
+
+        assert!(repository
+            .dispatches_for_task("task-a")
+            .await
+            .expect("task a history should load")
+            .is_empty());
+        assert_eq!(
+            repository
+                .dispatches_for_task("task-b")
+                .await
+                .expect("task b history should load")
+                .len(),
+            1,
+        );
     }
 }

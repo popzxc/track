@@ -297,20 +297,15 @@ async fn ensure_aliases_are_available(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
 
     use super::ProjectRepository;
-    use track_projects::project_metadata::ProjectMetadata;
-
-    fn metadata(description: &str) -> ProjectMetadata {
-        ProjectMetadata {
-            repo_url: "https://github.com/acme/project-a".to_owned(),
-            git_url: "git@github.com:acme/project-a.git".to_owned(),
-            base_branch: "main".to_owned(),
-            description: Some(description.to_owned()),
-        }
-    }
+    use crate::test_support::project_metadata;
+    use track_projects::project_catalog::ProjectInfo;
+    use track_projects::project_metadata::ProjectUpsertInput;
 
     #[tokio::test]
     async fn upsert_project_preserves_existing_aliases_when_no_new_aliases_are_provided() {
@@ -320,16 +315,23 @@ mod tests {
             .expect("project repository should resolve");
 
         repository
-            .upsert_project_by_name("project-a", metadata("first"), vec!["legacy-a".to_owned()])
+            .upsert_project_by_name(
+                "project-a",
+                project_metadata("project-a"),
+                vec!["legacy-a".to_owned()],
+            )
             .await
             .expect("project should save");
         let project = repository
-            .upsert_project_by_name("project-a", metadata("second"), Vec::new())
+            .upsert_project_by_name("project-a", project_metadata("project-a"), Vec::new())
             .await
             .expect("project should update");
 
         assert_eq!(project.aliases, vec!["legacy-a".to_owned()]);
-        assert_eq!(project.metadata.description.as_deref(), Some("second"));
+        assert_eq!(
+            project.metadata.description.as_deref(),
+            Some("Metadata for project-a"),
+        );
     }
 
     #[tokio::test]
@@ -340,13 +342,17 @@ mod tests {
             .expect("project repository should resolve");
 
         repository
-            .upsert_project_by_name("project-a", metadata("first"), vec!["legacy-a".to_owned()])
+            .upsert_project_by_name(
+                "project-a",
+                project_metadata("project-a"),
+                vec!["legacy-a".to_owned()],
+            )
             .await
             .expect("project should save");
         let project = repository
             .upsert_project_by_name(
                 "project-a",
-                metadata("second"),
+                project_metadata("project-a"),
                 vec!["new-a".to_owned(), "legacy-a".to_owned()],
             )
             .await
@@ -366,16 +372,24 @@ mod tests {
             .expect("project repository should resolve");
 
         repository
-            .upsert_project_by_name("project-a", metadata("first"), vec!["shared".to_owned()])
+            .upsert_project_by_name(
+                "project-a",
+                project_metadata("project-a"),
+                vec!["shared".to_owned()],
+            )
             .await
             .expect("project a should save");
         repository
-            .upsert_project_by_name("project-b", metadata("before"), Vec::new())
+            .upsert_project_by_name("project-b", project_metadata("project-b"), Vec::new())
             .await
             .expect("project b should save");
 
         let error = repository
-            .upsert_project_by_name("project-b", metadata("after"), vec!["shared".to_owned()])
+            .upsert_project_by_name(
+                "project-b",
+                project_metadata("project-b"),
+                vec!["shared".to_owned()],
+            )
             .await
             .expect_err("conflicting alias should fail");
         assert_eq!(error.code, ErrorCode::InvalidProjectMetadata);
@@ -385,6 +399,142 @@ mod tests {
             .await
             .expect("project b should still load");
         assert!(project_b.aliases.is_empty());
-        assert_eq!(project_b.metadata.description.as_deref(), Some("before"));
+        assert_eq!(
+            project_b.metadata.description.as_deref(),
+            Some("Metadata for project-b"),
+        );
+    }
+
+    #[tokio::test]
+    async fn list_projects_returns_canonical_order_with_aliases() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .await
+            .expect("project repository should resolve");
+
+        repository
+            .upsert_project_by_name(
+                "project-b",
+                project_metadata("project-b"),
+                vec!["beta".to_owned()],
+            )
+            .await
+            .expect("project b should save");
+        repository
+            .upsert_project_by_name(
+                "project-a",
+                project_metadata("project-a"),
+                vec!["alpha-2".to_owned(), "alpha-1".to_owned()],
+            )
+            .await
+            .expect("project a should save");
+
+        let projects = repository
+            .list_projects()
+            .await
+            .expect("project list should load");
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].canonical_name, "project-a");
+        assert_eq!(
+            projects[0].aliases,
+            vec!["alpha-1".to_owned(), "alpha-2".to_owned()],
+        );
+        assert_eq!(projects[1].canonical_name, "project-b");
+        assert_eq!(projects[1].aliases, vec!["beta".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn update_project_by_name_keeps_aliases_while_replacing_metadata() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .await
+            .expect("project repository should resolve");
+
+        repository
+            .upsert_project_by_name(
+                "project-a",
+                project_metadata("project-a"),
+                vec!["legacy-a".to_owned()],
+            )
+            .await
+            .expect("project should save");
+
+        let updated_metadata = track_projects::project_metadata::ProjectMetadata {
+            repo_url: "https://example.com/project-a".to_owned(),
+            git_url: "ssh://git@example.com/project-a.git".to_owned(),
+            base_branch: "stable".to_owned(),
+            description: Some("Updated metadata".to_owned()),
+        };
+        let project = repository
+            .update_project_by_name("project-a", updated_metadata.clone())
+            .await
+            .expect("project should update");
+
+        assert_eq!(project.aliases, vec!["legacy-a".to_owned()]);
+        assert_eq!(project.metadata, updated_metadata);
+    }
+
+    #[tokio::test]
+    async fn upsert_project_validates_and_persists_aliases() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .await
+            .expect("project repository should resolve");
+
+        let saved = repository
+            .upsert_project(ProjectUpsertInput {
+                canonical_name: "project-a".to_owned(),
+                aliases: vec![
+                    "alias-b".to_owned(),
+                    "alias-a".to_owned(),
+                    "alias-a".to_owned(),
+                ],
+                metadata: track_projects::project_metadata::ProjectMetadataUpdateInput {
+                    repo_url: " https://github.com/acme/project-a ".to_owned(),
+                    git_url: " git@github.com:acme/project-a.git ".to_owned(),
+                    base_branch: " main ".to_owned(),
+                    description: Some(" Primary project ".to_owned()),
+                },
+            })
+            .await
+            .expect("project should save");
+
+        assert_eq!(saved.canonical_name, "project-a");
+        assert_eq!(
+            saved.aliases,
+            vec!["alias-a".to_owned(), "alias-b".to_owned()],
+        );
+        assert_eq!(saved.metadata.repo_url, "https://github.com/acme/project-a");
+        assert_eq!(saved.metadata.git_url, "git@github.com:acme/project-a.git");
+        assert_eq!(saved.metadata.base_branch, "main");
+        assert_eq!(
+            saved.metadata.description.as_deref(),
+            Some("Primary project")
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_project_infers_metadata_from_project_info() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let repository = ProjectRepository::new(Some(directory.path().join("track.sqlite")))
+            .await
+            .expect("project repository should resolve");
+
+        let project = repository
+            .ensure_project(&ProjectInfo {
+                canonical_name: "project-a".to_owned(),
+                path: PathBuf::from("/tmp/project-a"),
+                aliases: vec!["alias-a".to_owned()],
+            })
+            .await
+            .expect("project should be inferred and saved");
+
+        assert_eq!(project.canonical_name, "project-a");
+        assert_eq!(project.aliases, vec!["alias-a".to_owned()]);
+        assert_eq!(project.metadata.base_branch, "main");
+        assert_eq!(project.metadata.repo_url, "file:///tmp/project-a");
+        assert_eq!(project.metadata.git_url, "file:///tmp/project-a");
+        assert_eq!(project.metadata.description, None);
     }
 }

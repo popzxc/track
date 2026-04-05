@@ -422,17 +422,16 @@ fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackEr
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
     use track_types::time_utils::now_utc;
-    use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
+    use track_types::types::{DispatchStatus, RemoteAgentPreferredTool};
 
     use super::ReviewDispatchRepository;
     use crate::review_repository::ReviewRepository;
+    use crate::test_support::{sample_review, sample_review_run, temporary_database_path};
 
     #[tokio::test]
     async fn create_dispatch_keeps_new_review_run_in_memory_until_callers_save_launch_context() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let database_path = temp_dir.path().join("track.sqlite");
+        let (_directory, database_path) = temporary_database_path();
         let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
             .await
             .expect("repository should open");
@@ -441,23 +440,16 @@ mod tests {
             .expect("review repository should open");
 
         let timestamp = now_utc();
-        let review = ReviewRecord {
-            id: "20260403-111900-review-race".to_owned(),
-            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
-            pull_request_number: 42,
-            pull_request_title: "Review fixture".to_owned(),
-            repository_full_name: "acme/project-a".to_owned(),
-            repo_url: "https://github.com/acme/project-a".to_owned(),
-            git_url: "git@github.com:acme/project-a.git".to_owned(),
-            base_branch: "main".to_owned(),
-            workspace_key: "project-a".to_owned(),
-            preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: Some("project-a".to_owned()),
-            main_user: "octocat".to_owned(),
-            default_review_prompt: Some("Focus on regressions.".to_owned()),
-            extra_instructions: None,
+        let review = track_types::types::ReviewRecord {
             created_at: timestamp,
             updated_at: timestamp,
+            ..sample_review(
+                "20260403-111900-review-race",
+                42,
+                RemoteAgentPreferredTool::Codex,
+                "2026-04-03T11:19:00.000Z",
+                "2026-04-03T11:19:00.000Z",
+            )
         };
         review_repository
             .save_review(&review)
@@ -496,5 +488,374 @@ mod tests {
         assert_eq!(saved.dispatch_id, record.dispatch_id);
         assert_eq!(saved.branch_name, record.branch_name);
         assert_eq!(saved.worktree_path, record.worktree_path);
+    }
+
+    #[tokio::test]
+    async fn save_dispatch_upserts_and_get_dispatch_returns_latest_fields() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .await
+            .expect("repository should open");
+        let review_repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should open");
+
+        let review = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        review_repository
+            .save_review(&review)
+            .await
+            .expect("review should save");
+
+        let original = sample_review_run(
+            "dispatch-1",
+            &review,
+            RemoteAgentPreferredTool::Codex,
+            DispatchStatus::Preparing,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        repository
+            .save_dispatch(&original)
+            .await
+            .expect("original review run should save");
+
+        let mut updated = sample_review_run(
+            "dispatch-1",
+            &review,
+            RemoteAgentPreferredTool::Claude,
+            DispatchStatus::Succeeded,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T11:00:00.000Z",
+        );
+        updated.review_submitted = true;
+        updated.github_review_id = Some("12345".to_owned());
+        updated.github_review_url =
+            Some("https://github.com/acme/project-a/pull/42#pullrequestreview-12345".to_owned());
+        updated.summary = Some("Submitted the review".to_owned());
+        repository
+            .save_dispatch(&updated)
+            .await
+            .expect("updated review run should save");
+
+        let loaded = repository
+            .get_dispatch(&review.id, "dispatch-1")
+            .await
+            .expect("review run should load")
+            .expect("review run should exist");
+        assert_eq!(loaded, updated);
+    }
+
+    #[tokio::test]
+    async fn dispatches_for_review_and_latest_dispatch_order_by_created_at_desc() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .await
+            .expect("repository should open");
+        let review_repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should open");
+
+        let review = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T09:00:00.000Z",
+        );
+        review_repository
+            .save_review(&review)
+            .await
+            .expect("review should save");
+
+        let older = sample_review_run(
+            "dispatch-older",
+            &review,
+            RemoteAgentPreferredTool::Codex,
+            DispatchStatus::Failed,
+            "2026-04-05T09:30:00.000Z",
+            "2026-04-05T09:40:00.000Z",
+        );
+        let newer = sample_review_run(
+            "dispatch-newer",
+            &review,
+            RemoteAgentPreferredTool::Claude,
+            DispatchStatus::Running,
+            "2026-04-05T10:30:00.000Z",
+            "2026-04-05T10:35:00.000Z",
+        );
+        repository
+            .save_dispatch(&older)
+            .await
+            .expect("older review run should save");
+        repository
+            .save_dispatch(&newer)
+            .await
+            .expect("newer review run should save");
+
+        let history = repository
+            .dispatches_for_review(&review.id)
+            .await
+            .expect("review run history should load");
+        assert_eq!(
+            history
+                .iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-newer", "dispatch-older"],
+        );
+
+        let latest = repository
+            .latest_dispatch_for_review(&review.id)
+            .await
+            .expect("latest review run should load")
+            .expect("latest review run should exist");
+        assert_eq!(latest.dispatch_id, "dispatch-newer");
+    }
+
+    #[tokio::test]
+    async fn list_dispatches_honors_optional_limit() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .await
+            .expect("repository should open");
+        let review_repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should open");
+
+        let review_a = sample_review(
+            "review-41",
+            41,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T08:00:00.000Z",
+            "2026-04-05T08:00:00.000Z",
+        );
+        let review_b = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Claude,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T09:00:00.000Z",
+        );
+        let review_c = sample_review(
+            "review-43",
+            43,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        for review in [&review_a, &review_b, &review_c] {
+            review_repository
+                .save_review(review)
+                .await
+                .expect("review should save");
+        }
+
+        for record in [
+            sample_review_run(
+                "dispatch-1",
+                &review_a,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Failed,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ),
+            sample_review_run(
+                "dispatch-2",
+                &review_b,
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Running,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ),
+            sample_review_run(
+                "dispatch-3",
+                &review_c,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Succeeded,
+                "2026-04-05T11:00:00.000Z",
+                "2026-04-05T11:05:00.000Z",
+            ),
+        ] {
+            repository
+                .save_dispatch(&record)
+                .await
+                .expect("review run should save");
+        }
+
+        let all = repository
+            .list_dispatches(None)
+            .await
+            .expect("review run list should load");
+        assert_eq!(
+            all.iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-3", "dispatch-2", "dispatch-1"],
+        );
+
+        let limited = repository
+            .list_dispatches(Some(2))
+            .await
+            .expect("limited review run list should load");
+        assert_eq!(
+            limited
+                .iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-3", "dispatch-2"],
+        );
+    }
+
+    #[tokio::test]
+    async fn review_ids_with_history_returns_sorted_unique_ids() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .await
+            .expect("repository should open");
+        let review_repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should open");
+
+        let review_a = sample_review(
+            "review-a",
+            41,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T08:00:00.000Z",
+            "2026-04-05T08:00:00.000Z",
+        );
+        let review_b = sample_review(
+            "review-b",
+            42,
+            RemoteAgentPreferredTool::Claude,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T09:00:00.000Z",
+        );
+        for review in [&review_b, &review_a] {
+            review_repository
+                .save_review(review)
+                .await
+                .expect("review should save");
+        }
+
+        for record in [
+            sample_review_run(
+                "dispatch-1",
+                &review_b,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Preparing,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ),
+            sample_review_run(
+                "dispatch-2",
+                &review_a,
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Running,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ),
+            sample_review_run(
+                "dispatch-3",
+                &review_b,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Succeeded,
+                "2026-04-05T11:00:00.000Z",
+                "2026-04-05T11:05:00.000Z",
+            ),
+        ] {
+            repository
+                .save_dispatch(&record)
+                .await
+                .expect("review run should save");
+        }
+
+        let review_ids = repository
+            .review_ids_with_history()
+            .await
+            .expect("review ids should load");
+        assert_eq!(
+            review_ids,
+            vec!["review-a".to_owned(), "review-b".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_dispatch_history_for_review_removes_only_target_rows() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewDispatchRepository::new(Some(database_path.clone()))
+            .await
+            .expect("repository should open");
+        let review_repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should open");
+
+        let review_a = sample_review(
+            "review-a",
+            41,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T08:00:00.000Z",
+            "2026-04-05T08:00:00.000Z",
+        );
+        let review_b = sample_review(
+            "review-b",
+            42,
+            RemoteAgentPreferredTool::Claude,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T09:00:00.000Z",
+        );
+        for review in [&review_a, &review_b] {
+            review_repository
+                .save_review(review)
+                .await
+                .expect("review should save");
+        }
+
+        repository
+            .save_dispatch(&sample_review_run(
+                "dispatch-a1",
+                &review_a,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Failed,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ))
+            .await
+            .expect("review a run should save");
+        repository
+            .save_dispatch(&sample_review_run(
+                "dispatch-b1",
+                &review_b,
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Running,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ))
+            .await
+            .expect("review b run should save");
+
+        repository
+            .delete_dispatch_history_for_review(&review_a.id)
+            .await
+            .expect("review a history should delete");
+
+        assert!(repository
+            .dispatches_for_review(&review_a.id)
+            .await
+            .expect("review a history should load")
+            .is_empty());
+        assert_eq!(
+            repository
+                .dispatches_for_review(&review_b.id)
+                .await
+                .expect("review b history should load")
+                .len(),
+            1,
+        );
     }
 }

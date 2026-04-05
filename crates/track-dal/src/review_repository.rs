@@ -238,3 +238,126 @@ fn parse_preferred_tool(value: &str) -> Result<RemoteAgentPreferredTool, TrackEr
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use track_types::errors::ErrorCode;
+    use track_types::types::RemoteAgentPreferredTool;
+
+    use super::ReviewRepository;
+    use crate::test_support::{sample_review, temporary_database_path};
+
+    #[tokio::test]
+    async fn save_review_upserts_and_get_review_returns_latest_fields() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should resolve");
+
+        let original = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        repository
+            .save_review(&original)
+            .await
+            .expect("review should save");
+
+        let mut updated = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Claude,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T11:00:00.000Z",
+        );
+        updated.pull_request_title = "Updated review title".to_owned();
+        updated.project = None;
+        repository
+            .save_review(&updated)
+            .await
+            .expect("updated review should save");
+
+        let loaded = repository
+            .get_review("review-42")
+            .await
+            .expect("review should load");
+        assert_eq!(loaded, updated);
+    }
+
+    #[tokio::test]
+    async fn list_reviews_orders_by_updated_at_desc() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should resolve");
+
+        let older = sample_review(
+            "review-41",
+            41,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        let newer = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Claude,
+            "2026-04-05T10:30:00.000Z",
+            "2026-04-05T11:30:00.000Z",
+        );
+        repository
+            .save_review(&older)
+            .await
+            .expect("older review should save");
+        repository
+            .save_review(&newer)
+            .await
+            .expect("newer review should save");
+
+        let reviews = repository
+            .list_reviews()
+            .await
+            .expect("review list should load");
+        assert_eq!(
+            reviews
+                .iter()
+                .map(|review| review.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["review-42", "review-41"],
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_review_removes_saved_row() {
+        let (_directory, database_path) = temporary_database_path();
+        let repository = ReviewRepository::new(Some(database_path))
+            .await
+            .expect("review repository should resolve");
+
+        let review = sample_review(
+            "review-42",
+            42,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T10:00:00.000Z",
+            "2026-04-05T10:00:00.000Z",
+        );
+        repository
+            .save_review(&review)
+            .await
+            .expect("review should save");
+
+        repository
+            .delete_review(&review.id)
+            .await
+            .expect("review should delete");
+
+        let error = repository
+            .get_review(&review.id)
+            .await
+            .expect_err("deleted review should be missing");
+        assert_eq!(error.code, ErrorCode::TaskNotFound);
+    }
+}

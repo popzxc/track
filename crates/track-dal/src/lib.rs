@@ -5,3 +5,6 @@ pub mod review_dispatch_repository;
 pub mod review_repository;
 pub mod settings_repository;
 pub mod task_repository;
+
+#[cfg(test)]
+mod test_support;

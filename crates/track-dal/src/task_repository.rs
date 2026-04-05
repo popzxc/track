@@ -456,3 +456,302 @@ fn first_non_empty_line(value: &str) -> Option<&str> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+    use track_types::errors::ErrorCode;
+    use track_types::time_utils::format_iso_8601_millis;
+    use track_types::types::{Priority, Status, TaskCreateInput, TaskSource, TaskUpdateInput};
+
+    use super::FileTaskRepository;
+    use crate::project_repository::ProjectRepository;
+    use crate::test_support::{project_metadata, sample_task, temporary_database_path};
+
+    async fn repository_with_projects(projects: &[&str]) -> (TempDir, FileTaskRepository) {
+        let (directory, database_path) = temporary_database_path();
+        let project_repository = ProjectRepository::new(Some(database_path.clone()))
+            .await
+            .expect("project repository should resolve");
+
+        for project in projects {
+            project_repository
+                .upsert_project_by_name(project, project_metadata(project), Vec::new())
+                .await
+                .expect("project should save");
+        }
+
+        let repository = FileTaskRepository::new(Some(database_path))
+            .await
+            .expect("task repository should resolve");
+        (directory, repository)
+    }
+
+    #[tokio::test]
+    async fn create_task_persists_generated_task_for_existing_project() {
+        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+
+        let stored = repository
+            .create_task(TaskCreateInput {
+                project: "project-a".to_owned(),
+                priority: Priority::High,
+                description: "  First line\n\nMore context  ".to_owned(),
+                source: Some(TaskSource::Cli),
+            })
+            .await
+            .expect("task should save");
+
+        assert_eq!(stored.task.project, "project-a");
+        assert_eq!(stored.task.priority, Priority::High);
+        assert_eq!(stored.task.status, Status::Open);
+        assert_eq!(stored.task.description, "First line\n\nMore context");
+        assert_eq!(stored.task.source, Some(TaskSource::Cli));
+        assert_eq!(stored.file_path, repository.database.database_path());
+
+        let loaded = repository
+            .get_task(&stored.task.id)
+            .await
+            .expect("task should load");
+        assert_eq!(loaded.id, stored.task.id);
+        assert_eq!(loaded.project, stored.task.project);
+        assert_eq!(loaded.priority, stored.task.priority);
+        assert_eq!(loaded.status, stored.task.status);
+        assert_eq!(loaded.description, stored.task.description);
+        assert_eq!(loaded.source, stored.task.source);
+        assert_eq!(
+            format_iso_8601_millis(loaded.created_at),
+            format_iso_8601_millis(stored.task.created_at),
+        );
+        assert_eq!(
+            format_iso_8601_millis(loaded.updated_at),
+            format_iso_8601_millis(stored.task.updated_at),
+        );
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_missing_project() {
+        let (directory, database_path) = temporary_database_path();
+        let repository = FileTaskRepository::new(Some(database_path))
+            .await
+            .expect("task repository should resolve");
+
+        let error = repository
+            .create_task(TaskCreateInput {
+                project: "missing-project".to_owned(),
+                priority: Priority::Medium,
+                description: "Investigate missing project".to_owned(),
+                source: Some(TaskSource::Web),
+            })
+            .await
+            .expect_err("missing project should fail");
+
+        drop(directory);
+        assert_eq!(error.code, ErrorCode::ProjectNotFound);
+    }
+
+    #[tokio::test]
+    async fn save_task_upserts_existing_rows() {
+        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+
+        let original = sample_task(
+            "20260405-120000-upsert-task",
+            "project-a",
+            Priority::Low,
+            Status::Open,
+            "Original description",
+            "2026-04-05T12:00:00.000Z",
+            "2026-04-05T12:00:00.000Z",
+            Some(TaskSource::Cli),
+        );
+        repository
+            .save_task(&original)
+            .await
+            .expect("original task should save");
+
+        let updated = sample_task(
+            &original.id,
+            "project-a",
+            Priority::High,
+            Status::Closed,
+            "Updated description",
+            "2026-04-05T12:00:00.000Z",
+            "2026-04-05T13:00:00.000Z",
+            Some(TaskSource::Web),
+        );
+        repository
+            .save_task(&updated)
+            .await
+            .expect("updated task should save");
+
+        let loaded = repository
+            .get_task(&original.id)
+            .await
+            .expect("task should load");
+        assert_eq!(loaded, updated);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_filters_by_project_and_closed_state() {
+        let (_directory, repository) = repository_with_projects(&["project-a", "project-b"]).await;
+
+        let project_a_open = sample_task(
+            "20260405-120000-project-a-open",
+            "project-a",
+            Priority::High,
+            Status::Open,
+            "Open task in project A",
+            "2026-04-05T12:00:00.000Z",
+            "2026-04-05T12:00:00.000Z",
+            Some(TaskSource::Cli),
+        );
+        let project_a_closed = sample_task(
+            "20260405-130000-project-a-closed",
+            "project-a",
+            Priority::Medium,
+            Status::Closed,
+            "Closed task in project A",
+            "2026-04-05T13:00:00.000Z",
+            "2026-04-05T13:00:00.000Z",
+            Some(TaskSource::Web),
+        );
+        let project_b_open = sample_task(
+            "20260405-140000-project-b-open",
+            "project-b",
+            Priority::Low,
+            Status::Open,
+            "Open task in project B",
+            "2026-04-05T14:00:00.000Z",
+            "2026-04-05T14:00:00.000Z",
+            None,
+        );
+
+        repository
+            .save_task(&project_a_open)
+            .await
+            .expect("project a open task should save");
+        repository
+            .save_task(&project_a_closed)
+            .await
+            .expect("project a closed task should save");
+        repository
+            .save_task(&project_b_open)
+            .await
+            .expect("project b open task should save");
+
+        let open_tasks = repository
+            .list_tasks(false, None)
+            .await
+            .expect("open task list should load");
+        assert_eq!(
+            open_tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "20260405-140000-project-b-open",
+                "20260405-120000-project-a-open",
+            ],
+        );
+
+        let project_a_tasks = repository
+            .list_tasks(true, Some("project-a"))
+            .await
+            .expect("project task list should load");
+        assert_eq!(
+            project_a_tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "20260405-130000-project-a-closed",
+                "20260405-120000-project-a-open",
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_persists_mutable_fields() {
+        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+
+        let original = sample_task(
+            "20260405-120000-update-task",
+            "project-a",
+            Priority::Medium,
+            Status::Open,
+            "Original description",
+            "2026-04-04T12:00:00.000Z",
+            "2026-04-04T12:00:00.000Z",
+            Some(TaskSource::Cli),
+        );
+        repository
+            .save_task(&original)
+            .await
+            .expect("original task should save");
+
+        let updated = repository
+            .update_task(
+                &original.id,
+                TaskUpdateInput {
+                    description: Some("Updated description".to_owned()),
+                    priority: Some(Priority::High),
+                    status: Some(Status::Closed),
+                },
+            )
+            .await
+            .expect("task should update");
+
+        assert_eq!(updated.id, original.id);
+        assert_eq!(updated.description, "Updated description");
+        assert_eq!(updated.priority, Priority::High);
+        assert_eq!(updated.status, Status::Closed);
+        assert_eq!(updated.created_at, original.created_at);
+        assert!(updated.updated_at > original.updated_at);
+
+        let loaded = repository
+            .get_task(&original.id)
+            .await
+            .expect("updated task should load");
+        assert_eq!(loaded.id, updated.id);
+        assert_eq!(loaded.project, updated.project);
+        assert_eq!(loaded.priority, updated.priority);
+        assert_eq!(loaded.status, updated.status);
+        assert_eq!(loaded.description, updated.description);
+        assert_eq!(loaded.source, updated.source);
+        assert_eq!(
+            format_iso_8601_millis(loaded.created_at),
+            format_iso_8601_millis(updated.created_at),
+        );
+        assert_eq!(
+            format_iso_8601_millis(loaded.updated_at),
+            format_iso_8601_millis(updated.updated_at),
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_task_removes_the_row() {
+        let (_directory, repository) = repository_with_projects(&["project-a"]).await;
+
+        let task = sample_task(
+            "20260405-120000-delete-task",
+            "project-a",
+            Priority::Low,
+            Status::Open,
+            "Task to delete",
+            "2026-04-05T12:00:00.000Z",
+            "2026-04-05T12:00:00.000Z",
+            None,
+        );
+        repository.save_task(&task).await.expect("task should save");
+
+        repository
+            .delete_task(&task.id)
+            .await
+            .expect("task should delete");
+
+        let error = repository
+            .get_task(&task.id)
+            .await
+            .expect_err("deleted task should be missing");
+        assert_eq!(error.code, ErrorCode::TaskNotFound);
+    }
+}

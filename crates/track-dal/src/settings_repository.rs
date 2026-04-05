@@ -117,3 +117,141 @@ impl SettingsRepository {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+    use track_types::errors::ErrorCode;
+
+    use super::SettingsRepository;
+    use crate::database::DatabaseContext;
+    use crate::test_support::temporary_database_path;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct ExampleSettings {
+        enabled: bool,
+        retries: u32,
+    }
+
+    #[tokio::test]
+    async fn save_load_and_delete_json_round_trip() {
+        let (_directory, database_path) = temporary_database_path();
+        let database = DatabaseContext::new(Some(database_path)).expect("database should resolve");
+        let repository = SettingsRepository::new(Some(database))
+            .await
+            .expect("settings repository should resolve");
+
+        repository
+            .save_json(
+                "remote-agent",
+                &ExampleSettings {
+                    enabled: true,
+                    retries: 3,
+                },
+            )
+            .await
+            .expect("settings should save");
+
+        let loaded = repository
+            .load_json::<ExampleSettings>("remote-agent")
+            .await
+            .expect("settings should load");
+        assert_eq!(
+            loaded,
+            Some(ExampleSettings {
+                enabled: true,
+                retries: 3,
+            }),
+        );
+
+        repository
+            .delete("remote-agent")
+            .await
+            .expect("settings should delete");
+
+        let loaded = repository
+            .load_json::<ExampleSettings>("remote-agent")
+            .await
+            .expect("settings should load after delete");
+        assert_eq!(loaded, None);
+    }
+
+    #[tokio::test]
+    async fn save_json_overwrites_existing_value_for_the_same_key() {
+        let (_directory, database_path) = temporary_database_path();
+        let database = DatabaseContext::new(Some(database_path)).expect("database should resolve");
+        let repository = SettingsRepository::new(Some(database))
+            .await
+            .expect("settings repository should resolve");
+
+        repository
+            .save_json(
+                "remote-agent",
+                &ExampleSettings {
+                    enabled: false,
+                    retries: 1,
+                },
+            )
+            .await
+            .expect("initial settings should save");
+        repository
+            .save_json(
+                "remote-agent",
+                &ExampleSettings {
+                    enabled: true,
+                    retries: 5,
+                },
+            )
+            .await
+            .expect("updated settings should save");
+
+        let loaded = repository
+            .load_json::<ExampleSettings>("remote-agent")
+            .await
+            .expect("settings should load");
+        assert_eq!(
+            loaded,
+            Some(ExampleSettings {
+                enabled: true,
+                retries: 5,
+            }),
+        );
+    }
+
+    #[tokio::test]
+    async fn load_json_rejects_invalid_json_payloads() {
+        let (_directory, database_path) = temporary_database_path();
+        let database = DatabaseContext::new(Some(database_path)).expect("database should resolve");
+        database
+            .initialize()
+            .await
+            .expect("database schema should initialize");
+        database
+            .run(|connection| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO backend_settings (setting_key, setting_json) VALUES (?1, ?2)",
+                    )
+                    .bind("remote-agent")
+                    .bind("{not-json")
+                    .execute(&mut *connection)
+                    .await
+                    .expect("invalid fixture should insert");
+
+                    Ok(())
+                })
+            })
+            .await
+            .expect("fixture setup should succeed");
+
+        let repository = SettingsRepository::new(Some(database))
+            .await
+            .expect("settings repository should resolve");
+        let error = repository
+            .load_json::<ExampleSettings>("remote-agent")
+            .await
+            .expect_err("invalid JSON should fail");
+
+        assert_eq!(error.code, ErrorCode::InvalidConfig);
+    }
+}
