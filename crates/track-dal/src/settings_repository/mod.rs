@@ -196,13 +196,9 @@ mod tests {
     #[tokio::test]
     async fn load_json_rejects_invalid_json_payloads() {
         let (_directory, database_path) = temporary_database_path();
-        let database = DatabaseContext::uninitialized(Some(database_path))
+        let database = DatabaseContext::initialized(Some(database_path))
             .await
             .expect("database should resolve");
-        database
-            .initialize()
-            .await
-            .expect("database schema should initialize");
 
         // The DAL pool is intentionally single-connection. Seed the invalid
         // fixture row in a narrow scope so repository construction can acquire

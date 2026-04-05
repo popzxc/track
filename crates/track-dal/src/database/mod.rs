@@ -26,7 +26,7 @@ pub struct DatabaseContext {
 }
 
 impl DatabaseContext {
-    pub async fn uninitialized(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
+    async fn uninitialized(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
         let database_path = resolve_database_path(database_path)?;
         let connect_options = connect_options(&database_path)?;
         let pool = SqlitePoolOptions::new()
@@ -61,7 +61,7 @@ impl DatabaseContext {
             .database_error_with("Could not begin a SQLite transaction")
     }
 
-    pub async fn initialize(&self) -> Result<(), TrackError> {
+    async fn initialize(&self) -> Result<(), TrackError> {
         let mut connection = self.connect().await?;
 
         // Existing user databases predate SQLx's migration table, so we first
