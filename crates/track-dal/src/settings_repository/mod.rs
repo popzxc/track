@@ -21,6 +21,7 @@ impl SettingsRepository {
         Ok(Self { database })
     }
 
+    // TODO: strong typing is a joke I guess?
     pub async fn load_json<T>(&self, key: &str) -> Result<Option<T>, TrackError>
     where
         T: DeserializeOwned + Send + 'static,

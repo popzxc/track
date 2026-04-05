@@ -10,24 +10,19 @@ use track_types::types::{
     Priority, Status, StoredTask, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
 };
 
-use crate::database::{resolve_database_path, DatabaseContext, DatabaseResultExt};
+use crate::database::{DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct FileTaskRepository {
     database: DatabaseContext,
-    storage_path: PathBuf,
 }
 
 impl FileTaskRepository {
     pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let storage_path = resolve_database_path(database_path)?;
-        let database = DatabaseContext::new(Some(storage_path.clone())).await?;
+        let database = DatabaseContext::new(database_path).await?;
         database.initialize().await?;
 
-        Ok(Self {
-            database,
-            storage_path,
-        })
+        Ok(Self { database })
     }
 
     pub async fn create_task(&self, input: TaskCreateInput) -> Result<StoredTask, TrackError> {
@@ -89,10 +84,7 @@ impl FileTaskRepository {
         .await
         .database_error_with(format!("Could not save task {}", task.id))?;
 
-        Ok(StoredTask {
-            file_path: self.storage_path.clone(),
-            task,
-        })
+        Ok(StoredTask { task })
     }
 
     pub async fn save_task(&self, task: &Task) -> Result<(), TrackError> {
@@ -357,7 +349,6 @@ impl FileTaskRepository {
         })?;
 
         Ok(StoredTask {
-            file_path: self.storage_path.clone(),
             task: task_from_record(row)?,
         })
     }
@@ -498,7 +489,6 @@ mod tests {
         assert_eq!(stored.task.status, Status::Open);
         assert_eq!(stored.task.description, "First line\n\nMore context");
         assert_eq!(stored.task.source, Some(TaskSource::Cli));
-        assert_eq!(stored.file_path, repository.storage_path);
 
         let loaded = repository
             .get_task(&stored.task.id)

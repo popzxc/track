@@ -7,28 +7,19 @@ use track_types::path_component::validate_single_normal_path_component;
 use track_types::time_utils::{format_iso_8601_millis, parse_iso_8601_millis};
 use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
 
-use crate::database::{resolve_database_path, DatabaseContext, DatabaseResultExt};
+use crate::database::{DatabaseContext, DatabaseResultExt};
 
 #[derive(Debug, Clone)]
 pub struct ReviewRepository {
     database: DatabaseContext,
-    reviews_dir: PathBuf,
 }
 
 impl ReviewRepository {
     pub async fn new(database_path: Option<PathBuf>) -> Result<Self, TrackError> {
-        let reviews_dir = resolve_database_path(database_path)?;
-        let database = DatabaseContext::new(Some(reviews_dir.clone())).await?;
+        let database = DatabaseContext::new(database_path).await?;
         database.initialize().await?;
 
-        Ok(Self {
-            database,
-            reviews_dir,
-        })
-    }
-
-    pub fn reviews_dir(&self) -> &std::path::Path {
-        &self.reviews_dir
+        Ok(Self { database })
     }
 
     pub async fn save_review(&self, review: &ReviewRecord) -> Result<(), TrackError> {
@@ -200,6 +191,7 @@ impl ReviewRepository {
 
 fn review_from_record(record: records::ReviewRow) -> Result<ReviewRecord, TrackError> {
     let id = record.id;
+    // TODO: Doesn't sqlite support native time format?
     let created_at = parse_iso_8601_millis(&record.created_at).map_err(|error| {
         TrackError::new(
             ErrorCode::TaskWriteFailed,

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
@@ -209,9 +207,9 @@ impl TaskUpdateInput {
     }
 }
 
+// TODO: get rid of this type
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredTask {
-    pub file_path: PathBuf,
     pub task: Task,
 }
 

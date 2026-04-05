@@ -22,6 +22,7 @@ impl DispatchRepository {
         Ok(Self { database })
     }
 
+    // TODO: populate it right away and save
     pub fn create_dispatch(
         &self,
         task: &Task,

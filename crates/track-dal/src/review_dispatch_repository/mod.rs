@@ -22,6 +22,7 @@ impl ReviewDispatchRepository {
         Ok(Self { database })
     }
 
+    // TODO: populate right away and save, this method makes no sense.
     pub fn create_dispatch(
         &self,
         review: &ReviewRecord,
