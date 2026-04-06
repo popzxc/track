@@ -12,12 +12,12 @@ pub use dispatch_worktree_path::DispatchWorktreePath;
 pub use remote_checkout_path::RemoteCheckoutPath;
 pub use workspace_key::WorkspaceKey;
 
-pub(super) const TASK_BRANCH_PREFIX: &str = "track/";
-pub(super) const REVIEW_BRANCH_PREFIX: &str = "track-review/";
-pub(super) const TASK_WORKTREE_DIRECTORY_NAME: &str = "worktrees";
-pub(super) const REVIEW_WORKTREE_DIRECTORY_NAME: &str = "review-worktrees";
-pub(super) const TASK_RUN_DIRECTORY_NAME: &str = "dispatches";
-pub(super) const REVIEW_RUN_DIRECTORY_NAME: &str = "review-runs";
+const TASK_BRANCH_PREFIX: &str = "track/";
+const REVIEW_BRANCH_PREFIX: &str = "track-review/";
+const TASK_WORKTREE_DIRECTORY_NAME: &str = "worktrees";
+const REVIEW_WORKTREE_DIRECTORY_NAME: &str = "review-worktrees";
+const TASK_RUN_DIRECTORY_NAME: &str = "dispatches";
+const REVIEW_RUN_DIRECTORY_NAME: &str = "review-runs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DispatchLayoutKind {
@@ -37,62 +37,28 @@ impl DispatchLayoutKind {
 macro_rules! impl_string_value {
     ($name:ident) => {
         impl $name {
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-
+            /// Consumes this strong value at an application boundary and
+            /// returns the underlying string representation.
             pub fn into_inner(self) -> String {
                 self.0
             }
         }
 
-        impl std::fmt::Display for $name {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str(self.as_str())
-            }
-        }
-
-        impl AsRef<str> for $name {
-            fn as_ref(&self) -> &str {
-                self.as_str()
-            }
-        }
-
-        impl std::ops::Deref for $name {
-            type Target = str;
-
-            fn deref(&self) -> &Self::Target {
-                self.as_str()
-            }
-        }
-
-        impl std::borrow::Borrow<str> for $name {
-            fn borrow(&self) -> &str {
-                self.as_str()
-            }
-        }
-
         impl PartialEq<str> for $name {
             fn eq(&self, other: &str) -> bool {
-                self.as_str() == other
+                self.0 == other
             }
         }
 
         impl PartialEq<&str> for $name {
             fn eq(&self, other: &&str) -> bool {
-                self.as_str() == *other
+                self.0 == *other
             }
         }
 
         impl PartialEq<String> for $name {
             fn eq(&self, other: &String) -> bool {
-                self.as_str() == other
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(value: $name) -> Self {
-                value.into_inner()
+                self.0 == *other
             }
         }
     };

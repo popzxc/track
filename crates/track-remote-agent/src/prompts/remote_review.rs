@@ -34,12 +34,14 @@ impl<'a> RemoteReviewPrompt<'a> {
         let branch_name = self
             .dispatch_record
             .branch_name
-            .as_deref()
+            .clone()
+            .map(|branch_name| branch_name.into_inner())
             .expect("queued review dispatches should always have a branch name");
         let worktree_path = self
             .dispatch_record
             .worktree_path
-            .as_deref()
+            .clone()
+            .map(|worktree_path| worktree_path.into_inner())
             .expect("queued review dispatches should always have a worktree path");
         let template_context = RemoteReviewPromptTemplate {
             pull_request_url: &self.review.pull_request_url,
@@ -47,8 +49,8 @@ impl<'a> RemoteReviewPrompt<'a> {
             repository_full_name: &self.review.repository_full_name,
             repo_url: &self.review.repo_url,
             base_branch: &self.review.base_branch,
-            prepared_branch: branch_name,
-            worktree_path,
+            prepared_branch: &branch_name,
+            worktree_path: &worktree_path,
             target_head_oid: self.dispatch_record.target_head_oid.as_deref(),
             main_user: &self.review.main_user,
             follow_up_request: self.dispatch_record.follow_up_request.as_deref(),

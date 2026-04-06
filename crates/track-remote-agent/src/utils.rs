@@ -8,7 +8,7 @@ pub(crate) fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord])
     dispatch_history
         .iter()
         .filter_map(|record| record.worktree_path.as_ref())
-        .map(ToString::to_string)
+        .map(|path| path.clone().into_inner())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -22,7 +22,7 @@ pub(crate) fn unique_review_run_directories(
         .iter()
         .filter_map(|record| {
             if let Some(worktree_path) = record.worktree_path.as_ref() {
-                return Some(worktree_path.run_directory().to_string());
+                return Some(worktree_path.run_directory().into_inner());
             }
 
             Some(
@@ -31,7 +31,7 @@ pub(crate) fn unique_review_run_directories(
                     &record.workspace_key,
                     &record.dispatch_id,
                 )
-                .to_string(),
+                .into_inner(),
             )
         })
         .collect::<std::collections::BTreeSet<_>>()

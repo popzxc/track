@@ -9,7 +9,7 @@ use track_dal::review_dispatch_repository::ReviewDispatchRepository;
 use track_dal::review_repository::ReviewRepository;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{DispatchId, ReviewId, TaskId};
-use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::now_utc;
 use track_types::types::{
     CreateReviewInput, DispatchStatus, RemoteAgentReviewOutcome, ReviewRecord, ReviewRunRecord,
@@ -75,7 +75,7 @@ impl<'a> RemoteReviewService<'a> {
             .map(|project| project.metadata.clone());
         let workspace_key = project_match
             .as_ref()
-            .map(|project| WorkspaceKey::from(&project.canonical_name))
+            .map(|project| project.canonical_name.as_workspace_key())
             .unwrap_or_else(|| pull_request_metadata.workspace_key());
         let review_timestamp = now_utc();
         let mut review_id = ReviewId::new(
@@ -327,8 +327,8 @@ impl<'a> RemoteReviewService<'a> {
                 return Ok(());
             }
             runner.launch(
-                &remote_run_directory.to_string(),
-                worktree_path.as_str(),
+                &remote_run_directory,
+                &worktree_path,
                 dispatch_record.preferred_tool,
             )?;
 
@@ -781,7 +781,7 @@ impl<'a> RemoteReviewService<'a> {
         };
         let remote_run_directory = worktree_path.run_directory();
         let ssh_client = SshClient::new(&remote_agent)?;
-        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory.to_string())
+        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory)
     }
 
     async fn finalize_review_dispatch_locally(
@@ -822,7 +822,7 @@ impl<'a> RemoteReviewService<'a> {
         let branch_names = dispatch_history
             .iter()
             .filter_map(|record| record.branch_name.clone())
-            .map(String::from)
+            .map(|branch_name| branch_name.into_inner())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -1063,7 +1063,7 @@ fn load_review_snapshots_for_records(
         };
 
         dispatch_ids.push(record.dispatch_id.to_string());
-        run_directories.push(worktree_path.run_directory().to_string());
+        run_directories.push(worktree_path.run_directory().into_inner());
     }
 
     if run_directories.is_empty() {

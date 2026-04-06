@@ -72,15 +72,23 @@ impl<'a> ReviewDispatchRepository<'a> {
         let review_id = record.review_id.as_str();
         let pull_request_url = record.pull_request_url.as_str();
         let repository_full_name = record.repository_full_name.as_str();
-        let workspace_key = record.workspace_key.as_str();
+        let workspace_key = record.workspace_key.clone().into_inner();
         let preferred_tool = record.preferred_tool.as_str();
         let status = record.status.as_str();
         let created_at = format_iso_8601_millis(record.created_at);
         let updated_at = format_iso_8601_millis(record.updated_at);
         let finished_at = record.finished_at.map(format_iso_8601_millis);
         let remote_host = record.remote_host.as_str();
-        let branch_name = record.branch_name.as_deref();
-        let worktree_path = record.worktree_path.as_deref();
+        let branch_name = record
+            .branch_name
+            .as_ref()
+            .map(|value| value.clone().into_inner());
+        let worktree_path = record
+            .worktree_path
+            .as_ref()
+            .map(|value| value.clone().into_inner());
+        let branch_name_ref = branch_name.as_deref();
+        let worktree_path_ref = worktree_path.as_deref();
         let follow_up_request = record.follow_up_request.as_deref();
         let target_head_oid = record.target_head_oid.as_deref();
         let summary = record.summary.as_deref();
@@ -132,8 +140,8 @@ impl<'a> ReviewDispatchRepository<'a> {
             updated_at,
             finished_at,
             remote_host,
-            branch_name,
-            worktree_path,
+            branch_name_ref,
+            worktree_path_ref,
             follow_up_request,
             target_head_oid,
             summary,

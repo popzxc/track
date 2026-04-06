@@ -16,6 +16,7 @@ pub struct RemoteCheckoutPath(String);
 
 impl RemoteCheckoutPath {
     pub fn for_workspace(workspace_root: &str, workspace_key: &WorkspaceKey) -> Self {
+        let workspace_key = workspace_key.clone().into_inner();
         Self(format!(
             "{}/{}/{}",
             workspace_root.trim_end_matches('/'),
@@ -65,7 +66,7 @@ impl RemoteCheckoutPath {
     }
 
     fn workspace_directory(&self) -> &str {
-        self.as_str()
+        self.0
             .rsplit_once('/')
             .map(|(prefix, _leaf)| prefix)
             .expect("checkout paths should include a workspace directory")
@@ -88,21 +89,21 @@ mod tests {
         );
         let dispatch_id = DispatchId::new("dispatch-123").unwrap();
 
-        assert_eq!(checkout_path.as_str(), "~/workspace/project-a/project-a");
+        assert_eq!(checkout_path, "~/workspace/project-a/project-a");
         assert_eq!(
-            checkout_path.task_worktree(&dispatch_id).as_str(),
+            checkout_path.task_worktree(&dispatch_id),
             "~/workspace/project-a/worktrees/dispatch-123"
         );
         assert_eq!(
-            checkout_path.review_worktree(&dispatch_id).as_str(),
+            checkout_path.review_worktree(&dispatch_id),
             "~/workspace/project-a/review-worktrees/dispatch-123"
         );
         assert_eq!(
-            checkout_path.task_run_directory(&dispatch_id).as_str(),
+            checkout_path.task_run_directory(&dispatch_id),
             "~/workspace/project-a/dispatches/dispatch-123"
         );
         assert_eq!(
-            checkout_path.review_run_directory(&dispatch_id).as_str(),
+            checkout_path.review_run_directory(&dispatch_id),
             "~/workspace/project-a/review-runs/dispatch-123"
         );
     }

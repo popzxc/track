@@ -11,7 +11,7 @@ use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::remote_layout::{
-    DispatchBranch, DispatchWorktreePath, RemoteCheckoutPath, WorkspaceKey,
+    DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath, WorkspaceKey,
 };
 use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::{
@@ -135,7 +135,7 @@ impl<'a> RemoteAgentServices<'a> {
             .list_projects()
             .await?
             .into_iter()
-            .map(|project| project.canonical_name.to_string())
+            .map(|project| project.canonical_name.as_workspace_key())
             .collect::<BTreeSet<_>>();
 
         let mut summary = RemoteCleanupSummary::default();
@@ -253,7 +253,7 @@ impl<'a> RemoteAgentServices<'a> {
         let reclaimable_review_workspace_keys = review_workspace_keys
             .into_iter()
             .filter(|workspace_key| {
-                !tracked_project_names.contains(workspace_key.as_str())
+                !tracked_project_names.contains(workspace_key)
                     && !active_review_workspace_keys.contains(workspace_key)
             })
             .collect::<Vec<_>>();
@@ -588,21 +588,27 @@ impl<'a> RemoteRunOps<'a> {
 
     pub(super) fn launch(
         &self,
-        remote_run_directory: &str,
-        worktree_path: &str,
+        remote_run_directory: &DispatchRunDirectory,
+        worktree_path: &DispatchWorktreePath,
         preferred_tool: RemoteAgentPreferredTool,
     ) -> Result<(), TrackError> {
+        let remote_run_directory = remote_run_directory.clone().into_inner();
+        let worktree_path = worktree_path.clone().into_inner();
         LaunchRemoteDispatchAction::new(
             self.ssh_client,
-            remote_run_directory,
-            worktree_path,
+            &remote_run_directory,
+            &worktree_path,
             preferred_tool,
         )
         .execute()
     }
 
-    pub(super) fn cancel(&self, remote_run_directory: &str) -> Result<(), TrackError> {
-        CancelRemoteDispatchAction::new(self.ssh_client, remote_run_directory).execute()
+    pub(super) fn cancel(
+        &self,
+        remote_run_directory: &DispatchRunDirectory,
+    ) -> Result<(), TrackError> {
+        let remote_run_directory = remote_run_directory.clone().into_inner();
+        CancelRemoteDispatchAction::new(self.ssh_client, &remote_run_directory).execute()
     }
 
     pub(super) fn read_snapshots(
@@ -644,21 +650,24 @@ impl<'a> RemoteWorkspaceOps<'a> {
         let mut remote_registry = self.load_registry()?;
         let github_login = FetchGithubLoginAction::new(self.ssh_client).execute()?;
         let repository_name = parse_github_repository_name(&metadata.repo_url)?;
-        let checkout_path =
-            self.checkout_path_from_registry_or_default(&remote_registry, project_name.as_str());
+        let checkout_path = self.checkout_path_from_registry_or_default(
+            &remote_registry,
+            &project_name.as_workspace_key(),
+        );
+        let checkout_path_string = checkout_path.clone().into_inner();
         let fork_git_url = EnsureCheckoutAction::new(
             self.ssh_client,
             metadata,
             &repository_name,
-            checkout_path.as_str(),
+            &checkout_path_string,
             &github_login,
         )
         .execute()?;
 
         remote_registry.projects.insert(
-            project_name.to_string(),
+            project_name.as_workspace_key(),
             RemoteProjectRegistryEntry::from_project_metadata(
-                checkout_path.clone(),
+                checkout_path.clone().into_inner(),
                 fork_git_url,
                 metadata,
             ),
@@ -675,10 +684,9 @@ impl<'a> RemoteWorkspaceOps<'a> {
         let mut remote_registry = self.load_registry()?;
         let github_login = FetchGithubLoginAction::new(self.ssh_client).execute()?;
         let repository_name = parse_github_repository_name(&review.repo_url)?;
-        let checkout_path = self.checkout_path_from_registry_or_default(
-            &remote_registry,
-            review.workspace_key.as_str(),
-        );
+        let checkout_path =
+            self.checkout_path_from_registry_or_default(&remote_registry, &review.workspace_key);
+        let checkout_path_string = checkout_path.clone().into_inner();
         let review_metadata = ProjectMetadata {
             repo_url: review.repo_url.clone(),
             git_url: review.git_url.clone(),
@@ -689,14 +697,18 @@ impl<'a> RemoteWorkspaceOps<'a> {
             self.ssh_client,
             &review_metadata,
             &repository_name,
-            checkout_path.as_str(),
+            &checkout_path_string,
             &github_login,
         )
         .execute()?;
 
         remote_registry.projects.insert(
-            review.workspace_key.to_string(),
-            RemoteProjectRegistryEntry::from_review(checkout_path.clone(), fork_git_url, review),
+            review.workspace_key.clone(),
+            RemoteProjectRegistryEntry::from_review(
+                checkout_path.clone().into_inner(),
+                fork_git_url,
+                review,
+            ),
         );
         self.write_registry(&remote_registry)?;
 
@@ -711,21 +723,24 @@ impl<'a> RemoteWorkspaceOps<'a> {
         worktree_path: &DispatchWorktreePath,
         reuse_existing_worktree: bool,
     ) -> Result<(), TrackError> {
+        let checkout_path = checkout_path.clone().into_inner();
+        let branch_name = branch_name.clone().into_inner();
+        let worktree_path = worktree_path.clone().into_inner();
         if reuse_existing_worktree {
             EnsureFollowUpWorktreeAction::new(
                 self.ssh_client,
-                checkout_path.as_str(),
-                branch_name.as_str(),
-                worktree_path.as_str(),
+                &checkout_path,
+                &branch_name,
+                &worktree_path,
             )
             .execute()
         } else {
             CreateWorktreeAction::new(
                 self.ssh_client,
-                checkout_path.as_str(),
+                &checkout_path,
                 base_branch,
-                branch_name.as_str(),
-                worktree_path.as_str(),
+                &branch_name,
+                &worktree_path,
             )
             .execute()
         }
@@ -739,12 +754,15 @@ impl<'a> RemoteWorkspaceOps<'a> {
         worktree_path: &DispatchWorktreePath,
         target_head_oid: Option<&str>,
     ) -> Result<(), TrackError> {
+        let checkout_path = checkout_path.clone().into_inner();
+        let branch_name = branch_name.clone().into_inner();
+        let worktree_path = worktree_path.clone().into_inner();
         CreateReviewWorktreeAction::new(
             self.ssh_client,
-            checkout_path.as_str(),
+            &checkout_path,
             pull_request_number,
-            branch_name.as_str(),
-            worktree_path.as_str(),
+            &branch_name,
+            &worktree_path,
             target_head_oid,
         )
         .execute()
@@ -752,7 +770,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
 
     pub(super) fn resolve_checkout_path(
         &self,
-        workspace_key: &str,
+        workspace_key: &WorkspaceKey,
     ) -> Result<RemoteCheckoutPath, TrackError> {
         let remote_registry = self.load_registry()?;
         Ok(self.checkout_path_from_registry_or_default(&remote_registry, workspace_key))
@@ -765,9 +783,10 @@ impl<'a> RemoteWorkspaceOps<'a> {
         run_directories: &[String],
         cleanup_mode: RemoteTaskCleanupMode,
     ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+        let checkout_path = checkout_path.clone().into_inner();
         CleanupTaskArtifactsAction::new(
             self.ssh_client,
-            checkout_path.as_str(),
+            &checkout_path,
             worktree_paths,
             run_directories,
             cleanup_mode,
@@ -782,9 +801,10 @@ impl<'a> RemoteWorkspaceOps<'a> {
         worktree_paths: &[String],
         run_directories: &[String],
     ) -> Result<(), TrackError> {
+        let checkout_path = checkout_path.clone().into_inner();
         CleanupReviewArtifactsAction::new(
             self.ssh_client,
-            checkout_path.as_str(),
+            &checkout_path,
             branch_names,
             worktree_paths,
             run_directories,
@@ -818,22 +838,16 @@ impl<'a> RemoteWorkspaceOps<'a> {
         let checkout_paths = workspace_keys
             .iter()
             .map(|workspace_key| {
-                self.checkout_path_from_registry_or_default(
-                    &remote_registry,
-                    workspace_key.as_str(),
-                )
+                self.checkout_path_from_registry_or_default(&remote_registry, workspace_key)
+                    .into_inner()
             })
-            .map(String::from)
             .collect::<Vec<_>>();
 
         CleanupReviewWorkspaceCachesAction::new(self.ssh_client, &checkout_paths).execute()?;
 
         let mut registry_changed = false;
         for workspace_key in workspace_keys {
-            registry_changed |= remote_registry
-                .projects
-                .remove(workspace_key.as_str())
-                .is_some();
+            registry_changed |= remote_registry.projects.remove(workspace_key).is_some();
         }
 
         if registry_changed {
@@ -872,7 +886,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
     fn checkout_path_from_registry_or_default(
         &self,
         remote_registry: &RemoteProjectRegistryFile,
-        workspace_key: &str,
+        workspace_key: &WorkspaceKey,
     ) -> RemoteCheckoutPath {
         remote_registry
             .projects
@@ -881,12 +895,8 @@ impl<'a> RemoteWorkspaceOps<'a> {
             .unwrap_or_else(|| self.default_checkout_path(workspace_key))
     }
 
-    fn default_checkout_path(&self, workspace_key: &str) -> RemoteCheckoutPath {
-        RemoteCheckoutPath::for_workspace(
-            &self.remote_agent.workspace_root,
-            &WorkspaceKey::new(workspace_key)
-                .expect("workspace keys used for remote checkout paths should be valid"),
-        )
+    fn default_checkout_path(&self, workspace_key: &WorkspaceKey) -> RemoteCheckoutPath {
+        RemoteCheckoutPath::for_workspace(&self.remote_agent.workspace_root, workspace_key)
     }
 }
 

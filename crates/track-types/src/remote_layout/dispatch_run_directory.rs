@@ -14,7 +14,7 @@ use super::{impl_string_value, WorkspaceKey, REVIEW_RUN_DIRECTORY_NAME, TASK_RUN
 pub struct DispatchRunDirectory(String);
 
 impl DispatchRunDirectory {
-    pub fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
+    fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
         let trimmed = value.as_ref().trim();
         parse_dispatch_run_directory(trimmed)?;
 
@@ -36,6 +36,7 @@ impl DispatchRunDirectory {
         workspace_key: &WorkspaceKey,
         dispatch_id: &DispatchId,
     ) -> Self {
+        let workspace_key = workspace_key.clone().into_inner();
         Self(format!(
             "{}/{}/{}/{}",
             workspace_root.trim_end_matches('/'),
@@ -46,14 +47,14 @@ impl DispatchRunDirectory {
     }
 
     pub fn dispatch_id(&self) -> DispatchId {
-        let (_kind, _prefix, dispatch_id) = parse_dispatch_run_directory(self.as_str())
+        let (_kind, _prefix, dispatch_id) = parse_dispatch_run_directory(&self.0)
             .expect("dispatch run directories should stay valid");
         DispatchId::new(dispatch_id)
             .expect("dispatch run directories should end with a valid dispatch id")
     }
 
     pub fn join(&self, file_name: &str) -> String {
-        format!("{}/{}", self.as_str().trim_end_matches('/'), file_name)
+        format!("{}/{}", self.0.trim_end_matches('/'), file_name)
     }
 
     pub fn from_db_unchecked(value: impl Into<String>) -> Self {
@@ -143,11 +144,11 @@ mod tests {
         let workspace_key = WorkspaceKey::new("review-a").unwrap();
 
         assert_eq!(
-            DispatchRunDirectory::for_task("~/workspace", &project, &dispatch_id).as_str(),
+            DispatchRunDirectory::for_task("~/workspace", &project, &dispatch_id),
             "~/workspace/project-a/dispatches/dispatch-123"
         );
         assert_eq!(
-            DispatchRunDirectory::for_review("~/workspace", &workspace_key, &dispatch_id).as_str(),
+            DispatchRunDirectory::for_review("~/workspace", &workspace_key, &dispatch_id),
             "~/workspace/review-a/review-runs/dispatch-123"
         );
     }

@@ -1,23 +1,17 @@
-use crate::ids::TaskId;
+use time::OffsetDateTime;
+
 use crate::time_utils::format_task_id_timestamp;
 
-pub const TASK_SLUG_MAX_LENGTH: usize = 60;
-
-pub fn build_task_slug(description: &str) -> String {
-    let slug = slug::slugify(description);
-    let trimmed = slug.chars().take(TASK_SLUG_MAX_LENGTH).collect::<String>();
-
-    if trimmed.is_empty() {
-        "task".to_owned()
-    } else {
-        trimmed
-    }
-}
+define_path_id!(
+    TaskId,
+    "Task id",
+    "database task ids should be valid path components"
+);
 
 impl TaskId {
     // TODO: If task id collisions need to be handled centrally again, restore a
     // shared suffixing strategy here instead of re-implementing it at call sites.
-    pub fn unique(timestamp: time::OffsetDateTime, description: &str) -> Self {
+    pub fn unique(timestamp: OffsetDateTime, description: &str) -> Self {
         let base_id = format!(
             "{}-{}",
             format_task_id_timestamp(timestamp),
@@ -28,14 +22,23 @@ impl TaskId {
     }
 }
 
+fn build_task_slug(description: &str) -> String {
+    const TASK_SLUG_MAX_LENGTH: usize = 60;
+    let slug = slug::slugify(description);
+    let trimmed = slug.chars().take(TASK_SLUG_MAX_LENGTH).collect::<String>();
+
+    if trimmed.is_empty() {
+        "task".to_owned()
+    } else {
+        trimmed
+    }
+}
+
 #[cfg(test)]
 mod tests {
-
     use time::macros::datetime;
 
-    use crate::ids::TaskId;
-
-    use super::build_task_slug;
+    use super::{build_task_slug, TaskId};
 
     #[test]
     fn slug_falls_back_when_description_has_no_letters() {

@@ -358,8 +358,8 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
         Some("https://github.com/acme/project-a/pull/42")
     );
     assert_eq!(
-        refreshed.worktree_path.as_deref(),
-        Some("/tmp/project-a/worktrees/dispatch-1")
+        refreshed.worktree_path,
+        Some(DispatchWorktreePath::new("/tmp/project-a/worktrees/dispatch-1").unwrap())
     );
     assert_eq!(
         refreshed.notes.as_deref(),
@@ -434,8 +434,10 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
         Some("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
     );
     assert_eq!(
-        refreshed.worktree_path.as_deref(),
-        Some("/tmp/project-a/review-worktrees/review-dispatch-1")
+        refreshed.worktree_path,
+        Some(
+            DispatchWorktreePath::new("/tmp/project-a/review-worktrees/review-dispatch-1").unwrap()
+        )
     );
     assert_eq!(
         refreshed.notes.as_deref(),

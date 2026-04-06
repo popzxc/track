@@ -14,7 +14,7 @@ use super::{impl_string_value, REVIEW_BRANCH_PREFIX, TASK_BRANCH_PREFIX};
 pub struct DispatchBranch(String);
 
 impl DispatchBranch {
-    pub fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
+    fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
         let trimmed = value.as_ref().trim();
         parse_dispatch_branch(trimmed)?;
 
@@ -29,23 +29,17 @@ impl DispatchBranch {
         Self(format!("{REVIEW_BRANCH_PREFIX}{dispatch_id}"))
     }
 
-    pub fn dispatch_id(&self) -> DispatchId {
-        let (_kind, dispatch_id) =
-            parse_dispatch_branch(self.as_str()).expect("dispatch branches should stay valid");
-        DispatchId::new(dispatch_id).expect("dispatch branch suffix should be a valid dispatch id")
-    }
-
     pub fn from_db_unchecked(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 }
-
 impl<'de> Deserialize<'de> for DispatchBranch {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
+        // TODO: Do we need this kind of validation here? Probably yes, need to validate.
         Self::new(&value).map_err(D::Error::custom)
     }
 }
@@ -98,12 +92,9 @@ mod tests {
     fn builders_enforce_task_and_review_prefixes() {
         let dispatch_id = DispatchId::new("dispatch-123").unwrap();
 
+        assert_eq!(DispatchBranch::for_task(&dispatch_id), "track/dispatch-123");
         assert_eq!(
-            DispatchBranch::for_task(&dispatch_id).as_str(),
-            "track/dispatch-123"
-        );
-        assert_eq!(
-            DispatchBranch::for_review(&dispatch_id).as_str(),
+            DispatchBranch::for_review(&dispatch_id),
             "track-review/dispatch-123"
         );
     }

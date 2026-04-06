@@ -17,6 +17,7 @@ use super::{
 pub struct DispatchWorktreePath(String);
 
 impl DispatchWorktreePath {
+    // Should not be used except for tests.
     pub fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
         let trimmed = value.as_ref().trim();
         parse_dispatch_layout_path(trimmed, "Dispatch worktree path")?;
@@ -39,6 +40,7 @@ impl DispatchWorktreePath {
         workspace_key: &WorkspaceKey,
         dispatch_id: &DispatchId,
     ) -> Self {
+        let workspace_key = workspace_key.clone().into_inner();
         Self(format!(
             "{}/{}/{}/{}",
             workspace_root.trim_end_matches('/'),
@@ -50,7 +52,7 @@ impl DispatchWorktreePath {
 
     pub fn dispatch_id(&self) -> DispatchId {
         let (_kind, _prefix, dispatch_id) =
-            parse_dispatch_layout_path(self.as_str(), "Dispatch worktree path")
+            parse_dispatch_layout_path(&self.0, "Dispatch worktree path")
                 .expect("dispatch worktree paths should stay valid");
         DispatchId::new(dispatch_id)
             .expect("dispatch worktree paths should end with a valid dispatch id")
@@ -61,7 +63,7 @@ impl DispatchWorktreePath {
     }
 
     pub fn run_directory_for(&self, dispatch_id: &DispatchId) -> DispatchRunDirectory {
-        let (kind, prefix, _) = parse_dispatch_layout_path(self.as_str(), "Dispatch worktree path")
+        let (kind, prefix, _) = parse_dispatch_layout_path(&self.0, "Dispatch worktree path")
             .expect("dispatch worktree paths should stay valid");
 
         DispatchRunDirectory::from_layout(format!(
@@ -155,11 +157,11 @@ mod tests {
         let workspace_key = WorkspaceKey::new("review-a").unwrap();
 
         assert_eq!(
-            DispatchWorktreePath::for_task("~/workspace", &project, &dispatch_id).as_str(),
+            DispatchWorktreePath::for_task("~/workspace", &project, &dispatch_id),
             "~/workspace/project-a/worktrees/dispatch-123"
         );
         assert_eq!(
-            DispatchWorktreePath::for_review("~/workspace", &workspace_key, &dispatch_id).as_str(),
+            DispatchWorktreePath::for_review("~/workspace", &workspace_key, &dispatch_id),
             "~/workspace/review-a/review-worktrees/dispatch-123"
         );
     }
@@ -171,7 +173,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            worktree_path.run_directory().as_str(),
+            worktree_path.run_directory(),
             "~/workspace/project-a/review-runs/dispatch-123"
         );
     }
@@ -183,9 +185,7 @@ mod tests {
         let follow_up_dispatch_id = DispatchId::new("dispatch-2").unwrap();
 
         assert_eq!(
-            worktree_path
-                .run_directory_for(&follow_up_dispatch_id)
-                .as_str(),
+            worktree_path.run_directory_for(&follow_up_dispatch_id),
             "~/workspace/project-a/dispatches/dispatch-2"
         );
     }

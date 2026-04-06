@@ -238,11 +238,13 @@ impl<'a> RemoteDispatchService<'a> {
                 dispatch_record.follow_up_request.is_some(),
             )?;
 
+            let branch_name_string = branch_name.clone().into_inner();
+            let worktree_path_string = worktree_path.clone().into_inner();
             let prompt = RemoteDispatchPrompt::new(
                 &task.project,
                 &project_metadata,
-                branch_name.as_str(),
-                worktree_path.as_str(),
+                &branch_name_string,
+                &worktree_path_string,
                 &task.description,
                 dispatch_record.pull_request_url.as_deref(),
                 dispatch_record.follow_up_request.as_deref(),
@@ -283,8 +285,8 @@ impl<'a> RemoteDispatchService<'a> {
                 return Ok(());
             }
             runner.launch(
-                &remote_run_directory.to_string(),
-                worktree_path.as_str(),
+                &remote_run_directory,
+                &worktree_path,
                 dispatch_record.preferred_tool,
             )?;
 
@@ -689,7 +691,8 @@ impl<'a> RemoteDispatchService<'a> {
         let remote_agent = self.load_remote_agent(task_id).await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-        let checkout_path = workspace.resolve_checkout_path(&dispatch_history[0].project)?;
+        let checkout_path =
+            workspace.resolve_checkout_path(&dispatch_history[0].project.as_workspace_key())?;
         let worktree_paths = unique_worktree_paths(dispatch_history);
         let run_directories = unique_run_directories(dispatch_history, &remote_agent);
 
@@ -791,7 +794,7 @@ impl<'a> RemoteDispatchService<'a> {
         };
         let remote_run_directory = worktree_path.run_directory_for(&dispatch_record.dispatch_id);
         let ssh_client = SshClient::new(&remote_agent)?;
-        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory.to_string())
+        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory)
     }
 
     async fn save_preparing_phase(
@@ -946,7 +949,7 @@ pub(super) fn latest_pull_request_for_branch(
     dispatch_history
         .iter()
         .find(|record| {
-            record.branch_name.as_deref() == Some(branch_name)
+            record.branch_name.as_ref() == Some(branch_name)
                 && record
                     .pull_request_url
                     .as_deref()
@@ -977,7 +980,7 @@ fn load_dispatch_snapshots_for_records(
         run_directories.push(
             worktree_path
                 .run_directory_for(&record.dispatch_id)
-                .to_string(),
+                .into_inner(),
         );
     }
 
@@ -997,7 +1000,7 @@ fn derive_remote_run_directory_for_record(
         return Some(
             worktree_path
                 .run_directory_for(&record.dispatch_id)
-                .to_string(),
+                .into_inner(),
         );
     }
 
@@ -1007,7 +1010,7 @@ fn derive_remote_run_directory_for_record(
             &record.project,
             &record.dispatch_id,
         )
-        .to_string(),
+        .into_inner(),
     )
 }
 
@@ -1060,7 +1063,7 @@ pub(super) fn unique_worktree_paths(dispatch_history: &[TaskDispatchRecord]) -> 
     dispatch_history
         .iter()
         .filter_map(|record| record.worktree_path.as_ref())
-        .map(ToString::to_string)
+        .map(|path| path.clone().into_inner())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()

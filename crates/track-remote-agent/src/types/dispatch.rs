@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::remote_layout::WorkspaceKey;
 use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use track_types::types::{RemoteAgentPreferredTool, RemoteResetSummary, ReviewRecord};
 
@@ -233,7 +234,7 @@ impl RemoteWorkspaceResetReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RemoteProjectRegistryFile {
     pub(crate) version: u8,
-    pub(crate) projects: BTreeMap<String, RemoteProjectRegistryEntry>,
+    pub(crate) projects: BTreeMap<WorkspaceKey, RemoteProjectRegistryEntry>,
 }
 
 /// One project entry inside the remote project registry.

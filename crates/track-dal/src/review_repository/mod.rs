@@ -27,7 +27,7 @@ impl<'a> ReviewRepository<'a> {
         let repo_url = review.repo_url.as_str();
         let git_url = review.git_url.as_str();
         let base_branch = review.base_branch.as_str();
-        let workspace_key = review.workspace_key.as_str();
+        let workspace_key = review.workspace_key.clone().into_inner();
         let preferred_tool = review.preferred_tool.as_str();
         let project = review.project.as_ref().map(|project| project.as_str());
         let main_user = review.main_user.as_str();

@@ -2,7 +2,6 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::errors::{ErrorCode, TrackError};
-use crate::ids::ProjectId;
 use crate::path_component::validate_single_normal_path_component;
 
 use super::impl_string_value;
@@ -40,18 +39,6 @@ impl WorkspaceKey {
     }
 }
 
-impl From<ProjectId> for WorkspaceKey {
-    fn from(value: ProjectId) -> Self {
-        Self(value.into_inner())
-    }
-}
-
-impl From<&ProjectId> for WorkspaceKey {
-    fn from(value: &ProjectId) -> Self {
-        Self(value.as_str().to_owned())
-    }
-}
-
 impl<'de> Deserialize<'de> for WorkspaceKey {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -72,13 +59,13 @@ mod tests {
     fn validates_single_normal_components() {
         let workspace_key = WorkspaceKey::new(" project-a ").unwrap();
 
-        assert_eq!(workspace_key.as_str(), "project-a");
+        assert_eq!(workspace_key, "project-a");
     }
 
     #[test]
     fn can_be_derived_from_repository_names() {
         let workspace_key = WorkspaceKey::from_repository_full_name("acme/project-x");
 
-        assert_eq!(workspace_key.as_str(), "acme-project-x");
+        assert_eq!(workspace_key, "acme-project-x");
     }
 }
