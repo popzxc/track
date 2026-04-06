@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::ProjectId;
+use track_types::urls::{parse_url, Url};
 
 use crate::project_catalog::ProjectInfo;
 
@@ -12,7 +13,7 @@ const DEFAULT_BASE_BRANCH: &str = "main";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectMetadata {
     #[serde(rename = "repoUrl")]
-    pub repo_url: String,
+    pub repo_url: Url,
     #[serde(rename = "gitUrl")]
     pub git_url: String,
     #[serde(rename = "baseBranch")]
@@ -42,7 +43,7 @@ pub struct ProjectMetadataUpdateInput {
 
 impl ProjectMetadataUpdateInput {
     pub fn validate(self) -> Result<ProjectMetadata, TrackError> {
-        let repo_url = self.repo_url.trim().to_owned();
+        let repo_url = self.repo_url.trim();
         let git_url = self.git_url.trim().to_owned();
         let base_branch = self.base_branch.trim().to_owned();
         let description = self
@@ -58,7 +59,11 @@ impl ProjectMetadataUpdateInput {
         }
 
         Ok(ProjectMetadata {
-            repo_url,
+            repo_url: parse_url(
+                repo_url,
+                ErrorCode::InvalidProjectMetadata,
+                format!("Project repo URL `{repo_url}` is not valid"),
+            )?,
             git_url,
             base_branch,
             description,
@@ -92,12 +97,14 @@ pub fn infer_project_metadata(project: &ProjectInfo) -> ProjectMetadata {
 }
 
 fn build_default_metadata(project: &ProjectInfo) -> ProjectMetadata {
-    let fallback_file_url = format!("file://{}", project.path.to_string_lossy());
-    let git_url = read_origin_git_url(&project.path).unwrap_or_else(|| fallback_file_url.clone());
-    let repo_url = if git_url == fallback_file_url {
+    let fallback_file_url =
+        Url::from_file_path(&project.path).expect("discovered project paths should be absolute");
+    let fallback_file_url_string = fallback_file_url.to_string();
+    let git_url = read_origin_git_url(&project.path).unwrap_or_else(|| fallback_file_url_string);
+    let repo_url = if git_url == fallback_file_url.as_str() {
         fallback_file_url
     } else {
-        derive_repo_url(&git_url)
+        derive_repo_url(&git_url).unwrap_or(fallback_file_url)
     };
     let base_branch =
         infer_default_base_branch(&project.path).unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_owned());
@@ -199,17 +206,83 @@ fn read_symbolic_ref_branch(reference_path: &Path, prefix: &str) -> Option<Strin
         .map(str::to_owned)
 }
 
-pub fn derive_repo_url(git_url: &str) -> String {
+pub fn derive_repo_url(git_url: &str) -> Option<Url> {
     let git_url = git_url.trim();
 
     if let Some(path) = git_url.strip_prefix("git@") {
         if let Some((host, repo_path)) = path.split_once(':') {
-            return format!("https://{host}/{}", repo_path.trim_end_matches(".git"));
+            return Url::parse(&format!(
+                "https://{host}/{}",
+                repo_path.trim_end_matches(".git")
+            ))
+            .ok();
         }
     }
 
-    git_url
-        .trim_end_matches(".git")
+    let trimmed = git_url.trim_end_matches(".git");
+    let https_candidate = trimmed
         .replace("ssh://git@", "https://")
-        .replace("ssh://", "https://")
+        .replace("ssh://", "https://");
+
+    Url::parse(&https_candidate).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use track_types::ids::ProjectId;
+    use track_types::urls::Url;
+
+    use crate::project_catalog::ProjectInfo;
+
+    use super::{derive_repo_url, infer_project_metadata, ProjectMetadataUpdateInput};
+
+    #[test]
+    fn validates_project_metadata_urls() {
+        let metadata = ProjectMetadataUpdateInput {
+            repo_url: " https://github.com/acme/project-a ".to_owned(),
+            git_url: "git@github.com:acme/project-a.git".to_owned(),
+            base_branch: " main ".to_owned(),
+            description: Some(" Release coordination ".to_owned()),
+        }
+        .validate()
+        .expect("project metadata should validate");
+
+        assert_eq!(
+            metadata.repo_url.as_str(),
+            "https://github.com/acme/project-a"
+        );
+        assert_eq!(metadata.base_branch, "main");
+        assert_eq!(
+            metadata.description.as_deref(),
+            Some("Release coordination")
+        );
+    }
+
+    #[test]
+    fn derives_https_repo_url_from_git_ssh_remote() {
+        let repo_url = derive_repo_url("git@github.com:acme/project-a.git")
+            .expect("ssh git remote should derive a repo url");
+
+        assert_eq!(repo_url.as_str(), "https://github.com/acme/project-a");
+    }
+
+    #[test]
+    fn falls_back_to_a_file_url_when_git_metadata_is_missing() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir should be created");
+        let project_path = tempdir.path().join("project-a");
+        std::fs::create_dir_all(&project_path).expect("project path should exist");
+        std::fs::create_dir_all(project_path.join(".git")).expect("git marker should exist");
+        let project = ProjectInfo {
+            canonical_name: ProjectId::new("project-a").unwrap(),
+            path: project_path.clone(),
+            aliases: Vec::new(),
+        };
+
+        let metadata = infer_project_metadata(&project);
+
+        assert_eq!(
+            metadata.repo_url,
+            Url::from_file_path(project_path).expect("fixture path should become a file url")
+        );
+    }
 }

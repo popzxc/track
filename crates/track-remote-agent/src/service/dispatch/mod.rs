@@ -16,6 +16,7 @@ use track_types::types::{
     DispatchStatus, RemoteAgentDispatchOutcome, RemoteAgentPreferredTool, Status, Task,
     TaskDispatchRecord, TaskUpdateInput,
 };
+use track_types::urls::Url;
 
 use crate::constants::{PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME};
 use crate::prompts::RemoteDispatchPrompt;
@@ -166,7 +167,7 @@ impl<'a> RemoteDispatchService<'a> {
                 previous_dispatch.preferred_tool,
                 &branch_name,
                 &worktree_path,
-                pull_request_url.as_deref(),
+                pull_request_url.as_ref(),
                 Some(trimmed_follow_up_request),
                 Some(summary.as_str()),
                 previous_dispatch.review_request_head_oid.as_deref(),
@@ -246,7 +247,7 @@ impl<'a> RemoteDispatchService<'a> {
                 &branch_name_string,
                 &worktree_path_string,
                 &task.description,
-                dispatch_record.pull_request_url.as_deref(),
+                dispatch_record.pull_request_url.as_ref(),
                 dispatch_record.follow_up_request.as_deref(),
             )
             .render();
@@ -901,10 +902,7 @@ impl<'a> RemoteDispatchService<'a> {
 }
 
 fn validate_project_metadata_for_dispatch(metadata: &ProjectMetadata) -> Result<(), TrackError> {
-    if metadata.repo_url.trim().is_empty()
-        || metadata.git_url.trim().is_empty()
-        || metadata.base_branch.trim().is_empty()
-    {
+    if metadata.git_url.trim().is_empty() || metadata.base_branch.trim().is_empty() {
         return Err(TrackError::new(
             ErrorCode::InvalidProjectMetadata,
             "Project metadata must include repo URL, git URL, and base branch before dispatching a remote agent.",
@@ -945,17 +943,11 @@ pub(super) fn select_follow_up_base_dispatch(
 pub(super) fn latest_pull_request_for_branch(
     dispatch_history: &[TaskDispatchRecord],
     branch_name: &DispatchBranch,
-) -> Option<String> {
+) -> Option<Url> {
     dispatch_history
         .iter()
         .find(|record| {
-            record.branch_name.as_ref() == Some(branch_name)
-                && record
-                    .pull_request_url
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .is_some()
+            record.branch_name.as_ref() == Some(branch_name) && record.pull_request_url.is_some()
         })
         .and_then(|record| record.pull_request_url.clone())
 }

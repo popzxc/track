@@ -422,7 +422,11 @@ fn format_registered_project_output(project: &ProjectRecord, checkout_path: &Pat
                 collapse_home_path(checkout_path),
                 ValueTone::Path,
             ),
-            ("Repo", project.metadata.repo_url.clone(), ValueTone::Path),
+            (
+                "Repo",
+                project.metadata.repo_url.to_string(),
+                ValueTone::Path,
+            ),
         ],
     )
 }
@@ -624,6 +628,7 @@ mod tests {
     use track_types::types::{
         Confidence, ParsedTaskCandidate, Priority, Status, Task, TaskCreateInput, TaskSource,
     };
+    use track_types::urls::Url;
 
     use super::{
         canonicalize_aliases, format_created_task_output, run_capture_command_internal,
@@ -758,7 +763,7 @@ mod tests {
                 .map(|alias| ProjectId::new(alias).expect("fixture project ids should validate"))
                 .collect(),
             metadata: ProjectMetadata {
-                repo_url: format!("https://example.com/{canonical_name}"),
+                repo_url: Url::parse(&format!("https://example.com/{canonical_name}")).unwrap(),
                 git_url: format!("git@example.com:{canonical_name}.git"),
                 base_branch: "main".to_owned(),
                 description: None,
@@ -883,7 +888,7 @@ mod tests {
         assert_eq!(registered[0].0, "project-x");
         assert_eq!(registered[0].1, vec!["proj-x".to_owned()]);
         assert_eq!(
-            registered[0].2.repo_url,
+            registered[0].2.repo_url.as_str(),
             "https://github.com/acme/project-x"
         );
         assert_eq!(registered[0].2.git_url, "git@github.com:acme/project-x.git");

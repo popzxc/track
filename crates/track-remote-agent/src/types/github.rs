@@ -7,6 +7,7 @@
 use serde::Deserialize;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::remote_layout::WorkspaceKey;
+use track_types::urls::Url;
 
 /// Identifies a specific pull request in GitHub.
 ///
@@ -21,18 +22,20 @@ pub(crate) struct GithubPullRequestReference {
 }
 
 impl GithubPullRequestReference {
-    pub(crate) fn parse(pull_request_url: &str) -> Result<Self, TrackError> {
-        let trimmed = pull_request_url.trim().trim_end_matches('/');
-        let without_scheme = trimmed.strip_prefix("https://github.com/").ok_or_else(|| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!(
-                    "Pull request URL {pull_request_url} does not look like a GitHub pull request."
-                ),
-            )
-        })?;
-        let parts = without_scheme.split('/').collect::<Vec<_>>();
-        if parts.len() != 4 || parts[2] != "pull" {
+    pub(crate) fn parse(pull_request_url: &Url) -> Result<Self, TrackError> {
+        let parts = pull_request_url
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if pull_request_url.host_str() != Some("github.com")
+            || parts.len() != 4
+            || parts[2] != "pull"
+        {
             return Err(TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
                 format!(
@@ -50,7 +53,7 @@ impl GithubPullRequestReference {
 
         Ok(Self {
             owner: parts[0].to_owned(),
-            repository: parts[1].to_owned(),
+            repository: parts[1].trim_end_matches(".git").to_owned(),
             number,
         })
     }
@@ -77,8 +80,12 @@ impl GithubPullRequestReference {
         format!("{}/{}", self.owner, self.repository)
     }
 
-    pub(crate) fn repo_url(&self) -> String {
-        format!("https://github.com/{}/{}", self.owner, self.repository)
+    pub(crate) fn repo_url(&self) -> Url {
+        Url::parse(&format!(
+            "https://github.com/{}/{}",
+            self.owner, self.repository
+        ))
+        .expect("GitHub repository URLs built from parsed references should be valid")
     }
 
     pub(crate) fn git_url(&self) -> String {
@@ -94,11 +101,11 @@ impl GithubPullRequestReference {
 /// without depending on raw API payload shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GithubPullRequestMetadata {
-    pub(crate) pull_request_url: String,
+    pub(crate) pull_request_url: Url,
     pub(crate) pull_request_number: u64,
     pub(crate) pull_request_title: String,
     pub(crate) repository_full_name: String,
-    pub(crate) repo_url: String,
+    pub(crate) repo_url: Url,
     pub(crate) git_url: String,
     pub(crate) base_branch: String,
     pub(crate) head_oid: String,
@@ -107,7 +114,7 @@ pub(crate) struct GithubPullRequestMetadata {
 impl GithubPullRequestMetadata {
     pub(crate) fn from_api_response(
         reference: &GithubPullRequestReference,
-        pull_request_url: &str,
+        pull_request_url: &Url,
         pull_request: GithubPullRequestApiResponse,
     ) -> Result<Self, TrackError> {
         if pull_request.state != "open" || pull_request.merged_at.is_some() {
@@ -118,7 +125,7 @@ impl GithubPullRequestMetadata {
         }
 
         Ok(Self {
-            pull_request_url: pull_request_url.trim().to_owned(),
+            pull_request_url: pull_request_url.clone(),
             pull_request_number: reference.number,
             pull_request_title: pull_request.title,
             repository_full_name: reference.repository_full_name(),

@@ -4,6 +4,7 @@ use time::{Duration, OffsetDateTime};
 use crate::errors::{ErrorCode, TrackError};
 use crate::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use crate::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
+use crate::urls::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -215,7 +216,7 @@ pub struct RemoteAgentDispatchOutcome {
     pub status: DispatchStatus,
     pub summary: String,
     #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
-    pub pull_request_url: Option<String>,
+    pub pull_request_url: Option<Url>,
     #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<DispatchBranch>,
     #[serde(rename = "worktreePath")]
@@ -233,7 +234,7 @@ pub struct RemoteAgentReviewOutcome {
     #[serde(rename = "githubReviewId", default)]
     pub github_review_id: Option<String>,
     #[serde(rename = "githubReviewUrl", default)]
-    pub github_review_url: Option<String>,
+    pub github_review_url: Option<Url>,
     #[serde(rename = "worktreePath")]
     pub worktree_path: DispatchWorktreePath,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -268,7 +269,7 @@ pub struct TaskDispatchRecord {
     #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<DispatchWorktreePath>,
     #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
-    pub pull_request_url: Option<String>,
+    pub pull_request_url: Option<Url>,
     #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
     pub follow_up_request: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -383,7 +384,7 @@ impl TaskDispatchRecord {
 pub struct ReviewRecord {
     pub id: ReviewId,
     #[serde(rename = "pullRequestUrl")]
-    pub pull_request_url: String,
+    pub pull_request_url: Url,
     #[serde(rename = "pullRequestNumber")]
     pub pull_request_number: u64,
     #[serde(rename = "pullRequestTitle")]
@@ -391,7 +392,7 @@ pub struct ReviewRecord {
     #[serde(rename = "repositoryFullName")]
     pub repository_full_name: String,
     #[serde(rename = "repoUrl")]
-    pub repo_url: String,
+    pub repo_url: Url,
     #[serde(rename = "gitUrl")]
     pub git_url: String,
     #[serde(rename = "baseBranch")]
@@ -424,7 +425,7 @@ pub struct ReviewRunRecord {
     #[serde(rename = "reviewId")]
     pub review_id: ReviewId,
     #[serde(rename = "pullRequestUrl")]
-    pub pull_request_url: String,
+    pub pull_request_url: Url,
     #[serde(rename = "repositoryFullName")]
     pub repository_full_name: String,
     #[serde(rename = "workspaceKey")]
@@ -468,7 +469,7 @@ pub struct ReviewRunRecord {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub github_review_url: Option<String>,
+    pub github_review_url: Option<Url>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
@@ -570,7 +571,7 @@ impl ReviewRunRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateReviewInput {
     #[serde(rename = "pullRequestUrl")]
-    pub pull_request_url: String,
+    pub pull_request_url: Url,
     #[serde(rename = "preferredTool", default)]
     pub preferred_tool: Option<RemoteAgentPreferredTool>,
     #[serde(rename = "extraInstructions", skip_serializing_if = "Option::is_none")]
@@ -578,25 +579,17 @@ pub struct CreateReviewInput {
 }
 
 impl CreateReviewInput {
-    pub fn validate(self) -> Result<Self, TrackError> {
-        let pull_request_url = self.pull_request_url.trim().to_owned();
+    pub fn validate(self) -> Self {
         let extra_instructions = self
             .extra_instructions
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
 
-        if pull_request_url.is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::EmptyInput,
-                "Please provide a pull request URL.",
-            ));
-        }
-
-        Ok(Self {
-            pull_request_url,
+        Self {
+            pull_request_url: self.pull_request_url,
             preferred_tool: self.preferred_tool,
             extra_instructions,
-        })
+        }
     }
 }
 

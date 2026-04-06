@@ -24,6 +24,7 @@ use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
     TaskCreateInput, TaskSource,
 };
+use track_types::urls::Url;
 
 use super::{build_app, AppState};
 use crate::backend_config::{BackendConfigRepository, RemoteAgentConfigService};
@@ -97,7 +98,7 @@ async fn register_project(database: &DatabaseContext, canonical_name: &str) {
         .upsert_project_by_name(
             &canonical_name,
             ProjectMetadata {
-                repo_url: format!("https://example.com/{canonical_name}"),
+                repo_url: Url::parse(&format!("https://example.com/{canonical_name}")).unwrap(),
                 git_url: format!("git@example.com:{canonical_name}.git"),
                 base_branch: "main".to_owned(),
                 description: None,
@@ -599,11 +600,11 @@ async fn lists_reviews_with_latest_run_and_review_history() {
     let created_at = now_utc();
     let review = ReviewRecord {
         id: ReviewId::new("20260326-120000-review-pr-42").unwrap(),
-        pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
+        pull_request_url: Url::parse("https://github.com/acme/project-a/pull/42").unwrap(),
         pull_request_number: 42,
         pull_request_title: "Fix queue layout".to_owned(),
         repository_full_name: "acme/project-a".to_owned(),
-        repo_url: "https://github.com/acme/project-a".to_owned(),
+        repo_url: Url::parse("https://github.com/acme/project-a").unwrap(),
         git_url: "git@github.com:acme/project-a.git".to_owned(),
         base_branch: "main".to_owned(),
         workspace_key: WorkspaceKey::new("project-a").unwrap(),
@@ -645,7 +646,8 @@ async fn lists_reviews_with_latest_run_and_review_history() {
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),
             github_review_url: Some(
-                "https://github.com/acme/project-a/pull/42#pullrequestreview-1001".to_owned(),
+                Url::parse("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
+                    .unwrap(),
             ),
             notes: None,
             error_message: None,

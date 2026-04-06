@@ -5,6 +5,7 @@ use track_types::ids::{DispatchId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord};
+use track_types::urls::Url;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
@@ -94,7 +95,7 @@ impl<'a> ReviewDispatchRepository<'a> {
         let summary = record.summary.as_deref();
         let review_submitted = record.review_submitted as i64;
         let github_review_id = record.github_review_id.as_deref();
-        let github_review_url = record.github_review_url.as_deref();
+        let github_review_url = record.github_review_url.as_ref().map(Url::as_str);
         let notes = record.notes.as_deref();
         let error_message = record.error_message.as_deref();
         sqlx::query!(
@@ -388,6 +389,7 @@ mod tests {
     use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
     use track_types::time_utils::now_utc;
     use track_types::types::{DispatchStatus, RemoteAgentPreferredTool};
+    use track_types::urls::Url;
 
     use crate::database::DatabaseContext;
     use crate::test_support::{sample_review, sample_review_run, temporary_database_path};
@@ -496,8 +498,10 @@ mod tests {
         );
         updated.review_submitted = true;
         updated.github_review_id = Some("12345".to_owned());
-        updated.github_review_url =
-            Some("https://github.com/acme/project-a/pull/42#pullrequestreview-12345".to_owned());
+        updated.github_review_url = Some(
+            Url::parse("https://github.com/acme/project-a/pull/42#pullrequestreview-12345")
+                .unwrap(),
+        );
         updated.summary = Some("Submitted the review".to_owned());
         repository
             .save_dispatch(&updated)

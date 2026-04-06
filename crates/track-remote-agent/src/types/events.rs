@@ -2,6 +2,7 @@
 
 use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::TaskDispatchRecord;
+use track_types::urls::Url;
 
 use crate::types::GithubPullRequestReviewState;
 
@@ -33,7 +34,7 @@ pub struct RemoteReviewFollowUpEvent {
     pub dispatch_status: String,
     pub remote_host: String,
     pub branch_name: Option<String>,
-    pub pull_request_url: Option<String>,
+    pub pull_request_url: Option<Url>,
     pub reviewer: String,
     pub pr_is_open: Option<bool>,
     pub pr_head_oid: Option<String>,

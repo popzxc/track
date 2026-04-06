@@ -9,6 +9,7 @@ use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
     Task, TaskDispatchRecord, TaskSource,
 };
+use track_types::urls::Url;
 
 // =============================================================================
 // Repository Test Fixtures
@@ -27,7 +28,7 @@ pub(crate) fn temporary_database_path() -> (TempDir, PathBuf) {
 
 pub(crate) fn project_metadata(name: &str) -> ProjectMetadata {
     ProjectMetadata {
-        repo_url: format!("https://github.com/acme/{name}"),
+        repo_url: Url::parse(&format!("https://github.com/acme/{name}")).unwrap(),
         git_url: format!("git@github.com:acme/{name}.git"),
         base_branch: "main".to_owned(),
         description: Some(format!("Metadata for {name}")),
@@ -104,11 +105,14 @@ pub(crate) fn sample_review(
 ) -> ReviewRecord {
     ReviewRecord {
         id: ReviewId::new(id).unwrap(),
-        pull_request_url: format!("https://github.com/acme/project-a/pull/{pull_request_number}"),
+        pull_request_url: Url::parse(&format!(
+            "https://github.com/acme/project-a/pull/{pull_request_number}"
+        ))
+        .unwrap(),
         pull_request_number,
         pull_request_title: format!("Review {pull_request_number}"),
         repository_full_name: "acme/project-a".to_owned(),
-        repo_url: "https://github.com/acme/project-a".to_owned(),
+        repo_url: Url::parse("https://github.com/acme/project-a").unwrap(),
         git_url: "git@github.com:acme/project-a.git".to_owned(),
         base_branch: "main".to_owned(),
         workspace_key: WorkspaceKey::new("project-a").unwrap(),

@@ -3,6 +3,7 @@ use track_types::ids::{ProjectId, ReviewId};
 use track_types::remote_layout::WorkspaceKey;
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
+use track_types::urls::parse_persisted_url;
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct ReviewRow {
@@ -44,11 +45,17 @@ impl TryFrom<ReviewRow> for ReviewRecord {
 
         Ok(ReviewRecord {
             id: ReviewId::from_db(id),
-            pull_request_url: record.pull_request_url,
+            pull_request_url: parse_persisted_url(
+                record.pull_request_url,
+                "stored review pull request URLs should be valid",
+            ),
             pull_request_number: record.pull_request_number as u64,
             pull_request_title: record.pull_request_title,
             repository_full_name: record.repository_full_name,
-            repo_url: record.repo_url,
+            repo_url: parse_persisted_url(
+                record.repo_url,
+                "stored review repo URLs should be valid",
+            ),
             git_url: record.git_url,
             base_branch: record.base_branch,
             workspace_key: WorkspaceKey::from_db_unchecked(record.workspace_key),

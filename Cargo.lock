@@ -3022,6 +3022,7 @@ dependencies = [
  "slug",
  "thiserror",
  "time",
+ "url",
 ]
 
 [[package]]
@@ -3148,6 +3149,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

@@ -328,12 +328,7 @@ impl<'a> RemoteAgentServices<'a> {
         let mut reconciliation = RemoteReviewFollowUpReconciliation::default();
 
         for dispatch_record in latest_dispatches {
-            let Some(pull_request_url) = dispatch_record
-                .pull_request_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            else {
+            let Some(pull_request_url) = dispatch_record.pull_request_url.as_ref() else {
                 continue;
             };
 

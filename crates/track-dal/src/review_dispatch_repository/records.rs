@@ -3,6 +3,7 @@ use track_types::ids::{DispatchId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord};
+use track_types::urls::parse_persisted_url;
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct ReviewRunRow {
@@ -62,7 +63,10 @@ impl TryFrom<ReviewRunRow> for ReviewRunRecord {
         Ok(ReviewRunRecord {
             dispatch_id: DispatchId::from_db(dispatch_id),
             review_id: ReviewId::from_db(record.review_id),
-            pull_request_url: record.pull_request_url,
+            pull_request_url: parse_persisted_url(
+                record.pull_request_url,
+                "stored review-run pull request URLs should be valid",
+            ),
             repository_full_name: record.repository_full_name,
             workspace_key: WorkspaceKey::from_db_unchecked(record.workspace_key),
             preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
@@ -80,7 +84,9 @@ impl TryFrom<ReviewRunRow> for ReviewRunRecord {
             summary: record.summary,
             review_submitted: record.review_submitted != 0,
             github_review_id: record.github_review_id,
-            github_review_url: record.github_review_url,
+            github_review_url: record.github_review_url.map(|value| {
+                parse_persisted_url(value, "stored GitHub review URLs should be valid")
+            }),
             notes: record.notes,
             error_message: record.error_message,
         })

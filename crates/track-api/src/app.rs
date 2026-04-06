@@ -43,7 +43,11 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
 
             for event in &reconciliation.events {
                 let branch_name = event.branch_name.as_deref().unwrap_or("");
-                let pull_request_url = event.pull_request_url.as_deref().unwrap_or("");
+                let pull_request_url = event
+                    .pull_request_url
+                    .as_ref()
+                    .map(|url| url.as_str())
+                    .unwrap_or("");
                 let pr_head_oid = event.pr_head_oid.as_deref().unwrap_or("");
                 let latest_review_state = event.latest_review_state.as_deref().unwrap_or("");
                 let latest_review_submitted_at =

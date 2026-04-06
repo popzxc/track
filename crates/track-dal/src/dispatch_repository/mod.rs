@@ -5,6 +5,7 @@ use track_types::ids::{DispatchId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDispatchRecord};
+use track_types::urls::Url;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
@@ -27,7 +28,7 @@ impl<'a> DispatchRepository<'a> {
         preferred_tool: RemoteAgentPreferredTool,
         branch_name: &DispatchBranch,
         worktree_path: &DispatchWorktreePath,
-        pull_request_url: Option<&str>,
+        pull_request_url: Option<&Url>,
         follow_up_request: Option<&str>,
         summary: Option<&str>,
         review_request_head_oid: Option<&str>,
@@ -46,7 +47,7 @@ impl<'a> DispatchRepository<'a> {
             remote_host: remote_host.to_owned(),
             branch_name: Some(branch_name.clone()),
             worktree_path: Some(worktree_path.clone()),
-            pull_request_url: pull_request_url.map(ToOwned::to_owned),
+            pull_request_url: pull_request_url.cloned(),
             follow_up_request: follow_up_request.map(ToOwned::to_owned),
             summary: summary.map(ToOwned::to_owned),
             notes: None,
@@ -82,7 +83,7 @@ impl<'a> DispatchRepository<'a> {
             .map(|value| value.clone().into_inner());
         let branch_name_ref = branch_name.as_deref();
         let worktree_path_ref = worktree_path.as_deref();
-        let pull_request_url = record.pull_request_url.as_deref();
+        let pull_request_url = record.pull_request_url.as_ref().map(Url::as_str);
         let follow_up_request = record.follow_up_request.as_deref();
         let summary = record.summary.as_deref();
         let notes = record.notes.as_deref();
@@ -375,6 +376,7 @@ mod tests {
     use track_types::types::{
         DispatchStatus, Priority, RemoteAgentPreferredTool, Status, TaskSource,
     };
+    use track_types::urls::Url;
 
     use crate::database::DatabaseContext;
     use crate::test_support::{sample_dispatch, sample_task, temporary_database_path};
@@ -471,7 +473,8 @@ mod tests {
         updated.finished_at =
             Some(parse_iso_8601_millis("2026-04-05T11:00:00.000Z").expect("fixture should parse"));
         updated.summary = Some("Applied fix remotely".to_owned());
-        updated.pull_request_url = Some("https://github.com/acme/project-a/pull/42".to_owned());
+        updated.pull_request_url =
+            Some(Url::parse("https://github.com/acme/project-a/pull/42").unwrap());
         repository
             .save_dispatch(&updated)
             .await

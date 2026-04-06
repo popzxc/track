@@ -1,6 +1,7 @@
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::remote_layout::DispatchRunDirectory;
 use track_types::types::{ReviewRunRecord, TaskDispatchRecord};
+use track_types::urls::Url;
 
 use track_config::runtime::RemoteAgentRuntimeConfig;
 
@@ -57,24 +58,24 @@ pub(crate) fn describe_remote_reset_blockers(
     blockers
 }
 
-pub(crate) fn parse_github_repository_name(repo_url: &str) -> Result<String, TrackError> {
-    let trimmed = repo_url.trim().trim_end_matches('/');
-    let without_suffix = trimmed.trim_end_matches(".git");
-    let Some(repository_name) = without_suffix.rsplit('/').next() else {
-        return Err(TrackError::new(
-            ErrorCode::RemoteDispatchFailed,
-            format!("Repo URL {repo_url} does not look like a GitHub repository."),
-        ));
-    };
+pub(crate) fn parse_github_repository_name(repo_url: &Url) -> Result<String, TrackError> {
+    let path_segments = repo_url
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
-    if !without_suffix.contains("github.com/") || repository_name.is_empty() {
+    if repo_url.host_str() != Some("github.com") || path_segments.len() < 2 {
         return Err(TrackError::new(
             ErrorCode::RemoteDispatchFailed,
             format!("Repo URL {repo_url} does not look like a GitHub repository."),
         ));
     }
 
-    Ok(repository_name.to_owned())
+    Ok(path_segments[1].trim_end_matches(".git").to_owned())
 }
 
 pub(crate) fn build_review_follow_up_notification_comment(
@@ -107,6 +108,7 @@ mod tests {
     use track_types::types::{
         DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord, TaskDispatchRecord,
     };
+    use track_types::urls::Url;
 
     use crate::types::{GithubPullRequestMetadata, GithubPullRequestReference};
 
@@ -115,7 +117,7 @@ mod tests {
     #[test]
     fn parses_github_repository_name() {
         assert_eq!(
-            parse_github_repository_name("https://github.com/acme/project-x")
+            parse_github_repository_name(&Url::parse("https://github.com/acme/project-x").unwrap())
                 .expect("github url should parse"),
             "project-x"
         );
@@ -123,9 +125,10 @@ mod tests {
 
     #[test]
     fn parses_github_pull_request_reference() {
-        let reference =
-            GithubPullRequestReference::parse("https://github.com/acme/project-x/pull/42")
-                .expect("github pr url should parse");
+        let reference = GithubPullRequestReference::parse(
+            &Url::parse("https://github.com/acme/project-x/pull/42").unwrap(),
+        )
+        .expect("github pr url should parse");
 
         assert_eq!(reference.owner, "acme");
         assert_eq!(reference.repository, "project-x");
@@ -135,11 +138,11 @@ mod tests {
     #[test]
     fn builds_review_workspace_key_from_repository_name() {
         let metadata = GithubPullRequestMetadata {
-            pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
+            pull_request_url: Url::parse("https://github.com/acme/project-x/pull/42").unwrap(),
             pull_request_number: 42,
             pull_request_title: "Fix queue layout".to_owned(),
             repository_full_name: "acme/project-x".to_owned(),
-            repo_url: "https://github.com/acme/project-x".to_owned(),
+            repo_url: Url::parse("https://github.com/acme/project-x").unwrap(),
             git_url: "git@github.com:acme/project-x.git".to_owned(),
             base_branch: "main".to_owned(),
             head_oid: "abc123".to_owned(),
@@ -182,7 +185,7 @@ mod tests {
         let review_dispatch = ReviewRunRecord {
             dispatch_id: review_dispatch_id.clone(),
             review_id: ReviewId::new("review-1").unwrap(),
-            pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
+            pull_request_url: Url::parse("https://github.com/acme/project-a/pull/42").unwrap(),
             repository_full_name: "acme/project-a".to_owned(),
             workspace_key: workspace_key.clone(),
             preferred_tool: RemoteAgentPreferredTool::Codex,

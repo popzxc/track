@@ -24,6 +24,7 @@ use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
     Task, TaskCreateInput, TaskDispatchRecord, TaskSource, TaskUpdateInput,
 };
+use track_types::urls::Url;
 
 use crate::types::RemoteDispatchSnapshot;
 
@@ -130,7 +131,7 @@ impl TestContext {
             .upsert_project_by_name(
                 &project_id,
                 ProjectMetadata {
-                    repo_url: format!("https://github.com/acme/{project}"),
+                    repo_url: url(&format!("https://github.com/acme/{project}")),
                     git_url: format!("git@github.com:acme/{project}.git"),
                     base_branch: "main".to_owned(),
                     description: None,
@@ -159,7 +160,7 @@ impl TestContext {
             .upsert_project_by_name(
                 &project_id,
                 ProjectMetadata {
-                    repo_url: format!("https://github.com/acme/{project}"),
+                    repo_url: url(&format!("https://github.com/acme/{project}")),
                     git_url: format!("git@github.com:acme/{project}.git"),
                     base_branch: "main".to_owned(),
                     description: None,
@@ -245,15 +246,19 @@ fn install_dummy_managed_remote_agent_material(data_dir: &Path) {
         .expect("dummy known_hosts file should be written");
 }
 
+fn url(value: &str) -> Url {
+    Url::parse(value).unwrap()
+}
+
 fn sample_review_record() -> ReviewRecord {
     let created_at = now_utc();
     ReviewRecord {
         id: ReviewId::new("20260326-120000-review-pr-42").unwrap(),
-        pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
+        pull_request_url: url("https://github.com/acme/project-x/pull/42"),
         pull_request_number: 42,
         pull_request_title: "Fix queue layout".to_owned(),
         repository_full_name: "acme/project-x".to_owned(),
-        repo_url: "https://github.com/acme/project-x".to_owned(),
+        repo_url: url("https://github.com/acme/project-x"),
         git_url: "git@github.com:acme/project-x.git".to_owned(),
         base_branch: "main".to_owned(),
         workspace_key: WorkspaceKey::new("project-x").unwrap(),
@@ -354,7 +359,7 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
         Some("Mock Claude completed successfully.")
     );
     assert_eq!(
-        refreshed.pull_request_url.as_deref(),
+        refreshed.pull_request_url.as_ref().map(Url::as_str),
         Some("https://github.com/acme/project-a/pull/42")
     );
     assert_eq!(
@@ -376,7 +381,7 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
     let record = ReviewRunRecord {
         dispatch_id: dispatch_id.clone(),
         review_id: ReviewId::new("review-1").unwrap(),
-        pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
+        pull_request_url: url("https://github.com/acme/project-a/pull/42"),
         repository_full_name: "acme/project-a".to_owned(),
         workspace_key: workspace_key.clone(),
         preferred_tool: RemoteAgentPreferredTool::Claude,
@@ -430,7 +435,7 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
     assert!(refreshed.review_submitted);
     assert_eq!(refreshed.github_review_id.as_deref(), Some("1001"));
     assert_eq!(
-        refreshed.github_review_url.as_deref(),
+        refreshed.github_review_url.as_ref().map(Url::as_str),
         Some("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
     );
     assert_eq!(
@@ -529,7 +534,7 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
                 &ProjectId::new("project-a").unwrap(),
                 &DispatchId::new("dispatch-2").unwrap(),
             )),
-            pull_request_url: Some("https://github.com/acme/project-a/pull/42".to_owned()),
+            pull_request_url: Some(url("https://github.com/acme/project-a/pull/42")),
             follow_up_request: None,
             summary: Some("Opened a PR.".to_owned()),
             notes: None,
@@ -555,7 +560,7 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
                 &ProjectId::new("project-a").unwrap(),
                 &DispatchId::new("dispatch-1").unwrap(),
             )),
-            pull_request_url: Some("https://github.com/acme/project-a/pull/1".to_owned()),
+            pull_request_url: Some(url("https://github.com/acme/project-a/pull/1")),
             follow_up_request: None,
             summary: None,
             notes: None,
@@ -577,7 +582,7 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
 
     assert_eq!(selected.dispatch_id, "dispatch-2");
     assert_eq!(
-        pull_request_url.as_deref(),
+        pull_request_url.as_ref().map(Url::as_str),
         Some("https://github.com/acme/project-a/pull/42")
     );
 }
@@ -615,7 +620,7 @@ fn follow_up_dispatch_run_directories_use_the_current_dispatch_id() {
             &project,
             &original_dispatch_id,
         )),
-        pull_request_url: Some("https://github.com/acme/project-a/pull/42".to_owned()),
+        pull_request_url: Some(url("https://github.com/acme/project-a/pull/42")),
         follow_up_request: Some("Continue the existing PR.".to_owned()),
         summary: None,
         notes: None,
@@ -690,9 +695,9 @@ fn selects_the_latest_previous_submitted_review_run() {
             summary: Some("Submitted a review.".to_owned()),
             review_submitted: true,
             github_review_id: Some("1002".to_owned()),
-            github_review_url: Some(
-                "https://github.com/acme/project-x/pull/42#pullrequestreview-1002".to_owned(),
-            ),
+            github_review_url: Some(url(
+                "https://github.com/acme/project-x/pull/42#pullrequestreview-1002",
+            )),
             notes: None,
             error_message: None,
         },
@@ -721,9 +726,9 @@ fn selects_the_latest_previous_submitted_review_run() {
             summary: Some("Submitted an older review.".to_owned()),
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),
-            github_review_url: Some(
-                "https://github.com/acme/project-x/pull/42#pullrequestreview-1001".to_owned(),
-            ),
+            github_review_url: Some(url(
+                "https://github.com/acme/project-x/pull/42#pullrequestreview-1001",
+            )),
             notes: None,
             error_message: None,
         },

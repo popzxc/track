@@ -2,6 +2,7 @@ use serde::Serialize;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::task_description::parse_task_description;
 use track_types::time_utils::format_iso_8601_millis;
+use track_types::urls::Url;
 
 use crate::template_renderer::render_template;
 
@@ -21,7 +22,7 @@ pub(crate) struct RemoteDispatchPrompt<'a> {
     branch_name: &'a str,
     worktree_path: &'a str,
     task_description: &'a str,
-    pull_request_url: Option<&'a str>,
+    pull_request_url: Option<&'a Url>,
     follow_up_request: Option<&'a str>,
 }
 
@@ -32,7 +33,7 @@ impl<'a> RemoteDispatchPrompt<'a> {
         branch_name: &'a str,
         worktree_path: &'a str,
         task_description: &'a str,
-        pull_request_url: Option<&'a str>,
+        pull_request_url: Option<&'a Url>,
         follow_up_request: Option<&'a str>,
     ) -> Self {
         Self {
@@ -50,12 +51,15 @@ impl<'a> RemoteDispatchPrompt<'a> {
         let sections = parse_task_description(self.task_description);
         let template_context = RemoteDispatchPromptTemplate {
             project_name: self.project_name,
-            repo_url: &self.metadata.repo_url,
+            repo_url: self.metadata.repo_url.as_str(),
             git_url: &self.metadata.git_url,
             base_branch: &self.metadata.base_branch,
             branch_name: self.branch_name,
             worktree_path: self.worktree_path,
-            pull_request_url: self.pull_request_url.and_then(non_empty_trimmed),
+            pull_request_url: self
+                .pull_request_url
+                .map(Url::as_str)
+                .and_then(non_empty_trimmed),
             task_title: &sections.title,
             summary_markdown: sections.summary_markdown.as_deref(),
             original_note: sections.original_note.as_deref(),
@@ -72,14 +76,14 @@ impl<'a> RemoteDispatchPrompt<'a> {
     /// same prompt contract because it explains how a later run should scope
     /// its work against the already-open PR.
     pub(crate) fn build_review_follow_up_request(
-        pull_request_url: &str,
+        pull_request_url: &Url,
         main_user: &str,
         dispatch_started_at: time::OffsetDateTime,
     ) -> String {
         render_template(
             REVIEW_FOLLOW_UP_REQUEST_TEMPLATE,
             &ReviewFollowUpRequestTemplate {
-                pull_request_url,
+                pull_request_url: pull_request_url.as_str(),
                 main_user,
                 dispatch_started_at: format_iso_8601_millis(dispatch_started_at),
             },
@@ -119,6 +123,7 @@ mod tests {
     use track_projects::project_metadata::ProjectMetadata;
     use track_types::task_description::render_task_description;
     use track_types::time_utils::parse_iso_8601_seconds;
+    use track_types::urls::Url;
 
     use super::RemoteDispatchPrompt;
 
@@ -127,7 +132,7 @@ mod tests {
         let prompt = RemoteDispatchPrompt::new(
             "project-x",
             &ProjectMetadata {
-                repo_url: "https://github.com/acme/project-x".to_owned(),
+                repo_url: Url::parse("https://github.com/acme/project-x").unwrap(),
                 git_url: "git@github.com:acme/project-x.git".to_owned(),
                 base_branch: "main".to_owned(),
                 description: Some("Main repo".to_owned()),
@@ -139,7 +144,7 @@ mod tests {
                 Some("- Inspect `module_a.rs`"),
                 Some("proj-x prio high fix a bug in module A"),
             ),
-            Some("https://github.com/acme/project-x/pull/42"),
+            Some(&Url::parse("https://github.com/acme/project-x/pull/42").unwrap()),
             Some("Address review comments from the latest PR review."),
         )
         .render();
@@ -153,7 +158,7 @@ mod tests {
     #[test]
     fn builds_review_follow_up_request_that_scopes_feedback_to_one_user() {
         let request = RemoteDispatchPrompt::build_review_follow_up_request(
-            "https://github.com/acme/project-x/pull/42",
+            &Url::parse("https://github.com/acme/project-x/pull/42").unwrap(),
             "octocat",
             parse_iso_8601_seconds("2026-03-25T12:00:00Z").expect("timestamp should parse"),
         );

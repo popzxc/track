@@ -10,6 +10,7 @@ use track_types::errors::{ErrorCode, TrackError};
 use track_types::remote_layout::WorkspaceKey;
 use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use track_types::types::{RemoteAgentPreferredTool, RemoteResetSummary, ReviewRecord};
+use track_types::urls::Url;
 
 /// Logical remote run states that can be persisted in the remote status file.
 ///
@@ -248,7 +249,7 @@ pub(crate) struct RemoteProjectRegistryEntry {
     #[serde(rename = "forkGitUrl")]
     pub(crate) fork_git_url: String,
     #[serde(rename = "repoUrl")]
-    pub(crate) repo_url: String,
+    pub(crate) repo_url: Url,
     #[serde(rename = "gitUrl")]
     pub(crate) git_url: String,
     #[serde(rename = "baseBranch")]

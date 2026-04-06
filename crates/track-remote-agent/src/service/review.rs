@@ -57,7 +57,7 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         input: CreateReviewInput,
     ) -> Result<(ReviewRecord, ReviewRunRecord), TrackError> {
-        let validated_input = input.validate()?;
+        let validated_input = input.validate();
         let (remote_agent, review_settings) = self.load_review_runtime_prerequisites().await?;
         let ssh_client = SshClient::new(&remote_agent)?;
         let pull_request_metadata =
@@ -69,7 +69,7 @@ impl<'a> RemoteReviewService<'a> {
             .list_projects()
             .await?
             .into_iter()
-            .find(|project| project.metadata.repo_url.trim() == pull_request_metadata.repo_url);
+            .find(|project| project.metadata.repo_url == pull_request_metadata.repo_url);
         let project_metadata_override = project_match
             .as_ref()
             .map(|project| project.metadata.clone());

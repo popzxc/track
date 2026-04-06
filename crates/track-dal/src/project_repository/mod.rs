@@ -6,6 +6,7 @@ use track_projects::project_metadata::{
 };
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::ProjectId;
+use track_types::urls::parse_persisted_url;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
 
@@ -49,7 +50,10 @@ impl<'a> ProjectRepository<'a> {
             records.push(ProjectRecord {
                 aliases: load_aliases(&mut connection, &canonical_name).await?,
                 metadata: ProjectMetadata {
-                    repo_url: row.repo_url,
+                    repo_url: parse_persisted_url(
+                        row.repo_url,
+                        "stored project repo URLs should be valid",
+                    ),
                     git_url: row.git_url,
                     base_branch: row.base_branch,
                     description: row.description,
@@ -96,7 +100,10 @@ impl<'a> ProjectRepository<'a> {
         Ok(ProjectRecord {
             aliases: load_aliases(&mut connection, &canonical_name).await?,
             metadata: ProjectMetadata {
-                repo_url: row.repo_url,
+                repo_url: parse_persisted_url(
+                    row.repo_url,
+                    "stored project repo URLs should be valid",
+                ),
                 git_url: row.git_url,
                 base_branch: row.base_branch,
                 description: row.description,
@@ -275,6 +282,7 @@ mod tests {
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
     use track_types::ids::ProjectId;
+    use track_types::urls::Url;
 
     use crate::database::DatabaseContext;
     use crate::test_support::project_metadata;
@@ -460,7 +468,7 @@ mod tests {
             .expect("project should save");
 
         let updated_metadata = track_projects::project_metadata::ProjectMetadata {
-            repo_url: "https://example.com/project-a".to_owned(),
+            repo_url: Url::parse("https://example.com/project-a").unwrap(),
             git_url: "ssh://git@example.com/project-a.git".to_owned(),
             base_branch: "stable".to_owned(),
             description: Some("Updated metadata".to_owned()),
@@ -511,7 +519,10 @@ mod tests {
                 ProjectId::new("alias-b").unwrap(),
             ],
         );
-        assert_eq!(saved.metadata.repo_url, "https://github.com/acme/project-a");
+        assert_eq!(
+            saved.metadata.repo_url.as_str(),
+            "https://github.com/acme/project-a"
+        );
         assert_eq!(saved.metadata.git_url, "git@github.com:acme/project-a.git");
         assert_eq!(saved.metadata.base_branch, "main");
         assert_eq!(
@@ -540,7 +551,7 @@ mod tests {
         assert_eq!(project.canonical_name, "project-a");
         assert_eq!(project.aliases, vec![ProjectId::new("alias-a").unwrap()]);
         assert_eq!(project.metadata.base_branch, "main");
-        assert_eq!(project.metadata.repo_url, "file:///tmp/project-a");
+        assert_eq!(project.metadata.repo_url.as_str(), "file:///tmp/project-a");
         assert_eq!(project.metadata.git_url, "file:///tmp/project-a");
         assert_eq!(project.metadata.description, None);
     }

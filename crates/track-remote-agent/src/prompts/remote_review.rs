@@ -1,5 +1,6 @@
 use serde::Serialize;
 use track_types::types::{ReviewRecord, ReviewRunRecord};
+use track_types::urls::Url;
 
 use crate::template_renderer::render_template;
 
@@ -44,10 +45,10 @@ impl<'a> RemoteReviewPrompt<'a> {
             .map(|worktree_path| worktree_path.into_inner())
             .expect("queued review dispatches should always have a worktree path");
         let template_context = RemoteReviewPromptTemplate {
-            pull_request_url: &self.review.pull_request_url,
+            pull_request_url: self.review.pull_request_url.as_str(),
             pull_request_title: &self.review.pull_request_title,
             repository_full_name: &self.review.repository_full_name,
-            repo_url: &self.review.repo_url,
+            repo_url: self.review.repo_url.as_str(),
             base_branch: &self.review.base_branch,
             prepared_branch: &branch_name,
             worktree_path: &worktree_path,
@@ -57,7 +58,7 @@ impl<'a> RemoteReviewPrompt<'a> {
             show_previous_review_context: self.previous_submitted_review.is_some(),
             previous_github_review_url: self
                 .previous_submitted_review
-                .and_then(|review| review.github_review_url.as_deref()),
+                .and_then(|review| review.github_review_url.as_ref().map(Url::as_str)),
             previous_github_review_id: self
                 .previous_submitted_review
                 .and_then(|review| review.github_review_id.as_deref()),
@@ -100,6 +101,7 @@ mod tests {
     use track_types::types::{
         DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
     };
+    use track_types::urls::Url;
 
     use super::RemoteReviewPrompt;
 
@@ -108,11 +110,11 @@ mod tests {
 
         ReviewRecord {
             id: ReviewId::new("20260326-120000-review-pr-42").unwrap(),
-            pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
+            pull_request_url: Url::parse("https://github.com/acme/project-x/pull/42").unwrap(),
             pull_request_number: 42,
             pull_request_title: "Fix queue layout".to_owned(),
             repository_full_name: "acme/project-x".to_owned(),
-            repo_url: "https://github.com/acme/project-x".to_owned(),
+            repo_url: Url::parse("https://github.com/acme/project-x").unwrap(),
             git_url: "git@github.com:acme/project-x.git".to_owned(),
             base_branch: "main".to_owned(),
             workspace_key: WorkspaceKey::new("project-x").unwrap(),
@@ -154,7 +156,8 @@ mod tests {
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),
             github_review_url: Some(
-                "https://github.com/acme/project-x/pull/42#pullrequestreview-1001".to_owned(),
+                Url::parse("https://github.com/acme/project-x/pull/42#pullrequestreview-1001")
+                    .unwrap(),
             ),
             notes: None,
             error_message: None,

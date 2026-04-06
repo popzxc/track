@@ -3,6 +3,7 @@ use track_types::ids::{DispatchId, ProjectId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, TaskDispatchRecord};
+use track_types::urls::parse_persisted_url;
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct TaskDispatchRow {
@@ -68,7 +69,9 @@ impl TryFrom<TaskDispatchRow> for TaskDispatchRecord {
             worktree_path: record
                 .worktree_path
                 .map(DispatchWorktreePath::from_db_unchecked),
-            pull_request_url: record.pull_request_url,
+            pull_request_url: record.pull_request_url.map(|value| {
+                parse_persisted_url(value, "stored dispatch pull request URLs should be valid")
+            }),
             follow_up_request: record.follow_up_request,
             summary: record.summary,
             notes: record.notes,

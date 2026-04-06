@@ -1,5 +1,6 @@
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::time_utils::parse_iso_8601_seconds;
+use track_types::urls::Url;
 
 use crate::scripts::{FetchGithubApiScript, FetchGithubLoginScript, PostPullRequestCommentScript};
 use crate::ssh::SshClient;
@@ -40,11 +41,11 @@ impl<'a> FetchGithubLoginAction<'a> {
 /// target, including repository identity, base branch, and current head commit.
 pub(crate) struct FetchPullRequestMetadataAction<'a> {
     ssh_client: &'a SshClient,
-    pull_request_url: &'a str,
+    pull_request_url: &'a Url,
 }
 
 impl<'a> FetchPullRequestMetadataAction<'a> {
-    pub(crate) fn new(ssh_client: &'a SshClient, pull_request_url: &'a str) -> Self {
+    pub(crate) fn new(ssh_client: &'a SshClient, pull_request_url: &'a Url) -> Self {
         Self {
             ssh_client,
             pull_request_url,
@@ -96,14 +97,14 @@ impl<'a> FetchPullRequestMetadataAction<'a> {
 /// reviewer activity.
 pub(crate) struct FetchPullRequestReviewStateAction<'a> {
     ssh_client: &'a SshClient,
-    pull_request_url: &'a str,
+    pull_request_url: &'a Url,
     main_user: &'a str,
 }
 
 impl<'a> FetchPullRequestReviewStateAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        pull_request_url: &'a str,
+        pull_request_url: &'a Url,
         main_user: &'a str,
     ) -> Self {
         Self {
@@ -206,14 +207,14 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
 /// automation can coordinate directly in the PR timeline.
 pub(crate) struct PostPullRequestCommentAction<'a> {
     ssh_client: &'a SshClient,
-    pull_request_url: &'a str,
+    pull_request_url: &'a Url,
     comment_body: &'a str,
 }
 
 impl<'a> PostPullRequestCommentAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        pull_request_url: &'a str,
+        pull_request_url: &'a Url,
         comment_body: &'a str,
     ) -> Self {
         Self {
