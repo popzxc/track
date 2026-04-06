@@ -1,9 +1,6 @@
 mod records;
 
-use track_projects::project_catalog::ProjectInfo;
-use track_projects::project_metadata::{
-    infer_project_metadata, ProjectMetadata, ProjectRecord, ProjectUpsertInput,
-};
+use track_projects::project_metadata::{ProjectMetadata, ProjectRecord, ProjectUpsertInput};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::git_remote::GitRemote;
 use track_types::ids::ProjectId;
@@ -21,15 +18,6 @@ impl<'a> ProjectRepository<'a> {
         Self { database }
     }
 
-    pub async fn ensure_project_for_tests(
-        &self,
-        project: &ProjectInfo,
-    ) -> Result<ProjectRecord, TrackError> {
-        // TODO: Why infer? Seems incorrect
-        let metadata = infer_project_metadata(project);
-        self.upsert_project_by_name(&project.canonical_name, metadata, project.aliases.clone())
-            .await
-    }
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, TrackError> {
         let mut connection = self.database.connect().await?;
         let rows = sqlx::query_as!(
@@ -283,8 +271,6 @@ async fn ensure_aliases_are_available(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
     use track_types::git_remote::GitRemote;
@@ -293,7 +279,6 @@ mod tests {
 
     use crate::database::DatabaseContext;
     use crate::test_support::project_metadata;
-    use track_projects::project_catalog::ProjectInfo;
     use track_projects::project_metadata::ProjectUpsertInput;
 
     #[tokio::test]
@@ -539,33 +524,5 @@ mod tests {
             saved.metadata.description.as_deref(),
             Some("Primary project")
         );
-    }
-
-    #[tokio::test]
-    async fn ensure_project_infers_metadata_from_project_info() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let database = DatabaseContext::initialized(Some(directory.path().join("track.sqlite")))
-            .await
-            .expect("database should resolve");
-        let repository = database.project_repository();
-
-        let project = repository
-            .ensure_project_for_tests(&ProjectInfo {
-                canonical_name: ProjectId::new("project-a").unwrap(),
-                path: PathBuf::from("/tmp/project-a"),
-                aliases: vec![ProjectId::new("alias-a").unwrap()],
-            })
-            .await
-            .expect("project should be inferred and saved");
-
-        assert_eq!(project.canonical_name, "project-a");
-        assert_eq!(project.aliases, vec![ProjectId::new("alias-a").unwrap()]);
-        assert_eq!(project.metadata.base_branch, "main");
-        assert_eq!(project.metadata.repo_url.as_str(), "file:///tmp/project-a");
-        assert_eq!(
-            project.metadata.git_url.into_remote_string(),
-            "file:///tmp/project-a"
-        );
-        assert_eq!(project.metadata.description, None);
     }
 }

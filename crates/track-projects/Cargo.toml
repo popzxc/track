@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-description = "Project discovery and metadata inference for track."
+description = "Project discovery and shared project metadata types for track."
 readme = "../../README.md"
 
 [dependencies]

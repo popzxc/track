@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use clap::{Args, Parser, Subcommand};
 use track_capture::{build_task_create_input_from_text, LocalTaskParserFactory, TaskParserFactory};
@@ -11,10 +12,12 @@ use track_config::config::{
 };
 use track_config::paths::collapse_home_path;
 use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
-use track_projects::project_metadata::{infer_project_metadata, ProjectRecord};
+use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::ids::ProjectId;
 use track_types::types::{Task, TaskSource};
+use track_types::urls::Url;
 
 use crate::backend_client::{
     ConfigureRemoteAgentRequest, ConfigureRemoteAgentReviewFollowUpRequest, HttpTrackBackend,
@@ -30,6 +33,8 @@ enum CliInvocation {
     ProjectRegister(ProjectRegisterArgs),
     RemoteAgentConfigure(RemoteAgentConfigureArgs),
 }
+
+const DEFAULT_BASE_BRANCH: &str = "main";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -284,12 +289,7 @@ fn run_project_register_command_internal(
             .unwrap_or_default(),
     )?;
     let aliases = canonicalize_aliases(args.aliases, &canonical_name)?;
-    let project_info = ProjectInfo {
-        canonical_name: canonical_name.clone(),
-        path: checkout_path.clone(),
-        aliases: aliases.clone(),
-    };
-    let metadata = infer_project_metadata(&project_info);
+    let metadata = infer_project_metadata(&checkout_path);
     let project = backend
         .register_project(&canonical_name, aliases, metadata)
         .map_err(enrich_backend_error_for_cli)?;
@@ -299,6 +299,100 @@ fn run_project_register_command_internal(
         loaded_config,
         format_registered_project_output(&project, &checkout_path),
     )
+}
+
+// Project registration is the only runtime path that derives metadata from a
+// live checkout. Keeping the Git probing in the CLI prevents shared crates
+// from taking on filesystem and subprocess responsibilities they do not need.
+fn infer_project_metadata(project_path: &Path) -> ProjectMetadata {
+    let fallback_file_url =
+        Url::from_file_path(project_path).expect("discovered project paths should be absolute");
+    let fallback_git_remote = GitRemote::new(fallback_file_url.as_str())
+        .expect("absolute file URLs should always be valid git remotes");
+    let git_url = read_origin_git_url(project_path)
+        .and_then(|value| GitRemote::new(&value).ok())
+        .unwrap_or_else(|| fallback_git_remote.clone());
+    let repo_url = if git_url == fallback_git_remote {
+        fallback_file_url
+    } else {
+        derive_repo_url(&git_url).unwrap_or(fallback_file_url)
+    };
+    let base_branch =
+        infer_default_base_branch(project_path).unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_owned());
+
+    ProjectMetadata {
+        repo_url,
+        git_url,
+        base_branch,
+        description: None,
+    }
+}
+
+fn infer_default_base_branch(project_path: &Path) -> Option<String> {
+    read_git_output(
+        project_path,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )
+    .and_then(|value| value.strip_prefix("origin/").map(str::to_owned))
+    .or_else(|| {
+        read_git_output(
+            project_path,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )
+    })
+}
+
+fn read_origin_git_url(project_path: &Path) -> Option<String> {
+    read_git_output(project_path, &["remote", "get-url", "origin"])
+}
+
+fn read_git_output(project_path: &Path, args: &[&str]) -> Option<String> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(project_path)
+        .args(args)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(value.to_owned())
+}
+
+fn derive_repo_url(git_url: &GitRemote) -> Option<Url> {
+    let git_url = git_url.clone().into_remote_string();
+    let git_url = git_url.as_str();
+
+    if let Some(path) = git_url.strip_prefix("git@") {
+        if let Some((host, repo_path)) = path.split_once(':') {
+            return Url::parse(&format!(
+                "https://{host}/{}",
+                repo_path.trim_end_matches(".git")
+            ))
+            .ok();
+        }
+    }
+
+    let trimmed = git_url.trim_end_matches(".git");
+    let https_candidate = trimmed
+        .replace("ssh://git@", "https://")
+        .replace("ssh://", "https://");
+
+    Url::parse(&https_candidate).ok()
 }
 
 fn run_remote_agent_configure_command_internal(
@@ -632,13 +726,15 @@ mod tests {
     use track_types::urls::Url;
 
     use super::{
-        canonicalize_aliases, format_created_task_output, run_capture_command_internal,
-        run_project_register_command_internal, run_remote_agent_configure_command_internal,
-        CliConfigService, LoadedCliConfig, ProjectRegisterArgs, RemoteAgentConfigureArgs,
+        canonicalize_aliases, format_created_task_output, infer_project_metadata,
+        run_capture_command_internal, run_project_register_command_internal,
+        run_remote_agent_configure_command_internal, CliConfigService, LoadedCliConfig,
+        ProjectRegisterArgs, RemoteAgentConfigureArgs,
     };
     use crate::backend_client::{
         ConfigureRemoteAgentRequest, RemoteAgentSettingsResponse, TrackBackend,
     };
+    use crate::test_support::{create_git_checkout, run_git};
 
     #[derive(Debug)]
     struct StaticTaskParser {
@@ -857,12 +953,7 @@ mod tests {
     fn project_register_sends_git_metadata_to_the_backend() {
         let directory = tempfile::TempDir::new().expect("tempdir should be created");
         let checkout = directory.path().join("project-x");
-        fs::create_dir_all(checkout.join(".git")).expect("git directory should exist");
-        fs::write(
-            checkout.join(".git/config"),
-            "[remote \"origin\"]\n\turl = git@github.com:acme/project-x.git\n",
-        )
-        .expect("git config should be written");
+        create_git_checkout(&checkout, "git@github.com:acme/project-x.git");
 
         let config_service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
             .expect("cli config service should resolve");
@@ -895,6 +986,59 @@ mod tests {
         assert_eq!(
             registered[0].2.git_url.clone().into_remote_string(),
             "git@github.com:acme/project-x.git"
+        );
+    }
+
+    #[test]
+    fn infer_project_metadata_falls_back_to_a_file_url_when_git_metadata_is_missing() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir should be created");
+        let checkout = tempdir.path().join("project-x");
+        fs::create_dir_all(&checkout).expect("checkout path should exist");
+        fs::create_dir_all(checkout.join(".git")).expect("git marker should exist");
+
+        let metadata = infer_project_metadata(&checkout);
+
+        assert_eq!(
+            metadata.repo_url,
+            Url::from_file_path(checkout.clone()).expect("fixture path should become a file url")
+        );
+        assert_eq!(
+            metadata.git_url.into_remote_string(),
+            Url::from_file_path(checkout)
+                .expect("fixture path should become a file url")
+                .as_str()
+        );
+        assert_eq!(metadata.base_branch, "main");
+        assert_eq!(metadata.description, None);
+    }
+
+    #[test]
+    fn infer_project_metadata_reads_origin_from_a_linked_worktree_checkout() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir should be created");
+        let main_checkout = tempdir.path().join("project-a");
+        let worktree_checkout = tempdir.path().join("project-a-worktree");
+        create_git_checkout(&main_checkout, "git@github.com:acme/project-a.git");
+        run_git(
+            &main_checkout,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree_checkout
+                    .to_str()
+                    .expect("fixture worktree path should be utf-8"),
+            ],
+        );
+
+        let metadata = infer_project_metadata(&worktree_checkout);
+
+        assert_eq!(
+            metadata.git_url.clone().into_remote_string(),
+            "git@github.com:acme/project-a.git"
+        );
+        assert_eq!(
+            metadata.repo_url.as_str(),
+            "https://github.com/acme/project-a"
         );
     }
 

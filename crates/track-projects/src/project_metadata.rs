@@ -1,15 +1,8 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::git_remote::GitRemote;
 use track_types::ids::ProjectId;
 use track_types::urls::{parse_url, Url};
-
-use crate::project_catalog::ProjectInfo;
-
-const DEFAULT_BASE_BRANCH: &str = "main";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,154 +90,9 @@ impl ProjectUpsertInput {
     }
 }
 
-pub fn infer_project_metadata(project: &ProjectInfo) -> ProjectMetadata {
-    build_default_metadata(project)
-}
-
-fn build_default_metadata(project: &ProjectInfo) -> ProjectMetadata {
-    let fallback_file_url =
-        Url::from_file_path(&project.path).expect("discovered project paths should be absolute");
-    let fallback_git_remote = GitRemote::new(fallback_file_url.as_str())
-        .expect("absolute file URLs should always be valid git remotes");
-    let git_url = read_origin_git_url(&project.path)
-        .and_then(|value| GitRemote::new(&value).ok())
-        .unwrap_or_else(|| fallback_git_remote.clone());
-    let repo_url = if git_url == fallback_git_remote {
-        fallback_file_url
-    } else {
-        derive_repo_url(&git_url).unwrap_or(fallback_file_url)
-    };
-    let base_branch =
-        infer_default_base_branch(&project.path).unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_owned());
-
-    ProjectMetadata {
-        repo_url,
-        git_url,
-        base_branch,
-        description: None,
-    }
-}
-
-fn infer_default_base_branch(project_path: &Path) -> Option<String> {
-    let git_common_directory = resolve_git_common_directory(project_path)?;
-
-    read_symbolic_ref_branch(
-        &git_common_directory.join("refs/remotes/origin/HEAD"),
-        "refs/remotes/origin/",
-    )
-    .or_else(|| read_symbolic_ref_branch(&git_common_directory.join("HEAD"), "refs/heads/"))
-}
-
-fn read_origin_git_url(project_path: &Path) -> Option<String> {
-    let git_directory = resolve_git_directory(project_path)?;
-    let config = fs::read_to_string(git_directory.join("config")).ok()?;
-
-    let mut in_origin_section = false;
-    for raw_line in config.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-
-        if line.starts_with('[') && line.ends_with(']') {
-            in_origin_section = line == "[remote \"origin\"]";
-            continue;
-        }
-
-        if !in_origin_section {
-            continue;
-        }
-
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "url" {
-            continue;
-        }
-
-        let value = value.trim();
-        if value.is_empty() {
-            return None;
-        }
-
-        return Some(value.to_owned());
-    }
-
-    None
-}
-
-fn resolve_git_directory(project_path: &Path) -> Option<PathBuf> {
-    let git_marker = project_path.join(".git");
-    if git_marker.is_dir() {
-        return Some(git_marker);
-    }
-
-    if !git_marker.is_file() {
-        return None;
-    }
-
-    let gitdir_directive = fs::read_to_string(git_marker).ok()?;
-    let relative_path = gitdir_directive
-        .trim()
-        .strip_prefix("gitdir:")?
-        .trim()
-        .to_owned();
-
-    Some(project_path.join(relative_path))
-}
-
-fn resolve_git_common_directory(project_path: &Path) -> Option<PathBuf> {
-    let git_directory = resolve_git_directory(project_path)?;
-    let commondir_path = git_directory.join("commondir");
-    if !commondir_path.is_file() {
-        return Some(git_directory);
-    }
-
-    let relative = fs::read_to_string(commondir_path).ok()?;
-    Some(git_directory.join(relative.trim()))
-}
-
-fn read_symbolic_ref_branch(reference_path: &Path, prefix: &str) -> Option<String> {
-    let symbolic_ref = fs::read_to_string(reference_path).ok()?;
-    symbolic_ref
-        .trim()
-        .strip_prefix("ref:")?
-        .trim()
-        .strip_prefix(prefix)
-        .map(str::to_owned)
-}
-
-pub fn derive_repo_url(git_url: &GitRemote) -> Option<Url> {
-    let git_url = git_url.clone().into_remote_string();
-    let git_url = git_url.as_str();
-
-    if let Some(path) = git_url.strip_prefix("git@") {
-        if let Some((host, repo_path)) = path.split_once(':') {
-            return Url::parse(&format!(
-                "https://{host}/{}",
-                repo_path.trim_end_matches(".git")
-            ))
-            .ok();
-        }
-    }
-
-    let trimmed = git_url.trim_end_matches(".git");
-    let https_candidate = trimmed
-        .replace("ssh://git@", "https://")
-        .replace("ssh://", "https://");
-
-    Url::parse(&https_candidate).ok()
-}
-
 #[cfg(test)]
 mod tests {
-    use track_types::git_remote::GitRemote;
-    use track_types::ids::ProjectId;
-    use track_types::urls::Url;
-
-    use crate::project_catalog::ProjectInfo;
-
-    use super::{derive_repo_url, infer_project_metadata, ProjectMetadataUpdateInput};
+    use super::ProjectMetadataUpdateInput;
 
     #[test]
     fn validates_project_metadata_urls() {
@@ -269,35 +117,6 @@ mod tests {
         assert_eq!(
             metadata.description.as_deref(),
             Some("Release coordination")
-        );
-    }
-
-    #[test]
-    fn derives_https_repo_url_from_git_ssh_remote() {
-        let repo_url =
-            derive_repo_url(&GitRemote::new("git@github.com:acme/project-a.git").unwrap())
-                .expect("ssh git remote should derive a repo url");
-
-        assert_eq!(repo_url.as_str(), "https://github.com/acme/project-a");
-    }
-
-    #[test]
-    fn falls_back_to_a_file_url_when_git_metadata_is_missing() {
-        let tempdir = tempfile::TempDir::new().expect("tempdir should be created");
-        let project_path = tempdir.path().join("project-a");
-        std::fs::create_dir_all(&project_path).expect("project path should exist");
-        std::fs::create_dir_all(project_path.join(".git")).expect("git marker should exist");
-        let project = ProjectInfo {
-            canonical_name: ProjectId::new("project-a").unwrap(),
-            path: project_path.clone(),
-            aliases: Vec::new(),
-        };
-
-        let metadata = infer_project_metadata(&project);
-
-        assert_eq!(
-            metadata.repo_url,
-            Url::from_file_path(project_path).expect("fixture path should become a file url")
         );
     }
 }

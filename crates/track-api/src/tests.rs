@@ -15,7 +15,6 @@ use track_config::paths::{
     get_backend_managed_remote_agent_key_path, get_backend_managed_remote_agent_known_hosts_path,
 };
 use track_dal::database::DatabaseContext;
-use track_projects::project_catalog::ProjectInfo;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::git_remote::GitRemote;
 use track_types::ids::{DispatchId, ProjectId, ReviewId};
@@ -925,22 +924,23 @@ async fn lists_and_updates_project_metadata() {
     let _environment = TestEnvironment::new(&directory);
     let static_root = static_root(&directory);
     let database = database(&directory).await;
-    let project_path = directory.path().join("workspace/project-a");
-    fs::create_dir_all(project_path.join(".git")).expect("git directory should exist");
-    fs::write(
-        project_path.join(".git/config"),
-        "[remote \"origin\"]\n\turl = git@github.com:acme/project-a.git\n",
-    )
-    .expect("git config should be written");
+    let canonical_name = ProjectId::new("project-a").expect("fixture project ids should validate");
     database
         .project_repository()
-        .ensure_project_for_tests(&ProjectInfo {
-            canonical_name: ProjectId::new("project-a").unwrap(),
-            path: project_path,
-            aliases: vec![],
-        })
+        .upsert_project_by_name(
+            &canonical_name,
+            ProjectMetadata {
+                repo_url: Url::parse("https://github.com/acme/project-a")
+                    .expect("fixture repo url should parse"),
+                git_url: GitRemote::new("git@github.com:acme/project-a.git")
+                    .expect("fixture git remote should parse"),
+                base_branch: "main".to_owned(),
+                description: None,
+            },
+            Vec::new(),
+        )
         .await
-        .expect("project should initialize");
+        .expect("project should save");
 
     let app = build_app(
         app_state(config_service(&directory).await, database.clone()),
