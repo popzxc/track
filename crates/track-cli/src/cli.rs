@@ -623,6 +623,7 @@ mod tests {
     use track_projects::project_catalog::ProjectCatalog;
     use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
     use track_types::errors::{ErrorCode, TrackError};
+    use track_types::git_remote::GitRemote;
     use track_types::ids::{ProjectId, TaskId};
     use track_types::time_utils::now_utc;
     use track_types::types::{
@@ -764,7 +765,7 @@ mod tests {
                 .collect(),
             metadata: ProjectMetadata {
                 repo_url: Url::parse(&format!("https://example.com/{canonical_name}")).unwrap(),
-                git_url: format!("git@example.com:{canonical_name}.git"),
+                git_url: GitRemote::new(&format!("git@example.com:{canonical_name}.git")).unwrap(),
                 base_branch: "main".to_owned(),
                 description: None,
             },
@@ -891,7 +892,10 @@ mod tests {
             registered[0].2.repo_url.as_str(),
             "https://github.com/acme/project-x"
         );
-        assert_eq!(registered[0].2.git_url, "git@github.com:acme/project-x.git");
+        assert_eq!(
+            registered[0].2.git_url.clone().into_remote_string(),
+            "git@github.com:acme/project-x.git"
+        );
     }
 
     #[test]

@@ -44,11 +44,13 @@ impl<'a> RemoteReviewPrompt<'a> {
             .clone()
             .map(|worktree_path| worktree_path.into_inner())
             .expect("queued review dispatches should always have a worktree path");
+        let git_url = self.review.git_url.clone().into_remote_string();
         let template_context = RemoteReviewPromptTemplate {
             pull_request_url: self.review.pull_request_url.as_str(),
             pull_request_title: &self.review.pull_request_title,
             repository_full_name: &self.review.repository_full_name,
             repo_url: self.review.repo_url.as_str(),
+            git_url: &git_url,
             base_branch: &self.review.base_branch,
             prepared_branch: &branch_name,
             worktree_path: &worktree_path,
@@ -79,6 +81,7 @@ struct RemoteReviewPromptTemplate<'a> {
     pull_request_title: &'a str,
     repository_full_name: &'a str,
     repo_url: &'a str,
+    git_url: &'a str,
     base_branch: &'a str,
     prepared_branch: &'a str,
     worktree_path: &'a str,
@@ -95,6 +98,7 @@ struct RemoteReviewPromptTemplate<'a> {
 
 #[cfg(test)]
 mod tests {
+    use track_types::git_remote::GitRemote;
     use track_types::ids::{DispatchId, ProjectId, ReviewId};
     use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
     use track_types::time_utils::now_utc;
@@ -115,7 +119,7 @@ mod tests {
             pull_request_title: "Fix queue layout".to_owned(),
             repository_full_name: "acme/project-x".to_owned(),
             repo_url: Url::parse("https://github.com/acme/project-x").unwrap(),
-            git_url: "git@github.com:acme/project-x.git".to_owned(),
+            git_url: GitRemote::new("git@github.com:acme/project-x.git").unwrap(),
             base_branch: "main".to_owned(),
             workspace_key: WorkspaceKey::new("project-x").unwrap(),
             preferred_tool: RemoteAgentPreferredTool::Codex,

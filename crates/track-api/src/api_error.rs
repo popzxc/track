@@ -29,6 +29,7 @@ impl ApiError {
         let status = match error.code {
             ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
             ErrorCode::InvalidJson
+            | ErrorCode::InvalidGitRemote
             | ErrorCode::InvalidPathComponent
             | ErrorCode::InvalidProjectMetadata
             | ErrorCode::InvalidRemoteAgentConfig

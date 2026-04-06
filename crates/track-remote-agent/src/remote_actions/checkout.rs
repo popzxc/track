@@ -1,5 +1,6 @@
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 
 use crate::scripts::{
     CreateReviewWorktreeScript, CreateWorktreeScript, EnsureCheckoutScript,
@@ -34,7 +35,7 @@ impl<'a> EnsureCheckoutAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<String, TrackError> {
+    pub(crate) fn execute(&self) -> Result<GitRemote, TrackError> {
         let script = EnsureCheckoutScript;
         let arguments = script.arguments(
             self.metadata,
@@ -44,7 +45,7 @@ impl<'a> EnsureCheckoutAction<'a> {
         );
         let fork_git_url = self.ssh_client.run_script(&script.render(), &arguments)?;
 
-        let fork_git_url = fork_git_url.trim().to_owned();
+        let fork_git_url = fork_git_url.trim();
         if fork_git_url.is_empty() {
             return Err(TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
@@ -52,7 +53,15 @@ impl<'a> EnsureCheckoutAction<'a> {
             ));
         }
 
-        Ok(fork_git_url)
+        GitRemote::new(fork_git_url).map_err(|error| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!(
+                    "Remote fork setup returned an invalid Git remote: {}",
+                    error.message()
+                ),
+            )
+        })
     }
 }
 

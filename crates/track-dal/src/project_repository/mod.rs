@@ -5,6 +5,7 @@ use track_projects::project_metadata::{
     infer_project_metadata, ProjectMetadata, ProjectRecord, ProjectUpsertInput,
 };
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::ids::ProjectId;
 use track_types::urls::parse_persisted_url;
 
@@ -20,7 +21,11 @@ impl<'a> ProjectRepository<'a> {
         Self { database }
     }
 
-    pub async fn ensure_project(&self, project: &ProjectInfo) -> Result<ProjectRecord, TrackError> {
+    pub async fn ensure_project_for_tests(
+        &self,
+        project: &ProjectInfo,
+    ) -> Result<ProjectRecord, TrackError> {
+        // TODO: Why infer? Seems incorrect
         let metadata = infer_project_metadata(project);
         self.upsert_project_by_name(&project.canonical_name, metadata, project.aliases.clone())
             .await
@@ -54,7 +59,7 @@ impl<'a> ProjectRepository<'a> {
                         row.repo_url,
                         "stored project repo URLs should be valid",
                     ),
-                    git_url: row.git_url,
+                    git_url: GitRemote::from_db(row.git_url),
                     base_branch: row.base_branch,
                     description: row.description,
                 },
@@ -104,7 +109,7 @@ impl<'a> ProjectRepository<'a> {
                     row.repo_url,
                     "stored project repo URLs should be valid",
                 ),
-                git_url: row.git_url,
+                git_url: GitRemote::from_db(row.git_url),
                 base_branch: row.base_branch,
                 description: row.description,
             },
@@ -157,7 +162,8 @@ impl<'a> ProjectRepository<'a> {
         ensure_aliases_are_available(&mut *transaction, &canonical_name, &merged_aliases).await?;
         let canonical_name_ref = canonical_name.as_str();
         let repo_url = metadata.repo_url.as_str();
-        let git_url = metadata.git_url.as_str();
+        let git_url = metadata.git_url.clone().into_remote_string();
+        let git_url_ref = git_url.as_str();
         let base_branch = metadata.base_branch.as_str();
         let description = metadata.description.as_deref();
 
@@ -173,7 +179,7 @@ impl<'a> ProjectRepository<'a> {
             "#,
             canonical_name_ref,
             repo_url,
-            git_url,
+            git_url_ref,
             base_branch,
             description,
         )
@@ -281,6 +287,7 @@ mod tests {
 
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
+    use track_types::git_remote::GitRemote;
     use track_types::ids::ProjectId;
     use track_types::urls::Url;
 
@@ -469,7 +476,7 @@ mod tests {
 
         let updated_metadata = track_projects::project_metadata::ProjectMetadata {
             repo_url: Url::parse("https://example.com/project-a").unwrap(),
-            git_url: "ssh://git@example.com/project-a.git".to_owned(),
+            git_url: GitRemote::new("ssh://git@example.com/project-a.git").unwrap(),
             base_branch: "stable".to_owned(),
             description: Some("Updated metadata".to_owned()),
         };
@@ -523,7 +530,10 @@ mod tests {
             saved.metadata.repo_url.as_str(),
             "https://github.com/acme/project-a"
         );
-        assert_eq!(saved.metadata.git_url, "git@github.com:acme/project-a.git");
+        assert_eq!(
+            saved.metadata.git_url.into_remote_string(),
+            "git@github.com:acme/project-a.git"
+        );
         assert_eq!(saved.metadata.base_branch, "main");
         assert_eq!(
             saved.metadata.description.as_deref(),
@@ -540,7 +550,7 @@ mod tests {
         let repository = database.project_repository();
 
         let project = repository
-            .ensure_project(&ProjectInfo {
+            .ensure_project_for_tests(&ProjectInfo {
                 canonical_name: ProjectId::new("project-a").unwrap(),
                 path: PathBuf::from("/tmp/project-a"),
                 aliases: vec![ProjectId::new("alias-a").unwrap()],
@@ -552,7 +562,10 @@ mod tests {
         assert_eq!(project.aliases, vec![ProjectId::new("alias-a").unwrap()]);
         assert_eq!(project.metadata.base_branch, "main");
         assert_eq!(project.metadata.repo_url.as_str(), "file:///tmp/project-a");
-        assert_eq!(project.metadata.git_url, "file:///tmp/project-a");
+        assert_eq!(
+            project.metadata.git_url.into_remote_string(),
+            "file:///tmp/project-a"
+        );
         assert_eq!(project.metadata.description, None);
     }
 }

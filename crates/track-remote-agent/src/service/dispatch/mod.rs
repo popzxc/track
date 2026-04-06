@@ -902,7 +902,7 @@ impl<'a> RemoteDispatchService<'a> {
 }
 
 fn validate_project_metadata_for_dispatch(metadata: &ProjectMetadata) -> Result<(), TrackError> {
-    if metadata.git_url.trim().is_empty() || metadata.base_branch.trim().is_empty() {
+    if metadata.base_branch.trim().is_empty() {
         return Err(TrackError::new(
             ErrorCode::InvalidProjectMetadata,
             "Project metadata must include repo URL, git URL, and base branch before dispatching a remote agent.",

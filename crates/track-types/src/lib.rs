@@ -1,5 +1,6 @@
 pub mod build_info;
 pub mod errors;
+pub mod git_remote;
 pub mod ids;
 pub mod path_component;
 pub mod remote_layout;

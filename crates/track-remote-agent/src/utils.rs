@@ -102,6 +102,7 @@ pub(crate) fn contextualize_track_error(
 
 #[cfg(test)]
 mod tests {
+    use track_types::git_remote::GitRemote;
     use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
     use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
     use track_types::time_utils::now_utc;
@@ -143,7 +144,7 @@ mod tests {
             pull_request_title: "Fix queue layout".to_owned(),
             repository_full_name: "acme/project-x".to_owned(),
             repo_url: Url::parse("https://github.com/acme/project-x").unwrap(),
-            git_url: "git@github.com:acme/project-x.git".to_owned(),
+            git_url: GitRemote::new("git@github.com:acme/project-x.git").unwrap(),
             base_branch: "main".to_owned(),
             head_oid: "abc123".to_owned(),
         };

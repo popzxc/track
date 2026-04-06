@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
 use crate::errors::{ErrorCode, TrackError};
+use crate::git_remote::GitRemote;
 use crate::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use crate::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use crate::urls::Url;
@@ -386,7 +387,7 @@ pub struct ReviewRecord {
     pub pull_request_title: String,
     pub repository_full_name: String,
     pub repo_url: Url,
-    pub git_url: String,
+    pub git_url: GitRemote,
     pub base_branch: String,
     pub workspace_key: WorkspaceKey,
     #[serde(default)]

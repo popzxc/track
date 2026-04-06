@@ -16,6 +16,7 @@ use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentR
 use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
@@ -132,7 +133,7 @@ impl TestContext {
                 &project_id,
                 ProjectMetadata {
                     repo_url: url(&format!("https://github.com/acme/{project}")),
-                    git_url: format!("git@github.com:acme/{project}.git"),
+                    git_url: GitRemote::new(&format!("git@github.com:acme/{project}.git")).unwrap(),
                     base_branch: "main".to_owned(),
                     description: None,
                 },
@@ -161,7 +162,7 @@ impl TestContext {
                 &project_id,
                 ProjectMetadata {
                     repo_url: url(&format!("https://github.com/acme/{project}")),
-                    git_url: format!("git@github.com:acme/{project}.git"),
+                    git_url: GitRemote::new(&format!("git@github.com:acme/{project}.git")).unwrap(),
                     base_branch: "main".to_owned(),
                     description: None,
                 },
@@ -259,7 +260,7 @@ fn sample_review_record() -> ReviewRecord {
         pull_request_title: "Fix queue layout".to_owned(),
         repository_full_name: "acme/project-x".to_owned(),
         repo_url: url("https://github.com/acme/project-x"),
-        git_url: "git@github.com:acme/project-x.git".to_owned(),
+        git_url: GitRemote::new("git@github.com:acme/project-x.git").unwrap(),
         base_branch: "main".to_owned(),
         workspace_key: WorkspaceKey::new("project-x").unwrap(),
         preferred_tool: RemoteAgentPreferredTool::Codex,

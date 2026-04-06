@@ -49,10 +49,11 @@ impl<'a> RemoteDispatchPrompt<'a> {
 
     pub(crate) fn render(&self) -> String {
         let sections = parse_task_description(self.task_description);
+        let git_url = self.metadata.git_url.clone().into_remote_string();
         let template_context = RemoteDispatchPromptTemplate {
             project_name: self.project_name,
             repo_url: self.metadata.repo_url.as_str(),
-            git_url: &self.metadata.git_url,
+            git_url: &git_url,
             base_branch: &self.metadata.base_branch,
             branch_name: self.branch_name,
             worktree_path: self.worktree_path,
@@ -121,6 +122,7 @@ fn non_empty_trimmed(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use track_projects::project_metadata::ProjectMetadata;
+    use track_types::git_remote::GitRemote;
     use track_types::task_description::render_task_description;
     use track_types::time_utils::parse_iso_8601_seconds;
     use track_types::urls::Url;
@@ -133,7 +135,7 @@ mod tests {
             "project-x",
             &ProjectMetadata {
                 repo_url: Url::parse("https://github.com/acme/project-x").unwrap(),
-                git_url: "git@github.com:acme/project-x.git".to_owned(),
+                git_url: GitRemote::new("git@github.com:acme/project-x.git").unwrap(),
                 base_branch: "main".to_owned(),
                 description: Some("Main repo".to_owned()),
             },

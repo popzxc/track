@@ -10,6 +10,7 @@ description = "Shared domain types and low-level value helpers for the track iss
 readme = "../../README.md"
 
 [dependencies]
+gix-url = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 slug = { workspace = true }
 thiserror = { workspace = true }

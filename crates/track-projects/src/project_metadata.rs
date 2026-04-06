@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::ids::ProjectId;
 use track_types::urls::{parse_url, Url};
 
@@ -14,7 +15,7 @@ const DEFAULT_BASE_BRANCH: &str = "main";
 #[serde(rename_all = "camelCase")]
 pub struct ProjectMetadata {
     pub repo_url: Url,
-    pub git_url: String,
+    pub git_url: GitRemote,
     pub base_branch: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -60,7 +61,15 @@ impl ProjectMetadataUpdateInput {
                 ErrorCode::InvalidProjectMetadata,
                 format!("Project repo URL `{repo_url}` is not valid"),
             )?,
-            git_url,
+            git_url: GitRemote::new(&git_url).map_err(|error| {
+                TrackError::new(
+                    ErrorCode::InvalidProjectMetadata,
+                    format!(
+                        "Project git remote `{git_url}` is not valid: {}",
+                        error.message()
+                    ),
+                )
+            })?,
             base_branch,
             description,
         })
@@ -95,9 +104,12 @@ pub fn infer_project_metadata(project: &ProjectInfo) -> ProjectMetadata {
 fn build_default_metadata(project: &ProjectInfo) -> ProjectMetadata {
     let fallback_file_url =
         Url::from_file_path(&project.path).expect("discovered project paths should be absolute");
-    let fallback_file_url_string = fallback_file_url.to_string();
-    let git_url = read_origin_git_url(&project.path).unwrap_or_else(|| fallback_file_url_string);
-    let repo_url = if git_url == fallback_file_url.as_str() {
+    let fallback_git_remote = GitRemote::new(fallback_file_url.as_str())
+        .expect("absolute file URLs should always be valid git remotes");
+    let git_url = read_origin_git_url(&project.path)
+        .and_then(|value| GitRemote::new(&value).ok())
+        .unwrap_or_else(|| fallback_git_remote.clone());
+    let repo_url = if git_url == fallback_git_remote {
         fallback_file_url
     } else {
         derive_repo_url(&git_url).unwrap_or(fallback_file_url)
@@ -202,8 +214,9 @@ fn read_symbolic_ref_branch(reference_path: &Path, prefix: &str) -> Option<Strin
         .map(str::to_owned)
 }
 
-pub fn derive_repo_url(git_url: &str) -> Option<Url> {
-    let git_url = git_url.trim();
+pub fn derive_repo_url(git_url: &GitRemote) -> Option<Url> {
+    let git_url = git_url.clone().into_remote_string();
+    let git_url = git_url.as_str();
 
     if let Some(path) = git_url.strip_prefix("git@") {
         if let Some((host, repo_path)) = path.split_once(':') {
@@ -225,6 +238,7 @@ pub fn derive_repo_url(git_url: &str) -> Option<Url> {
 
 #[cfg(test)]
 mod tests {
+    use track_types::git_remote::GitRemote;
     use track_types::ids::ProjectId;
     use track_types::urls::Url;
 
@@ -247,6 +261,10 @@ mod tests {
             metadata.repo_url.as_str(),
             "https://github.com/acme/project-a"
         );
+        assert_eq!(
+            metadata.git_url.clone().into_remote_string(),
+            "git@github.com:acme/project-a.git"
+        );
         assert_eq!(metadata.base_branch, "main");
         assert_eq!(
             metadata.description.as_deref(),
@@ -256,8 +274,9 @@ mod tests {
 
     #[test]
     fn derives_https_repo_url_from_git_ssh_remote() {
-        let repo_url = derive_repo_url("git@github.com:acme/project-a.git")
-            .expect("ssh git remote should derive a repo url");
+        let repo_url =
+            derive_repo_url(&GitRemote::new("git@github.com:acme/project-a.git").unwrap())
+                .expect("ssh git remote should derive a repo url");
 
         assert_eq!(repo_url.as_str(), "https://github.com/acme/project-a");
     }

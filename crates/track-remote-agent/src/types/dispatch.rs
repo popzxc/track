@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::remote_layout::WorkspaceKey;
 use track_types::time_utils::{format_iso_8601_millis, now_utc, parse_iso_8601_seconds};
 use track_types::types::{RemoteAgentPreferredTool, RemoteResetSummary, ReviewRecord};
@@ -247,11 +248,11 @@ pub(crate) struct RemoteProjectRegistryEntry {
     #[serde(rename = "checkoutPath")]
     pub(crate) checkout_path: String,
     #[serde(rename = "forkGitUrl")]
-    pub(crate) fork_git_url: String,
+    pub(crate) fork_git_url: GitRemote,
     #[serde(rename = "repoUrl")]
     pub(crate) repo_url: Url,
     #[serde(rename = "gitUrl")]
-    pub(crate) git_url: String,
+    pub(crate) git_url: GitRemote,
     #[serde(rename = "baseBranch")]
     pub(crate) base_branch: String,
     #[serde(rename = "updatedAt")]
@@ -261,12 +262,12 @@ pub(crate) struct RemoteProjectRegistryEntry {
 impl RemoteProjectRegistryEntry {
     pub(crate) fn from_project_metadata(
         checkout_path: impl Into<String>,
-        fork_git_url: impl Into<String>,
+        fork_git_url: GitRemote,
         metadata: &ProjectMetadata,
     ) -> Self {
         Self {
             checkout_path: checkout_path.into(),
-            fork_git_url: fork_git_url.into(),
+            fork_git_url,
             repo_url: metadata.repo_url.clone(),
             git_url: metadata.git_url.clone(),
             base_branch: metadata.base_branch.clone(),
@@ -276,12 +277,12 @@ impl RemoteProjectRegistryEntry {
 
     pub(crate) fn from_review(
         checkout_path: impl Into<String>,
-        fork_git_url: impl Into<String>,
+        fork_git_url: GitRemote,
         review: &ReviewRecord,
     ) -> Self {
         Self {
             checkout_path: checkout_path.into(),
-            fork_git_url: fork_git_url.into(),
+            fork_git_url,
             repo_url: review.repo_url.clone(),
             git_url: review.git_url.clone(),
             base_branch: review.base_branch.clone(),

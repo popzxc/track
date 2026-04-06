@@ -10,7 +10,7 @@ use crate::errors::{ErrorCode, TrackError};
 // the track data root. Validating them in one shared helper keeps every caller
 // on the same safety contract instead of relying on each HTTP or CLI entrypoint
 // to remember its own path traversal checks.
-pub fn validate_single_normal_path_component(
+pub(crate) fn validate_single_normal_path_component(
     value: &str,
     field_name: &str,
     error_code: ErrorCode,

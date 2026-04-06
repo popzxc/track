@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::git_remote::GitRemote;
 use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::parse_iso_8601_millis;
@@ -29,7 +30,7 @@ pub(crate) fn temporary_database_path() -> (TempDir, PathBuf) {
 pub(crate) fn project_metadata(name: &str) -> ProjectMetadata {
     ProjectMetadata {
         repo_url: Url::parse(&format!("https://github.com/acme/{name}")).unwrap(),
-        git_url: format!("git@github.com:acme/{name}.git"),
+        git_url: GitRemote::new(&format!("git@github.com:acme/{name}.git")).unwrap(),
         base_branch: "main".to_owned(),
         description: Some(format!("Metadata for {name}")),
     }
@@ -113,7 +114,7 @@ pub(crate) fn sample_review(
         pull_request_title: format!("Review {pull_request_number}"),
         repository_full_name: "acme/project-a".to_owned(),
         repo_url: Url::parse("https://github.com/acme/project-a").unwrap(),
-        git_url: "git@github.com:acme/project-a.git".to_owned(),
+        git_url: GitRemote::new("git@github.com:acme/project-a.git").unwrap(),
         base_branch: "main".to_owned(),
         workspace_key: WorkspaceKey::new("project-a").unwrap(),
         preferred_tool,

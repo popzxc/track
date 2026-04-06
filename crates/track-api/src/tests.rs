@@ -17,6 +17,7 @@ use track_config::paths::{
 use track_dal::database::DatabaseContext;
 use track_projects::project_catalog::ProjectInfo;
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::git_remote::GitRemote;
 use track_types::ids::{DispatchId, ProjectId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::now_utc;
@@ -99,7 +100,7 @@ async fn register_project(database: &DatabaseContext, canonical_name: &str) {
             &canonical_name,
             ProjectMetadata {
                 repo_url: Url::parse(&format!("https://example.com/{canonical_name}")).unwrap(),
-                git_url: format!("git@example.com:{canonical_name}.git"),
+                git_url: GitRemote::new(&format!("git@example.com:{canonical_name}.git")).unwrap(),
                 base_branch: "main".to_owned(),
                 description: None,
             },
@@ -605,7 +606,7 @@ async fn lists_reviews_with_latest_run_and_review_history() {
         pull_request_title: "Fix queue layout".to_owned(),
         repository_full_name: "acme/project-a".to_owned(),
         repo_url: Url::parse("https://github.com/acme/project-a").unwrap(),
-        git_url: "git@github.com:acme/project-a.git".to_owned(),
+        git_url: GitRemote::new("git@github.com:acme/project-a.git").unwrap(),
         base_branch: "main".to_owned(),
         workspace_key: WorkspaceKey::new("project-a").unwrap(),
         preferred_tool: RemoteAgentPreferredTool::Codex,
@@ -933,7 +934,7 @@ async fn lists_and_updates_project_metadata() {
     .expect("git config should be written");
     database
         .project_repository()
-        .ensure_project(&ProjectInfo {
+        .ensure_project_for_tests(&ProjectInfo {
             canonical_name: ProjectId::new("project-a").unwrap(),
             path: project_path,
             aliases: vec![],

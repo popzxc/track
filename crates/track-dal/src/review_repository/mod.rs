@@ -25,7 +25,8 @@ impl<'a> ReviewRepository<'a> {
         let pull_request_title = review.pull_request_title.as_str();
         let repository_full_name = review.repository_full_name.as_str();
         let repo_url = review.repo_url.as_str();
-        let git_url = review.git_url.as_str();
+        let git_url = review.git_url.clone().into_remote_string();
+        let git_url_ref = git_url.as_str();
         let base_branch = review.base_branch.as_str();
         let workspace_key = review.workspace_key.clone().into_inner();
         let preferred_tool = review.preferred_tool.as_str();
@@ -68,7 +69,7 @@ impl<'a> ReviewRepository<'a> {
             pull_request_title,
             repository_full_name,
             repo_url,
-            git_url,
+            git_url_ref,
             base_branch,
             workspace_key,
             preferred_tool,
@@ -175,6 +176,7 @@ impl<'a> ReviewRepository<'a> {
 #[cfg(test)]
 mod tests {
     use track_types::errors::ErrorCode;
+    use track_types::git_remote::GitRemote;
     use track_types::types::RemoteAgentPreferredTool;
 
     use crate::database::DatabaseContext;
@@ -209,6 +211,7 @@ mod tests {
             "2026-04-05T11:00:00.000Z",
         );
         updated.pull_request_title = "Updated review title".to_owned();
+        updated.git_url = GitRemote::new("ssh://git@example.com/project-a.git").unwrap();
         updated.project = None;
         repository
             .save_review(&updated)

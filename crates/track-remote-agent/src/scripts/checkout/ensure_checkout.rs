@@ -36,7 +36,7 @@ impl EnsureCheckoutScript {
         vec![
             metadata.repo_url.to_string(),
             repository_name.to_owned(),
-            metadata.git_url.clone(),
+            metadata.git_url.clone().into_remote_string(),
             metadata.base_branch.clone(),
             checkout_path.to_owned(),
             github_login.to_owned(),

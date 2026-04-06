@@ -9,6 +9,7 @@ use track_integration_tests::{
     live_integration_tests_enabled, print_live_test_skip_message, workspace_root,
 };
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::git_remote::GitRemote;
 use track_types::urls::Url;
 
 // =============================================================================
@@ -1270,7 +1271,10 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
 fn project_metadata(project_name: &str) -> ProjectMetadata {
     ProjectMetadata {
         repo_url: Url::parse(&format!("https://github.com/acme/{project_name}")).unwrap(),
-        git_url: format!("/srv/track-testing/git/upstream/{project_name}.git"),
+        git_url: GitRemote::new(&format!(
+            "/srv/track-testing/git/upstream/{project_name}.git"
+        ))
+        .unwrap(),
         base_branch: "main".to_owned(),
         description: Some("Fixture-backed project metadata.".to_owned()),
     }

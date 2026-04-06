@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::remote_layout::WorkspaceKey;
 use track_types::urls::Url;
 
@@ -88,8 +89,8 @@ impl GithubPullRequestReference {
         .expect("GitHub repository URLs built from parsed references should be valid")
     }
 
-    pub(crate) fn git_url(&self) -> String {
-        format!("git@github.com:{}/{}.git", self.owner, self.repository)
+    pub(crate) fn git_url(&self) -> GitRemote {
+        GitRemote::github_ssh(&self.owner, &self.repository)
     }
 }
 
@@ -106,7 +107,7 @@ pub(crate) struct GithubPullRequestMetadata {
     pub(crate) pull_request_title: String,
     pub(crate) repository_full_name: String,
     pub(crate) repo_url: Url,
-    pub(crate) git_url: String,
+    pub(crate) git_url: GitRemote,
     pub(crate) base_branch: String,
     pub(crate) head_oid: String,
 }

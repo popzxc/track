@@ -1,4 +1,5 @@
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
 use track_types::ids::{ProjectId, ReviewId};
 use track_types::remote_layout::WorkspaceKey;
 use track_types::time_utils::parse_iso_8601_millis;
@@ -56,7 +57,7 @@ impl TryFrom<ReviewRow> for ReviewRecord {
                 record.repo_url,
                 "stored review repo URLs should be valid",
             ),
-            git_url: record.git_url,
+            git_url: GitRemote::from_db(record.git_url),
             base_branch: record.base_branch,
             workspace_key: WorkspaceKey::from_db_unchecked(record.workspace_key),
             preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
