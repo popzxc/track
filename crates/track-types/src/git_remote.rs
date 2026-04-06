@@ -2,6 +2,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::errors::{ErrorCode, TrackError};
+use crate::urls::Url;
 
 /// Git transport locator that can be handed to `git clone` or `git remote`.
 ///
@@ -29,6 +30,40 @@ impl GitRemote {
         let remote = format!("git@github.com:{owner}/{repository}.git");
         Self::new(&remote)
             .expect("GitHub SSH remotes built from repository coordinates should parse")
+    }
+
+    /// Derives a repository URL that humans can browse to from this remote.
+    ///
+    /// SSH-style transports are normalized to HTTPS, explicit HTTP(S) remotes
+    /// keep their existing scheme, and non-web transports have no repository
+    /// URL.
+    pub fn repo_url(&self) -> Option<Url> {
+        let mut url = self.0.clone();
+
+        if matches!(url.scheme, gix_url::Scheme::File | gix_url::Scheme::Ext(_)) {
+            return None;
+        }
+
+        if url.host.is_none() {
+            return None;
+        }
+
+        if !matches!(url.scheme, gix_url::Scheme::Http | gix_url::Scheme::Https) {
+            url.scheme = gix_url::Scheme::Https;
+        }
+
+        url.user = None;
+        url.password = None;
+        url.serialize_alternative_form = false;
+
+        let mut path = String::from_utf8(url.path.clone().into()).ok()?;
+        if !path.starts_with('/') {
+            path.insert(0, '/');
+        }
+        url.path = path.trim_end_matches(".git").as_bytes().into();
+
+        let serialized = String::from_utf8(url.to_bstring().into()).ok()?;
+        Url::parse(&serialized).ok()
     }
 
     /// Consumes this strong value at an application boundary and returns the
@@ -66,6 +101,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use crate::errors::ErrorCode;
+    use crate::urls::Url;
 
     use super::GitRemote;
 
@@ -119,6 +155,54 @@ mod tests {
             remote.into_remote_string(),
             "git@github.com:acme/project-a.git"
         );
+    }
+
+    #[test]
+    fn repo_url_derives_https_from_ssh_transports() {
+        let vectors = [
+            (
+                "git@github.com:acme/project-a.git",
+                "https://github.com/acme/project-a",
+            ),
+            (
+                "ssh://git@example.com/project-a.git",
+                "https://example.com/project-a",
+            ),
+        ];
+
+        for (remote, expected) in vectors {
+            let remote = GitRemote::new(remote).expect("fixture git remote should parse");
+
+            assert_eq!(
+                remote.repo_url(),
+                Some(Url::parse(expected).expect("fixture repo url should parse"))
+            );
+        }
+    }
+
+    #[test]
+    fn repo_url_strips_credentials_and_git_suffix_from_http_transports() {
+        let remote = GitRemote::new("https://alice:secret@example.com/acme/project-a.git")
+            .expect("fixture git remote should parse");
+
+        assert_eq!(
+            remote.repo_url(),
+            Some(
+                Url::parse("https://example.com/acme/project-a")
+                    .expect("fixture repo url should parse")
+            )
+        );
+    }
+
+    #[test]
+    fn repo_url_rejects_non_web_transports() {
+        let file_remote =
+            GitRemote::new("file:///tmp/project-a.git").expect("fixture file remote should parse");
+        let local_remote = GitRemote::new("/srv/track-testing/git/upstream/project-a.git")
+            .expect("fixture local remote should parse");
+
+        assert_eq!(file_remote.repo_url(), None);
+        assert_eq!(local_remote.repo_url(), None);
     }
 
     #[test]

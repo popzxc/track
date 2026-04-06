@@ -312,10 +312,12 @@ fn infer_project_metadata(project_path: &Path) -> ProjectMetadata {
     let git_url = read_origin_git_url(project_path)
         .and_then(|value| GitRemote::new(&value).ok())
         .unwrap_or_else(|| fallback_git_remote.clone());
+    // TODO: filesystem fallback is stupid given that it's meant for remove projects,
+    // we need to kill it with fire but make sure we don't break anything
     let repo_url = if git_url == fallback_git_remote {
         fallback_file_url
     } else {
-        derive_repo_url(&git_url).unwrap_or(fallback_file_url)
+        git_url.repo_url().unwrap_or(fallback_file_url)
     };
     let base_branch =
         infer_default_base_branch(project_path).unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_owned());
@@ -371,28 +373,6 @@ fn read_git_output(project_path: &Path, args: &[&str]) -> Option<String> {
     }
 
     Some(value.to_owned())
-}
-
-fn derive_repo_url(git_url: &GitRemote) -> Option<Url> {
-    let git_url = git_url.clone().into_remote_string();
-    let git_url = git_url.as_str();
-
-    if let Some(path) = git_url.strip_prefix("git@") {
-        if let Some((host, repo_path)) = path.split_once(':') {
-            return Url::parse(&format!(
-                "https://{host}/{}",
-                repo_path.trim_end_matches(".git")
-            ))
-            .ok();
-        }
-    }
-
-    let trimmed = git_url.trim_end_matches(".git");
-    let https_candidate = trimmed
-        .replace("ssh://git@", "https://")
-        .replace("ssh://", "https://");
-
-    Url::parse(&https_candidate).ok()
 }
 
 fn run_remote_agent_configure_command_internal(
