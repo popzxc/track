@@ -5,8 +5,8 @@ use crate::errors::TrackError;
 use crate::ids::{DispatchId, ProjectId};
 
 use super::{
-    impl_string_value, parse_dispatch_layout_path, DispatchRunDirectory,
-    REVIEW_WORKTREE_DIRECTORY_NAME, TASK_WORKTREE_DIRECTORY_NAME, WorkspaceKey,
+    impl_string_value, parse_dispatch_layout_path, DispatchRunDirectory, WorkspaceKey,
+    REVIEW_WORKTREE_DIRECTORY_NAME, TASK_WORKTREE_DIRECTORY_NAME,
 };
 
 /// Absolute remote path to the dedicated Git worktree that one dispatch uses
@@ -23,11 +23,7 @@ impl DispatchWorktreePath {
         Ok(Self(trimmed.to_owned()))
     }
 
-    pub fn for_task(
-        workspace_root: &str,
-        project: &ProjectId,
-        dispatch_id: &DispatchId,
-    ) -> Self {
+    pub fn for_task(workspace_root: &str, project: &ProjectId, dispatch_id: &DispatchId) -> Self {
         Self(format!(
             "{}/{}/{}/{}",
             workspace_root.trim_end_matches('/'),
@@ -64,9 +60,8 @@ impl DispatchWorktreePath {
     }
 
     pub fn run_directory_for(&self, dispatch_id: &DispatchId) -> DispatchRunDirectory {
-        let (kind, prefix, _) =
-            parse_dispatch_layout_path(self.as_str(), "Dispatch worktree path")
-                .expect("dispatch worktree paths should stay valid");
+        let (kind, prefix, _) = parse_dispatch_layout_path(self.as_str(), "Dispatch worktree path")
+            .expect("dispatch worktree paths should stay valid");
 
         DispatchRunDirectory::from_layout(format!(
             "{prefix}/{}/{dispatch_id}",
@@ -112,8 +107,7 @@ mod tests {
             "~/workspace/project-a/worktrees/dispatch-123"
         );
         assert_eq!(
-            DispatchWorktreePath::for_review("~/workspace", &workspace_key, &dispatch_id)
-                .as_str(),
+            DispatchWorktreePath::for_review("~/workspace", &workspace_key, &dispatch_id).as_str(),
             "~/workspace/review-a/review-worktrees/dispatch-123"
         );
     }
@@ -137,7 +131,9 @@ mod tests {
         let follow_up_dispatch_id = DispatchId::new("dispatch-2").unwrap();
 
         assert_eq!(
-            worktree_path.run_directory_for(&follow_up_dispatch_id).as_str(),
+            worktree_path
+                .run_directory_for(&follow_up_dispatch_id)
+                .as_str(),
             "~/workspace/project-a/dispatches/dispatch-2"
         );
     }

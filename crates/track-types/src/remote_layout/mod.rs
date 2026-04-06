@@ -241,5 +241,8 @@ fn parse_dispatch_run_directory<'a>(
 }
 
 fn invalid_remote_layout(field_name: &str, detail: &str) -> TrackError {
-    TrackError::new(ErrorCode::InvalidPathComponent, format!("{field_name} {detail}"))
+    TrackError::new(
+        ErrorCode::InvalidPathComponent,
+        format!("{field_name} {detail}"),
+    )
 }

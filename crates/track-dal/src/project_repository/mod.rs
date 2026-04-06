@@ -466,7 +466,10 @@ mod tests {
             description: Some("Updated metadata".to_owned()),
         };
         let project = repository
-            .update_project_by_name(&ProjectId::new("project-a").unwrap(), updated_metadata.clone())
+            .update_project_by_name(
+                &ProjectId::new("project-a").unwrap(),
+                updated_metadata.clone(),
+            )
             .await
             .expect("project should update");
 

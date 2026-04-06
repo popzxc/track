@@ -26,7 +26,11 @@ impl WorkspaceKey {
 
     pub fn from_repository_full_name(repository_full_name: &str) -> Self {
         let slug = slug::slugify(repository_full_name.replace('/', "-").trim());
-        let fallback = if slug.is_empty() { "review-repo" } else { &slug };
+        let fallback = if slug.is_empty() {
+            "review-repo"
+        } else {
+            &slug
+        };
 
         Self::new(fallback).expect("generated workspace keys should be valid path components")
     }

@@ -15,9 +15,7 @@ use track_types::types::{
     CreateReviewInput, DispatchStatus, RemoteAgentReviewOutcome, ReviewRecord, ReviewRunRecord,
 };
 
-use crate::constants::{
-    PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME,
-};
+use crate::constants::{PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME};
 use crate::prompts::RemoteReviewPrompt;
 use crate::remote_actions::FetchPullRequestMetadataAction;
 use crate::schemas::RemoteReviewSchema;

@@ -10,7 +10,9 @@ use track_dal::review_repository::ReviewRepository;
 use track_dal::task_repository::FileTaskRepository;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, RemoteCheckoutPath, WorkspaceKey};
+use track_types::remote_layout::{
+    DispatchBranch, DispatchWorktreePath, RemoteCheckoutPath, WorkspaceKey,
+};
 use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::{
     DispatchStatus, RemoteAgentPreferredTool, RemoteCleanupSummary, RemoteResetSummary,
@@ -673,11 +675,10 @@ impl<'a> RemoteWorkspaceOps<'a> {
         let mut remote_registry = self.load_registry()?;
         let github_login = FetchGithubLoginAction::new(self.ssh_client).execute()?;
         let repository_name = parse_github_repository_name(&review.repo_url)?;
-        let checkout_path =
-            self.checkout_path_from_registry_or_default(
-                &remote_registry,
-                review.workspace_key.as_str(),
-            );
+        let checkout_path = self.checkout_path_from_registry_or_default(
+            &remote_registry,
+            review.workspace_key.as_str(),
+        );
         let review_metadata = ProjectMetadata {
             repo_url: review.repo_url.clone(),
             git_url: review.git_url.clone(),
@@ -754,10 +755,7 @@ impl<'a> RemoteWorkspaceOps<'a> {
         workspace_key: &str,
     ) -> Result<RemoteCheckoutPath, TrackError> {
         let remote_registry = self.load_registry()?;
-        Ok(self.checkout_path_from_registry_or_default(
-            &remote_registry,
-            workspace_key,
-        ))
+        Ok(self.checkout_path_from_registry_or_default(&remote_registry, workspace_key))
     }
 
     pub(super) fn cleanup_task_artifacts(
@@ -832,7 +830,10 @@ impl<'a> RemoteWorkspaceOps<'a> {
 
         let mut registry_changed = false;
         for workspace_key in workspace_keys {
-            registry_changed |= remote_registry.projects.remove(workspace_key.as_str()).is_some();
+            registry_changed |= remote_registry
+                .projects
+                .remove(workspace_key.as_str())
+                .is_some();
         }
 
         if registry_changed {

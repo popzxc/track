@@ -519,7 +519,9 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
             updated_at: created_at + Duration::seconds(1),
             finished_at: Some(created_at + Duration::seconds(1)),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_task(&DispatchId::new("dispatch-2").unwrap())),
+            branch_name: Some(DispatchBranch::for_task(
+                &DispatchId::new("dispatch-2").unwrap(),
+            )),
             worktree_path: Some(DispatchWorktreePath::for_task(
                 "~/workspace",
                 &ProjectId::new("project-a").unwrap(),
@@ -543,7 +545,9 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
             updated_at: created_at,
             finished_at: Some(created_at),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_task(&DispatchId::new("dispatch-1").unwrap())),
+            branch_name: Some(DispatchBranch::for_task(
+                &DispatchId::new("dispatch-1").unwrap(),
+            )),
             worktree_path: Some(DispatchWorktreePath::for_task(
                 "~/workspace",
                 &ProjectId::new("project-a").unwrap(),
@@ -642,7 +646,9 @@ fn selects_the_latest_previous_submitted_review_run() {
             updated_at: now_utc(),
             finished_at: None,
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&DispatchId::new("dispatch-3").unwrap())),
+            branch_name: Some(DispatchBranch::for_review(
+                &DispatchId::new("dispatch-3").unwrap(),
+            )),
             worktree_path: Some(DispatchWorktreePath::for_review(
                 "~/workspace",
                 &review.workspace_key,
@@ -669,7 +675,9 @@ fn selects_the_latest_previous_submitted_review_run() {
             updated_at: now_utc(),
             finished_at: Some(now_utc()),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&DispatchId::new("dispatch-2").unwrap())),
+            branch_name: Some(DispatchBranch::for_review(
+                &DispatchId::new("dispatch-2").unwrap(),
+            )),
             worktree_path: Some(DispatchWorktreePath::for_review(
                 "~/workspace",
                 &review.workspace_key,
@@ -698,7 +706,9 @@ fn selects_the_latest_previous_submitted_review_run() {
             updated_at: now_utc(),
             finished_at: Some(now_utc()),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&DispatchId::new("dispatch-1").unwrap())),
+            branch_name: Some(DispatchBranch::for_review(
+                &DispatchId::new("dispatch-1").unwrap(),
+            )),
             worktree_path: Some(DispatchWorktreePath::for_review(
                 "~/workspace",
                 &review.workspace_key,
@@ -717,12 +727,11 @@ fn selects_the_latest_previous_submitted_review_run() {
         },
     ];
 
-    let selected =
-        select_previous_submitted_review_run(
-            &dispatch_history,
-            &DispatchId::new("dispatch-3").unwrap(),
-        )
-            .expect("a previous submitted review should be selected");
+    let selected = select_previous_submitted_review_run(
+        &dispatch_history,
+        &DispatchId::new("dispatch-3").unwrap(),
+    )
+    .expect("a previous submitted review should be selected");
 
     assert_eq!(selected.dispatch_id, "dispatch-2");
     assert_eq!(selected.github_review_id.as_deref(), Some("1002"));

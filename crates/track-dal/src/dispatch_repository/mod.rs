@@ -714,7 +714,10 @@ mod tests {
             .expect("task ids should load");
         assert_eq!(
             task_ids,
-            vec![TaskId::new("task-a").unwrap(), TaskId::new("task-b").unwrap()]
+            vec![
+                TaskId::new("task-a").unwrap(),
+                TaskId::new("task-b").unwrap()
+            ]
         );
     }
 

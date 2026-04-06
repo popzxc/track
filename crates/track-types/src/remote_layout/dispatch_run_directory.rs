@@ -5,8 +5,8 @@ use crate::errors::TrackError;
 use crate::ids::{DispatchId, ProjectId};
 
 use super::{
-    impl_string_value, parse_dispatch_run_directory, REVIEW_RUN_DIRECTORY_NAME,
-    TASK_RUN_DIRECTORY_NAME, WorkspaceKey,
+    impl_string_value, parse_dispatch_run_directory, WorkspaceKey, REVIEW_RUN_DIRECTORY_NAME,
+    TASK_RUN_DIRECTORY_NAME,
 };
 
 /// Absolute remote path to the sidecar directory that stores prompt, schema,
@@ -23,11 +23,7 @@ impl DispatchRunDirectory {
         Ok(Self(trimmed.to_owned()))
     }
 
-    pub fn for_task(
-        workspace_root: &str,
-        project: &ProjectId,
-        dispatch_id: &DispatchId,
-    ) -> Self {
+    pub fn for_task(workspace_root: &str, project: &ProjectId, dispatch_id: &DispatchId) -> Self {
         Self(format!(
             "{}/{}/{}/{}",
             workspace_root.trim_end_matches('/'),
@@ -100,8 +96,7 @@ mod tests {
             "~/workspace/project-a/dispatches/dispatch-123"
         );
         assert_eq!(
-            DispatchRunDirectory::for_review("~/workspace", &workspace_key, &dispatch_id)
-                .as_str(),
+            DispatchRunDirectory::for_review("~/workspace", &workspace_key, &dispatch_id).as_str(),
             "~/workspace/review-a/review-runs/dispatch-123"
         );
     }

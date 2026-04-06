@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::ids::DispatchId;
 
 use super::{
-    impl_string_value, DispatchRunDirectory, DispatchWorktreePath, REVIEW_RUN_DIRECTORY_NAME,
-    REVIEW_WORKTREE_DIRECTORY_NAME, TASK_RUN_DIRECTORY_NAME, TASK_WORKTREE_DIRECTORY_NAME, WorkspaceKey,
+    impl_string_value, DispatchRunDirectory, DispatchWorktreePath, WorkspaceKey,
+    REVIEW_RUN_DIRECTORY_NAME, REVIEW_WORKTREE_DIRECTORY_NAME, TASK_RUN_DIRECTORY_NAME,
+    TASK_WORKTREE_DIRECTORY_NAME,
 };
 
 /// Absolute remote path to the long-lived repository checkout that acts as the
@@ -81,8 +82,10 @@ mod tests {
 
     #[test]
     fn derives_dispatch_artifact_locations() {
-        let checkout_path =
-            RemoteCheckoutPath::for_workspace("~/workspace", &WorkspaceKey::new("project-a").unwrap());
+        let checkout_path = RemoteCheckoutPath::for_workspace(
+            "~/workspace",
+            &WorkspaceKey::new("project-a").unwrap(),
+        );
         let dispatch_id = DispatchId::new("dispatch-123").unwrap();
 
         assert_eq!(checkout_path.as_str(), "~/workspace/project-a/project-a");
