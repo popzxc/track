@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::remote_layout::WorkspaceKey;
 
 /// Identifies a specific pull request in GitHub.
 ///
@@ -128,14 +129,8 @@ impl GithubPullRequestMetadata {
         })
     }
 
-    pub(crate) fn workspace_key(&self) -> String {
-        let slug = slug::slugify(self.repository_full_name.replace('/', "-").trim());
-
-        if slug.is_empty() {
-            "review-repo".to_owned()
-        } else {
-            slug
-        }
+    pub(crate) fn workspace_key(&self) -> WorkspaceKey {
+        WorkspaceKey::from_repository_full_name(&self.repository_full_name)
     }
 }
 

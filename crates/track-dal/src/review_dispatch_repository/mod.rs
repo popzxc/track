@@ -2,6 +2,7 @@ mod records;
 
 use track_types::errors::TrackError;
 use track_types::ids::{DispatchId, ReviewId};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord};
 
@@ -24,8 +25,8 @@ impl<'a> ReviewDispatchRepository<'a> {
         dispatch_id: &DispatchId,
         remote_host: &str,
         preferred_tool: RemoteAgentPreferredTool,
-        branch_name: &str,
-        worktree_path: &str,
+        branch_name: &DispatchBranch,
+        worktree_path: &DispatchWorktreePath,
         follow_up_request: Option<&str>,
         target_head_oid: Option<&str>,
         summary: Option<&str>,
@@ -43,8 +44,8 @@ impl<'a> ReviewDispatchRepository<'a> {
             updated_at: timestamp,
             finished_at: None,
             remote_host: remote_host.to_owned(),
-            branch_name: Some(branch_name.to_owned()),
-            worktree_path: Some(worktree_path.to_owned()),
+            branch_name: Some(branch_name.clone()),
+            worktree_path: Some(worktree_path.clone()),
             follow_up_request: follow_up_request.map(ToOwned::to_owned),
             target_head_oid: target_head_oid.map(ToOwned::to_owned),
             summary: summary.map(ToOwned::to_owned),
@@ -375,13 +376,13 @@ impl<'a> ReviewDispatchRepository<'a> {
 
 #[cfg(test)]
 mod tests {
+    use track_types::ids::DispatchId;
+    use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
     use track_types::time_utils::now_utc;
     use track_types::types::{DispatchStatus, RemoteAgentPreferredTool};
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{
-        parse_dispatch_id, sample_review, sample_review_run, temporary_database_path,
-    };
+    use crate::test_support::{sample_review, sample_review_run, temporary_database_path};
 
     #[tokio::test]
     async fn create_dispatch_persists_queued_review_run_with_launch_context() {
@@ -408,15 +409,22 @@ mod tests {
             .save_review(&review)
             .await
             .expect("review should save");
+        let dispatch_id = DispatchId::new("dispatch-review-race-test").unwrap();
+        let branch_name = DispatchBranch::for_review(&dispatch_id);
+        let worktree_path = DispatchWorktreePath::for_review(
+            "/home/track/workspace",
+            &review.workspace_key,
+            &dispatch_id,
+        );
 
         let record = repository
             .create_dispatch(
                 &review,
-                &parse_dispatch_id("dispatch-review-race-test"),
+                &dispatch_id,
                 "198.51.100.10",
                 RemoteAgentPreferredTool::Codex,
-                "track-review/dispatch-review-race-test",
-                "/home/track/workspace/octo-tools/review-worktrees/dispatch-review-race-test",
+                &branch_name,
+                &worktree_path,
                 None,
                 None,
                 None,
@@ -489,7 +497,7 @@ mod tests {
             .expect("updated review run should save");
 
         let loaded = repository
-            .get_dispatch(&review.id, &parse_dispatch_id("dispatch-1"))
+            .get_dispatch(&review.id, &DispatchId::new("dispatch-1").unwrap())
             .await
             .expect("review run should load")
             .expect("review run should exist");

@@ -1,0 +1,119 @@
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::errors::TrackError;
+use crate::ids::{DispatchId, ProjectId};
+
+use super::{
+    impl_string_value, parse_dispatch_run_directory, REVIEW_RUN_DIRECTORY_NAME,
+    TASK_RUN_DIRECTORY_NAME, WorkspaceKey,
+};
+
+/// Absolute remote path to the sidecar directory that stores prompt, schema,
+/// status, and result files for one dispatch attempt.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct DispatchRunDirectory(String);
+
+impl DispatchRunDirectory {
+    pub fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
+        let trimmed = value.as_ref().trim();
+        parse_dispatch_run_directory(trimmed)?;
+
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    pub fn for_task(
+        workspace_root: &str,
+        project: &ProjectId,
+        dispatch_id: &DispatchId,
+    ) -> Self {
+        Self(format!(
+            "{}/{}/{}/{}",
+            workspace_root.trim_end_matches('/'),
+            project,
+            TASK_RUN_DIRECTORY_NAME,
+            dispatch_id
+        ))
+    }
+
+    pub fn for_review(
+        workspace_root: &str,
+        workspace_key: &WorkspaceKey,
+        dispatch_id: &DispatchId,
+    ) -> Self {
+        Self(format!(
+            "{}/{}/{}/{}",
+            workspace_root.trim_end_matches('/'),
+            workspace_key,
+            REVIEW_RUN_DIRECTORY_NAME,
+            dispatch_id
+        ))
+    }
+
+    pub fn dispatch_id(&self) -> DispatchId {
+        let (_kind, _prefix, dispatch_id) = parse_dispatch_run_directory(self.as_str())
+            .expect("dispatch run directories should stay valid");
+        DispatchId::new(dispatch_id)
+            .expect("dispatch run directories should end with a valid dispatch id")
+    }
+
+    pub fn join(&self, file_name: &str) -> String {
+        format!("{}/{}", self.as_str().trim_end_matches('/'), file_name)
+    }
+
+    pub fn from_db_unchecked(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub(super) fn from_layout(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for DispatchRunDirectory {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(&value).map_err(D::Error::custom)
+    }
+}
+
+impl_string_value!(DispatchRunDirectory);
+
+#[cfg(test)]
+mod tests {
+    use crate::ids::{DispatchId, ProjectId};
+
+    use super::{DispatchRunDirectory, WorkspaceKey};
+
+    #[test]
+    fn builders_keep_task_and_review_layouts() {
+        let dispatch_id = DispatchId::new("dispatch-123").unwrap();
+        let project = ProjectId::new("project-a").unwrap();
+        let workspace_key = WorkspaceKey::new("review-a").unwrap();
+
+        assert_eq!(
+            DispatchRunDirectory::for_task("~/workspace", &project, &dispatch_id).as_str(),
+            "~/workspace/project-a/dispatches/dispatch-123"
+        );
+        assert_eq!(
+            DispatchRunDirectory::for_review("~/workspace", &workspace_key, &dispatch_id)
+                .as_str(),
+            "~/workspace/review-a/review-runs/dispatch-123"
+        );
+    }
+
+    #[test]
+    fn joins_sidecar_files() {
+        let run_directory =
+            DispatchRunDirectory::new("~/workspace/project-a/dispatches/dispatch-123").unwrap();
+
+        assert_eq!(
+            run_directory.join("prompt.md"),
+            "~/workspace/project-a/dispatches/dispatch-123/prompt.md"
+        );
+    }
+}

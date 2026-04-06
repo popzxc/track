@@ -177,8 +177,9 @@ mod tests {
     use track_types::errors::ErrorCode;
     use track_types::types::RemoteAgentPreferredTool;
 
+    use track_types::ids::ReviewId;
     use crate::database::DatabaseContext;
-    use crate::test_support::{parse_review_id, sample_review, temporary_database_path};
+    use crate::test_support::{sample_review, temporary_database_path};
 
     #[tokio::test]
     async fn save_review_upserts_and_get_review_returns_latest_fields() {
@@ -215,7 +216,7 @@ mod tests {
             .expect("updated review should save");
 
         let loaded = repository
-            .get_review(&parse_review_id("review-42"))
+            .get_review(&ReviewId::new("review-42").unwrap())
             .await
             .expect("review should load");
         assert_eq!(loaded, updated);

@@ -1,16 +1,14 @@
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::remote_layout::DispatchRunDirectory;
 use track_types::types::{ReviewRunRecord, TaskDispatchRecord};
 
-use crate::constants::REVIEW_WORKTREE_DIRECTORY_NAME;
 use track_config::runtime::RemoteAgentRuntimeConfig;
 
 pub(crate) fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord]) -> Vec<String> {
     dispatch_history
         .iter()
-        .filter_map(|record| record.worktree_path.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .filter_map(|record| record.worktree_path.as_ref())
+        .map(ToString::to_string)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -23,31 +21,18 @@ pub(crate) fn unique_review_run_directories(
     dispatch_history
         .iter()
         .filter_map(|record| {
-            if let Some(worktree_path) = record.worktree_path.as_deref() {
-                if let Some((prefix, _suffix)) =
-                    worktree_path.rsplit_once(&format!("/{REVIEW_WORKTREE_DIRECTORY_NAME}/"))
-                {
-                    return Some(format!(
-                        "{prefix}/{}/{}",
-                        crate::constants::REVIEW_RUN_DIRECTORY_NAME,
-                        record.dispatch_id
-                    ));
-                }
+            if let Some(worktree_path) = record.worktree_path.as_ref() {
+                return Some(worktree_path.run_directory().to_string());
             }
 
-            if record.workspace_key.trim().is_empty()
-                || remote_agent.workspace_root.trim().is_empty()
-            {
-                return None;
-            }
-
-            Some(format!(
-                "{}/{}/{}/{}",
-                remote_agent.workspace_root.trim_end_matches('/'),
-                record.workspace_key,
-                crate::constants::REVIEW_RUN_DIRECTORY_NAME,
-                record.dispatch_id
-            ))
+            Some(
+                DispatchRunDirectory::for_review(
+                    &remote_agent.workspace_root,
+                    &record.workspace_key,
+                    &record.dispatch_id,
+                )
+                .to_string(),
+            )
         })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -117,6 +102,7 @@ pub(crate) fn contextualize_track_error(
 #[cfg(test)]
 mod tests {
     use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
+    use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
     use track_types::time_utils::now_utc;
     use track_types::types::{
         DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord, TaskDispatchRecord,
@@ -125,22 +111,6 @@ mod tests {
     use crate::types::{GithubPullRequestMetadata, GithubPullRequestReference};
 
     use super::{describe_remote_reset_blockers, parse_github_repository_name};
-
-    fn parse_task_id(value: &str) -> TaskId {
-        TaskId::new(value).expect("test task ids should be valid")
-    }
-
-    fn parse_project_id(value: &str) -> ProjectId {
-        ProjectId::new(value).expect("test project ids should be valid")
-    }
-
-    fn parse_review_id(value: &str) -> ReviewId {
-        ReviewId::new(value).expect("test review ids should be valid")
-    }
-
-    fn parse_dispatch_id(value: &str) -> DispatchId {
-        DispatchId::new(value).expect("test dispatch ids should be valid")
-    }
 
     #[test]
     fn parses_github_repository_name() {
@@ -181,18 +151,24 @@ mod tests {
     #[test]
     fn reset_blockers_include_active_review_runs() {
         let created_at = now_utc();
+        let task_dispatch_id = DispatchId::new("dispatch-1").unwrap();
+        let task_project = ProjectId::new("project-a").unwrap();
         let task_dispatch = TaskDispatchRecord {
-            dispatch_id: parse_dispatch_id("dispatch-1"),
-            task_id: parse_task_id("task-1"),
+            dispatch_id: task_dispatch_id.clone(),
+            task_id: TaskId::new("task-1").unwrap(),
             preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: parse_project_id("project-a"),
+            project: task_project.clone(),
             status: DispatchStatus::Running,
             created_at,
             updated_at: created_at,
             finished_at: None,
             remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some("track/dispatch-1".to_owned()),
-            worktree_path: Some("~/workspace/project-a/worktrees/dispatch-1".to_owned()),
+            branch_name: Some(DispatchBranch::for_task(&task_dispatch_id)),
+            worktree_path: Some(DispatchWorktreePath::for_task(
+                "~/workspace",
+                &task_project,
+                &task_dispatch_id,
+            )),
             pull_request_url: None,
             follow_up_request: None,
             summary: None,
@@ -201,22 +177,26 @@ mod tests {
             review_request_head_oid: None,
             review_request_user: None,
         };
+        let review_dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
+        let workspace_key = WorkspaceKey::new("project-a").unwrap();
         let review_dispatch = ReviewRunRecord {
-            dispatch_id: parse_dispatch_id("review-dispatch-1"),
-            review_id: parse_review_id("review-1"),
+            dispatch_id: review_dispatch_id.clone(),
+            review_id: ReviewId::new("review-1").unwrap(),
             pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
             repository_full_name: "acme/project-a".to_owned(),
-            workspace_key: "project-a".to_owned(),
+            workspace_key: workspace_key.clone(),
             preferred_tool: RemoteAgentPreferredTool::Codex,
             status: DispatchStatus::Running,
             created_at,
             updated_at: created_at,
             finished_at: None,
             remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some("track-review/review-dispatch-1".to_owned()),
-            worktree_path: Some(
-                "~/workspace/project-a/review-worktrees/review-dispatch-1".to_owned(),
-            ),
+            branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "~/workspace",
+                &workspace_key,
+                &review_dispatch_id,
+            )),
             follow_up_request: None,
             target_head_oid: Some("abc123def456".to_owned()),
             summary: None,

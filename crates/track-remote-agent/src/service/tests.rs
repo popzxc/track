@@ -17,6 +17,7 @@ use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
 use track_types::time_utils::now_utc;
 use track_types::types::{
@@ -28,7 +29,7 @@ use crate::types::RemoteDispatchSnapshot;
 
 use super::dispatch::{
     latest_pull_request_for_branch, refresh_dispatch_record_from_snapshot,
-    select_follow_up_base_dispatch,
+    select_follow_up_base_dispatch, unique_run_directories,
 };
 use super::review::select_previous_submitted_review_run;
 use super::{
@@ -123,7 +124,7 @@ impl TestContext {
     }
 
     async fn create_task(&self, project: &str, description: &str) -> Task {
-        let project_id = parse_project_id(project);
+        let project_id = ProjectId::new(project).unwrap();
         self.database
             .project_repository()
             .upsert_project_by_name(
@@ -152,7 +153,7 @@ impl TestContext {
     }
 
     async fn write_project_metadata(&self, project: &str) {
-        let project_id = parse_project_id(project);
+        let project_id = ProjectId::new(project).unwrap();
         self.database
             .project_repository()
             .upsert_project_by_name(
@@ -170,8 +171,10 @@ impl TestContext {
     }
 
     async fn create_running_dispatch(&self, task: &Task) -> TaskDispatchRecord {
-        let dispatch_id = DispatchId::new(format!("dispatch-{}-running", task.id))
-            .expect("test dispatch ids should be valid");
+        let dispatch_id = DispatchId::new(format!("dispatch-{}-running", task.id)).unwrap();
+        let branch_name = DispatchBranch::for_task(&dispatch_id);
+        let worktree_path =
+            DispatchWorktreePath::for_task("~/workspace", &task.project, &dispatch_id);
         let mut dispatch = self
             .database
             .dispatch_repository()
@@ -180,8 +183,8 @@ impl TestContext {
                 &dispatch_id,
                 "198.51.100.10",
                 RemoteAgentPreferredTool::Codex,
-                &format!("track/{dispatch_id}"),
-                &format!("~/workspace/{}/worktrees/{dispatch_id}", task.project),
+                &branch_name,
+                &worktree_path,
                 None,
                 None,
                 None,
@@ -211,22 +214,6 @@ impl TestContext {
             .expect("review should save");
         review
     }
-}
-
-fn parse_task_id(value: &str) -> TaskId {
-    TaskId::new(value).expect("test task ids should be valid")
-}
-
-fn parse_project_id(value: &str) -> ProjectId {
-    ProjectId::new(value).expect("test project ids should be valid")
-}
-
-fn parse_review_id(value: &str) -> ReviewId {
-    ReviewId::new(value).expect("test review ids should be valid")
-}
-
-fn parse_dispatch_id(value: &str) -> DispatchId {
-    DispatchId::new(value).expect("test dispatch ids should be valid")
 }
 
 fn base_test_config(remote_agent: Option<RemoteAgentConfigFile>) -> TrackConfigFile {
@@ -261,7 +248,7 @@ fn install_dummy_managed_remote_agent_material(data_dir: &Path) {
 fn sample_review_record() -> ReviewRecord {
     let created_at = now_utc();
     ReviewRecord {
-        id: parse_review_id("20260326-120000-review-pr-42"),
+        id: ReviewId::new("20260326-120000-review-pr-42").unwrap(),
         pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
         pull_request_number: 42,
         pull_request_title: "Fix queue layout".to_owned(),
@@ -269,9 +256,9 @@ fn sample_review_record() -> ReviewRecord {
         repo_url: "https://github.com/acme/project-x".to_owned(),
         git_url: "git@github.com:acme/project-x.git".to_owned(),
         base_branch: "main".to_owned(),
-        workspace_key: "project-x".to_owned(),
+        workspace_key: WorkspaceKey::new("project-x").unwrap(),
         preferred_tool: RemoteAgentPreferredTool::Codex,
-        project: Some(parse_project_id("project-x")),
+        project: Some(ProjectId::new("project-x").unwrap()),
         main_user: "octocat".to_owned(),
         default_review_prompt: Some("Focus on regressions and missing tests.".to_owned()),
         extra_instructions: Some("Pay special attention to queue rendering.".to_owned()),
@@ -316,18 +303,24 @@ async fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow
 #[test]
 fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
     let created_at = now_utc();
+    let dispatch_id = DispatchId::new("dispatch-1").unwrap();
+    let project = ProjectId::new("project-a").unwrap();
     let record = TaskDispatchRecord {
-        dispatch_id: parse_dispatch_id("dispatch-1"),
-        task_id: parse_task_id("task-1"),
+        dispatch_id: dispatch_id.clone(),
+        task_id: TaskId::new("task-1").unwrap(),
         preferred_tool: RemoteAgentPreferredTool::Claude,
-        project: parse_project_id("project-a"),
+        project: project.clone(),
         status: DispatchStatus::Running,
         created_at,
         updated_at: created_at,
         finished_at: None,
         remote_host: "192.0.2.25".to_owned(),
-        branch_name: Some("track/dispatch-1".to_owned()),
-        worktree_path: Some("~/workspace/project-a/worktrees/dispatch-1".to_owned()),
+        branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_task(
+            "~/workspace",
+            &project,
+            &dispatch_id,
+        )),
         pull_request_url: None,
         follow_up_request: None,
         summary: None,
@@ -378,20 +371,26 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
 async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
     let context = TestContext::new(base_test_config(None)).await;
     let created_at = now_utc();
+    let dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
+    let workspace_key = WorkspaceKey::new("project-a").unwrap();
     let record = ReviewRunRecord {
-        dispatch_id: parse_dispatch_id("review-dispatch-1"),
-        review_id: parse_review_id("review-1"),
+        dispatch_id: dispatch_id.clone(),
+        review_id: ReviewId::new("review-1").unwrap(),
         pull_request_url: "https://github.com/acme/project-a/pull/42".to_owned(),
         repository_full_name: "acme/project-a".to_owned(),
-        workspace_key: "project-a".to_owned(),
+        workspace_key: workspace_key.clone(),
         preferred_tool: RemoteAgentPreferredTool::Claude,
         status: DispatchStatus::Running,
         created_at,
         updated_at: created_at,
         finished_at: None,
         remote_host: "192.0.2.25".to_owned(),
-        branch_name: Some("track-review/review-dispatch-1".to_owned()),
-        worktree_path: Some("~/workspace/project-a/review-worktrees/review-1".to_owned()),
+        branch_name: Some(DispatchBranch::for_review(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_review(
+            "~/workspace",
+            &workspace_key,
+            &dispatch_id,
+        )),
         follow_up_request: None,
         target_head_oid: Some("abc123def456".to_owned()),
         summary: None,
@@ -410,7 +409,7 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
                 "reviewSubmitted": true,
                 "githubReviewId": "1001",
                 "githubReviewUrl": "https://github.com/acme/project-a/pull/42#pullrequestreview-1001",
-                "worktreePath": "/tmp/project-a/review-worktrees/review-1",
+                "worktreePath": "/tmp/project-a/review-worktrees/review-dispatch-1",
                 "notes": "Captured from the Claude review mock."
             }
         })
@@ -436,7 +435,7 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
     );
     assert_eq!(
         refreshed.worktree_path.as_deref(),
-        Some("/tmp/project-a/review-worktrees/review-1")
+        Some("/tmp/project-a/review-worktrees/review-dispatch-1")
     );
     assert_eq!(
         refreshed.notes.as_deref(),
@@ -447,18 +446,24 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
 #[test]
 fn refresh_marks_remote_canceled_runs_as_terminal() {
     let created_at = now_utc();
+    let dispatch_id = DispatchId::new("dispatch-1").unwrap();
+    let project = ProjectId::new("project-a").unwrap();
     let record = TaskDispatchRecord {
-        dispatch_id: parse_dispatch_id("dispatch-1"),
-        task_id: parse_task_id("task-1"),
+        dispatch_id: dispatch_id.clone(),
+        task_id: TaskId::new("task-1").unwrap(),
         preferred_tool: RemoteAgentPreferredTool::Codex,
-        project: parse_project_id("project-a"),
+        project: project.clone(),
         status: DispatchStatus::Running,
         created_at,
         updated_at: created_at,
         finished_at: None,
         remote_host: "192.0.2.25".to_owned(),
-        branch_name: Some("track/dispatch-1".to_owned()),
-        worktree_path: Some("~/workspace/project-a/worktrees/dispatch-1".to_owned()),
+        branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_task(
+            "~/workspace",
+            &project,
+            &dispatch_id,
+        )),
         pull_request_url: None,
         follow_up_request: None,
         summary: None,
@@ -485,10 +490,10 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
     let created_at = now_utc();
     let dispatch_history = vec![
         TaskDispatchRecord {
-            dispatch_id: parse_dispatch_id("dispatch-3"),
-            task_id: parse_task_id("task-1"),
+            dispatch_id: DispatchId::new("dispatch-3").unwrap(),
+            task_id: TaskId::new("task-1").unwrap(),
             preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: parse_project_id("project-a"),
+            project: ProjectId::new("project-a").unwrap(),
             status: DispatchStatus::Failed,
             created_at: created_at + Duration::seconds(2),
             updated_at: created_at + Duration::seconds(2),
@@ -505,17 +510,21 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
             review_request_user: None,
         },
         TaskDispatchRecord {
-            dispatch_id: parse_dispatch_id("dispatch-2"),
-            task_id: parse_task_id("task-1"),
+            dispatch_id: DispatchId::new("dispatch-2").unwrap(),
+            task_id: TaskId::new("task-1").unwrap(),
             preferred_tool: RemoteAgentPreferredTool::Claude,
-            project: parse_project_id("project-a"),
+            project: ProjectId::new("project-a").unwrap(),
             status: DispatchStatus::Succeeded,
             created_at: created_at + Duration::seconds(1),
             updated_at: created_at + Duration::seconds(1),
             finished_at: Some(created_at + Duration::seconds(1)),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some("track/dispatch-2".to_owned()),
-            worktree_path: Some("~/workspace/project-a/worktrees/dispatch-2".to_owned()),
+            branch_name: Some(DispatchBranch::for_task(&DispatchId::new("dispatch-2").unwrap())),
+            worktree_path: Some(DispatchWorktreePath::for_task(
+                "~/workspace",
+                &ProjectId::new("project-a").unwrap(),
+                &DispatchId::new("dispatch-2").unwrap(),
+            )),
             pull_request_url: Some("https://github.com/acme/project-a/pull/42".to_owned()),
             follow_up_request: None,
             summary: Some("Opened a PR.".to_owned()),
@@ -525,17 +534,21 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
             review_request_user: None,
         },
         TaskDispatchRecord {
-            dispatch_id: parse_dispatch_id("dispatch-1"),
-            task_id: parse_task_id("task-1"),
+            dispatch_id: DispatchId::new("dispatch-1").unwrap(),
+            task_id: TaskId::new("task-1").unwrap(),
             preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: parse_project_id("project-a"),
+            project: ProjectId::new("project-a").unwrap(),
             status: DispatchStatus::Failed,
             created_at,
             updated_at: created_at,
             finished_at: Some(created_at),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some("track/dispatch-1".to_owned()),
-            worktree_path: Some("~/workspace/project-a/worktrees/dispatch-1".to_owned()),
+            branch_name: Some(DispatchBranch::for_task(&DispatchId::new("dispatch-1").unwrap())),
+            worktree_path: Some(DispatchWorktreePath::for_task(
+                "~/workspace",
+                &ProjectId::new("project-a").unwrap(),
+                &DispatchId::new("dispatch-1").unwrap(),
+            )),
             pull_request_url: Some("https://github.com/acme/project-a/pull/1".to_owned()),
             follow_up_request: None,
             summary: None,
@@ -546,13 +559,13 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
         },
     ];
 
-    let selected = select_follow_up_base_dispatch(&parse_task_id("fake"), &dispatch_history)
+    let selected = select_follow_up_base_dispatch(&TaskId::new("fake").unwrap(), &dispatch_history)
         .expect("a reusable dispatch should be selected");
     let pull_request_url = latest_pull_request_for_branch(
         &dispatch_history,
         selected
             .branch_name
-            .as_deref()
+            .as_ref()
             .expect("selected dispatch should have a branch name"),
     );
 
@@ -564,11 +577,61 @@ fn follow_up_uses_the_latest_reusable_dispatch_context() {
 }
 
 #[test]
+fn follow_up_dispatch_run_directories_use_the_current_dispatch_id() {
+    let remote_agent = RemoteAgentRuntimeConfig {
+        host: "127.0.0.1".to_owned(),
+        user: "builder".to_owned(),
+        port: 2222,
+        workspace_root: "/home/track/workspace".to_owned(),
+        projects_registry_path: "/home/track/track-projects.json".to_owned(),
+        preferred_tool: RemoteAgentPreferredTool::Codex,
+        shell_prelude: None,
+        review_follow_up: None,
+        managed_key_path: PathBuf::from("/tmp/id_ed25519"),
+        managed_known_hosts_path: PathBuf::from("/tmp/known_hosts"),
+    };
+    let original_dispatch_id = DispatchId::new("dispatch-1").unwrap();
+    let follow_up_dispatch_id = DispatchId::new("dispatch-2").unwrap();
+    let project = ProjectId::new("project-a").unwrap();
+    let follow_up_record = TaskDispatchRecord {
+        dispatch_id: follow_up_dispatch_id,
+        task_id: TaskId::new("task-1").unwrap(),
+        preferred_tool: RemoteAgentPreferredTool::Codex,
+        project: project.clone(),
+        status: DispatchStatus::Running,
+        created_at: now_utc(),
+        updated_at: now_utc(),
+        finished_at: None,
+        remote_host: "192.0.2.25".to_owned(),
+        branch_name: Some(DispatchBranch::for_task(&original_dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_task(
+            "/home/track/workspace",
+            &project,
+            &original_dispatch_id,
+        )),
+        pull_request_url: Some("https://github.com/acme/project-a/pull/42".to_owned()),
+        follow_up_request: Some("Continue the existing PR.".to_owned()),
+        summary: None,
+        notes: None,
+        error_message: None,
+        review_request_head_oid: None,
+        review_request_user: None,
+    };
+
+    let run_directories = unique_run_directories(&[follow_up_record], &remote_agent);
+
+    assert_eq!(
+        run_directories,
+        vec!["/home/track/workspace/project-a/dispatches/dispatch-2".to_owned()]
+    );
+}
+
+#[test]
 fn selects_the_latest_previous_submitted_review_run() {
     let review = sample_review_record();
     let dispatch_history = vec![
         ReviewRunRecord {
-            dispatch_id: parse_dispatch_id("dispatch-3"),
+            dispatch_id: DispatchId::new("dispatch-3").unwrap(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -579,8 +642,12 @@ fn selects_the_latest_previous_submitted_review_run() {
             updated_at: now_utc(),
             finished_at: None,
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some("track-review/dispatch-3".to_owned()),
-            worktree_path: Some("~/workspace/project-x/review-worktrees/dispatch-3".to_owned()),
+            branch_name: Some(DispatchBranch::for_review(&DispatchId::new("dispatch-3").unwrap())),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "~/workspace",
+                &review.workspace_key,
+                &DispatchId::new("dispatch-3").unwrap(),
+            )),
             follow_up_request: Some("Re-review the latest fixes.".to_owned()),
             target_head_oid: Some("ccc333".to_owned()),
             summary: Some("Re-review request: Re-review the latest fixes.".to_owned()),
@@ -591,7 +658,7 @@ fn selects_the_latest_previous_submitted_review_run() {
             error_message: None,
         },
         ReviewRunRecord {
-            dispatch_id: parse_dispatch_id("dispatch-2"),
+            dispatch_id: DispatchId::new("dispatch-2").unwrap(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -602,8 +669,12 @@ fn selects_the_latest_previous_submitted_review_run() {
             updated_at: now_utc(),
             finished_at: Some(now_utc()),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some("track-review/dispatch-2".to_owned()),
-            worktree_path: Some("~/workspace/project-x/review-worktrees/dispatch-2".to_owned()),
+            branch_name: Some(DispatchBranch::for_review(&DispatchId::new("dispatch-2").unwrap())),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "~/workspace",
+                &review.workspace_key,
+                &DispatchId::new("dispatch-2").unwrap(),
+            )),
             follow_up_request: None,
             target_head_oid: Some("bbb222".to_owned()),
             summary: Some("Submitted a review.".to_owned()),
@@ -616,7 +687,7 @@ fn selects_the_latest_previous_submitted_review_run() {
             error_message: None,
         },
         ReviewRunRecord {
-            dispatch_id: parse_dispatch_id("dispatch-1"),
+            dispatch_id: DispatchId::new("dispatch-1").unwrap(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -627,8 +698,12 @@ fn selects_the_latest_previous_submitted_review_run() {
             updated_at: now_utc(),
             finished_at: Some(now_utc()),
             remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some("track-review/dispatch-1".to_owned()),
-            worktree_path: Some("~/workspace/project-x/review-worktrees/dispatch-1".to_owned()),
+            branch_name: Some(DispatchBranch::for_review(&DispatchId::new("dispatch-1").unwrap())),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "~/workspace",
+                &review.workspace_key,
+                &DispatchId::new("dispatch-1").unwrap(),
+            )),
             follow_up_request: None,
             target_head_oid: Some("aaa111".to_owned()),
             summary: Some("Submitted an older review.".to_owned()),
@@ -643,7 +718,10 @@ fn selects_the_latest_previous_submitted_review_run() {
     ];
 
     let selected =
-        select_previous_submitted_review_run(&dispatch_history, &parse_dispatch_id("dispatch-3"))
+        select_previous_submitted_review_run(
+            &dispatch_history,
+            &DispatchId::new("dispatch-3").unwrap(),
+        )
             .expect("a previous submitted review should be selected");
 
     assert_eq!(selected.dispatch_id, "dispatch-2");

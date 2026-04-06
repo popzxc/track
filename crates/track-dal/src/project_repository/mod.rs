@@ -274,9 +274,10 @@ mod tests {
 
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
+    use track_types::ids::ProjectId;
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{parse_project_id, project_metadata};
+    use crate::test_support::project_metadata;
     use track_projects::project_catalog::ProjectInfo;
     use track_projects::project_metadata::ProjectUpsertInput;
 
@@ -290,22 +291,22 @@ mod tests {
 
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
-                vec![parse_project_id("legacy-a")],
+                vec![ProjectId::new("legacy-a").unwrap()],
             )
             .await
             .expect("project should save");
         let project = repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
                 Vec::new(),
             )
             .await
             .expect("project should update");
 
-        assert_eq!(project.aliases, vec![parse_project_id("legacy-a")]);
+        assert_eq!(project.aliases, vec![ProjectId::new("legacy-a").unwrap()]);
         assert_eq!(
             project.metadata.description.as_deref(),
             Some("Metadata for project-a"),
@@ -322,24 +323,30 @@ mod tests {
 
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
-                vec![parse_project_id("legacy-a")],
+                vec![ProjectId::new("legacy-a").unwrap()],
             )
             .await
             .expect("project should save");
         let project = repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
-                vec![parse_project_id("new-a"), parse_project_id("legacy-a")],
+                vec![
+                    ProjectId::new("new-a").unwrap(),
+                    ProjectId::new("legacy-a").unwrap(),
+                ],
             )
             .await
             .expect("project should update");
 
         assert_eq!(
             project.aliases,
-            vec![parse_project_id("legacy-a"), parse_project_id("new-a")]
+            vec![
+                ProjectId::new("legacy-a").unwrap(),
+                ProjectId::new("new-a").unwrap(),
+            ]
         );
     }
 
@@ -353,15 +360,15 @@ mod tests {
 
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
-                vec![parse_project_id("shared")],
+                vec![ProjectId::new("shared").unwrap()],
             )
             .await
             .expect("project a should save");
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-b"),
+                &ProjectId::new("project-b").unwrap(),
                 project_metadata("project-b"),
                 Vec::new(),
             )
@@ -370,16 +377,16 @@ mod tests {
 
         let error = repository
             .upsert_project_by_name(
-                &parse_project_id("project-b"),
+                &ProjectId::new("project-b").unwrap(),
                 project_metadata("project-b"),
-                vec![parse_project_id("shared")],
+                vec![ProjectId::new("shared").unwrap()],
             )
             .await
             .expect_err("conflicting alias should fail");
         assert_eq!(error.code, ErrorCode::InvalidProjectMetadata);
 
         let project_b = repository
-            .get_project_by_name(&parse_project_id("project-b"))
+            .get_project_by_name(&ProjectId::new("project-b").unwrap())
             .await
             .expect("project b should still load");
         assert!(project_b.aliases.is_empty());
@@ -399,17 +406,20 @@ mod tests {
 
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-b"),
+                &ProjectId::new("project-b").unwrap(),
                 project_metadata("project-b"),
-                vec![parse_project_id("beta")],
+                vec![ProjectId::new("beta").unwrap()],
             )
             .await
             .expect("project b should save");
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
-                vec![parse_project_id("alpha-2"), parse_project_id("alpha-1")],
+                vec![
+                    ProjectId::new("alpha-2").unwrap(),
+                    ProjectId::new("alpha-1").unwrap(),
+                ],
             )
             .await
             .expect("project a should save");
@@ -423,10 +433,13 @@ mod tests {
         assert_eq!(projects[0].canonical_name, "project-a");
         assert_eq!(
             projects[0].aliases,
-            vec![parse_project_id("alpha-1"), parse_project_id("alpha-2")],
+            vec![
+                ProjectId::new("alpha-1").unwrap(),
+                ProjectId::new("alpha-2").unwrap(),
+            ],
         );
         assert_eq!(projects[1].canonical_name, "project-b");
-        assert_eq!(projects[1].aliases, vec![parse_project_id("beta")]);
+        assert_eq!(projects[1].aliases, vec![ProjectId::new("beta").unwrap()]);
     }
 
     #[tokio::test]
@@ -439,9 +452,9 @@ mod tests {
 
         repository
             .upsert_project_by_name(
-                &parse_project_id("project-a"),
+                &ProjectId::new("project-a").unwrap(),
                 project_metadata("project-a"),
-                vec![parse_project_id("legacy-a")],
+                vec![ProjectId::new("legacy-a").unwrap()],
             )
             .await
             .expect("project should save");
@@ -453,11 +466,11 @@ mod tests {
             description: Some("Updated metadata".to_owned()),
         };
         let project = repository
-            .update_project_by_name(&parse_project_id("project-a"), updated_metadata.clone())
+            .update_project_by_name(&ProjectId::new("project-a").unwrap(), updated_metadata.clone())
             .await
             .expect("project should update");
 
-        assert_eq!(project.aliases, vec![parse_project_id("legacy-a")]);
+        assert_eq!(project.aliases, vec![ProjectId::new("legacy-a").unwrap()]);
         assert_eq!(project.metadata, updated_metadata);
     }
 
@@ -471,11 +484,11 @@ mod tests {
 
         let saved = repository
             .upsert_project(ProjectUpsertInput {
-                canonical_name: parse_project_id("project-a"),
+                canonical_name: ProjectId::new("project-a").unwrap(),
                 aliases: vec![
-                    parse_project_id("alias-b"),
-                    parse_project_id("alias-a"),
-                    parse_project_id("alias-a"),
+                    ProjectId::new("alias-b").unwrap(),
+                    ProjectId::new("alias-a").unwrap(),
+                    ProjectId::new("alias-a").unwrap(),
                 ],
                 metadata: track_projects::project_metadata::ProjectMetadataUpdateInput {
                     repo_url: " https://github.com/acme/project-a ".to_owned(),
@@ -490,7 +503,10 @@ mod tests {
         assert_eq!(saved.canonical_name, "project-a");
         assert_eq!(
             saved.aliases,
-            vec![parse_project_id("alias-a"), parse_project_id("alias-b")],
+            vec![
+                ProjectId::new("alias-a").unwrap(),
+                ProjectId::new("alias-b").unwrap(),
+            ],
         );
         assert_eq!(saved.metadata.repo_url, "https://github.com/acme/project-a");
         assert_eq!(saved.metadata.git_url, "git@github.com:acme/project-a.git");
@@ -511,15 +527,15 @@ mod tests {
 
         let project = repository
             .ensure_project(&ProjectInfo {
-                canonical_name: parse_project_id("project-a"),
+                canonical_name: ProjectId::new("project-a").unwrap(),
                 path: PathBuf::from("/tmp/project-a"),
-                aliases: vec![parse_project_id("alias-a")],
+                aliases: vec![ProjectId::new("alias-a").unwrap()],
             })
             .await
             .expect("project should be inferred and saved");
 
         assert_eq!(project.canonical_name, "project-a");
-        assert_eq!(project.aliases, vec![parse_project_id("alias-a")]);
+        assert_eq!(project.aliases, vec![ProjectId::new("alias-a").unwrap()]);
         assert_eq!(project.metadata.base_branch, "main");
         assert_eq!(project.metadata.repo_url, "file:///tmp/project-a");
         assert_eq!(project.metadata.git_url, "file:///tmp/project-a");

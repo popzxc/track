@@ -63,7 +63,7 @@ impl RemoteReviewFollowUpEvent {
             dispatch_id: dispatch_record.dispatch_id.to_string(),
             dispatch_status: dispatch_record.status.as_str().to_owned(),
             remote_host: dispatch_record.remote_host.clone(),
-            branch_name: dispatch_record.branch_name.clone(),
+            branch_name: dispatch_record.branch_name.clone().map(String::from),
             pull_request_url: dispatch_record.pull_request_url.clone(),
             reviewer: reviewer.to_owned(),
             pr_is_open: pull_request_state.map(|state| state.is_open),

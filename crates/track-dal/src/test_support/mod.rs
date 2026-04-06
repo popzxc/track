@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
@@ -33,22 +34,6 @@ pub(crate) fn project_metadata(name: &str) -> ProjectMetadata {
     }
 }
 
-pub(crate) fn parse_task_id(value: &str) -> TaskId {
-    TaskId::new(value).expect("fixture task ids should be valid")
-}
-
-pub(crate) fn parse_project_id(value: &str) -> ProjectId {
-    ProjectId::new(value).expect("fixture project ids should be valid")
-}
-
-pub(crate) fn parse_review_id(value: &str) -> ReviewId {
-    ReviewId::new(value).expect("fixture review ids should be valid")
-}
-
-pub(crate) fn parse_dispatch_id(value: &str) -> DispatchId {
-    DispatchId::new(value).expect("fixture dispatch ids should be valid")
-}
-
 pub(crate) fn sample_task(
     id: &str,
     project: &str,
@@ -60,8 +45,8 @@ pub(crate) fn sample_task(
     source: Option<TaskSource>,
 ) -> Task {
     Task {
-        id: parse_task_id(id),
-        project: parse_project_id(project),
+        id: TaskId::new(id).unwrap(),
+        project: ProjectId::new(project).unwrap(),
         priority,
         status,
         description: description.to_owned(),
@@ -80,18 +65,26 @@ pub(crate) fn sample_dispatch(
     created_at: &str,
     updated_at: &str,
 ) -> TaskDispatchRecord {
+    let dispatch_id = DispatchId::new(dispatch_id).unwrap();
+    let task_id = TaskId::new(task_id).unwrap();
+    let project = ProjectId::new(project).unwrap();
+
     TaskDispatchRecord {
-        dispatch_id: parse_dispatch_id(dispatch_id),
-        task_id: parse_task_id(task_id),
+        dispatch_id: dispatch_id.clone(),
+        task_id,
         preferred_tool,
-        project: parse_project_id(project),
+        project: project.clone(),
         status,
         created_at: parse_iso_8601_millis(created_at).expect("fixture created_at should parse"),
         updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
         finished_at: None,
         remote_host: "198.51.100.10".to_owned(),
-        branch_name: Some(format!("track/{dispatch_id}")),
-        worktree_path: Some(format!("/tmp/worktrees/{dispatch_id}")),
+        branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_task(
+            "/tmp",
+            &project,
+            &dispatch_id,
+        )),
         pull_request_url: None,
         follow_up_request: None,
         summary: None,
@@ -110,7 +103,7 @@ pub(crate) fn sample_review(
     updated_at: &str,
 ) -> ReviewRecord {
     ReviewRecord {
-        id: parse_review_id(id),
+        id: ReviewId::new(id).unwrap(),
         pull_request_url: format!("https://github.com/acme/project-a/pull/{pull_request_number}"),
         pull_request_number,
         pull_request_title: format!("Review {pull_request_number}"),
@@ -118,9 +111,9 @@ pub(crate) fn sample_review(
         repo_url: "https://github.com/acme/project-a".to_owned(),
         git_url: "git@github.com:acme/project-a.git".to_owned(),
         base_branch: "main".to_owned(),
-        workspace_key: "project-a".to_owned(),
+        workspace_key: WorkspaceKey::new("project-a").unwrap(),
         preferred_tool,
-        project: Some(parse_project_id("project-a")),
+        project: Some(ProjectId::new("project-a").unwrap()),
         main_user: "octocat".to_owned(),
         default_review_prompt: Some("Focus on regressions.".to_owned()),
         extra_instructions: Some("Keep an eye on migrations.".to_owned()),
@@ -137,8 +130,10 @@ pub(crate) fn sample_review_run(
     created_at: &str,
     updated_at: &str,
 ) -> ReviewRunRecord {
+    let dispatch_id = DispatchId::new(dispatch_id).unwrap();
+
     ReviewRunRecord {
-        dispatch_id: parse_dispatch_id(dispatch_id),
+        dispatch_id: dispatch_id.clone(),
         review_id: review.id.clone(),
         pull_request_url: review.pull_request_url.clone(),
         repository_full_name: review.repository_full_name.clone(),
@@ -149,8 +144,12 @@ pub(crate) fn sample_review_run(
         updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
         finished_at: None,
         remote_host: "198.51.100.10".to_owned(),
-        branch_name: Some(format!("track-review/{dispatch_id}")),
-        worktree_path: Some(format!("/tmp/review-worktrees/{dispatch_id}")),
+        branch_name: Some(DispatchBranch::for_review(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_review(
+            "/tmp",
+            &review.workspace_key,
+            &dispatch_id,
+        )),
         follow_up_request: None,
         target_head_oid: None,
         summary: None,

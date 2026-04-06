@@ -9,6 +9,7 @@ use track_dal::review_dispatch_repository::ReviewDispatchRepository;
 use track_dal::review_repository::ReviewRepository;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{DispatchId, ReviewId, TaskId};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::now_utc;
 use track_types::types::{
     CreateReviewInput, DispatchStatus, RemoteAgentReviewOutcome, ReviewRecord, ReviewRunRecord,
@@ -16,7 +17,6 @@ use track_types::types::{
 
 use crate::constants::{
     PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME,
-    REVIEW_RUN_DIRECTORY_NAME, REVIEW_WORKTREE_DIRECTORY_NAME,
 };
 use crate::prompts::RemoteReviewPrompt;
 use crate::remote_actions::FetchPullRequestMetadataAction;
@@ -77,7 +77,7 @@ impl<'a> RemoteReviewService<'a> {
             .map(|project| project.metadata.clone());
         let workspace_key = project_match
             .as_ref()
-            .map(|project| project.canonical_name.to_string())
+            .map(|project| WorkspaceKey::from(&project.canonical_name))
             .unwrap_or_else(|| pull_request_metadata.workspace_key());
         let review_timestamp = now_utc();
         let mut review_id = ReviewId::new(
@@ -240,8 +240,7 @@ impl<'a> RemoteReviewService<'a> {
             .branch_name
             .clone()
             .expect("queued review dispatches should store a branch name");
-        let remote_run_directory =
-            derive_review_run_directory(&worktree_path, &dispatch_record.dispatch_id)?;
+        let remote_run_directory = worktree_path.run_directory();
 
         let launch_result = async {
             if !self
@@ -307,9 +306,9 @@ impl<'a> RemoteReviewService<'a> {
                 return Ok::<(), TrackError>(());
             }
             runner.upload_prompt_and_schema(
-                &format!("{remote_run_directory}/{REMOTE_PROMPT_FILE_NAME}"),
+                &remote_run_directory.join(REMOTE_PROMPT_FILE_NAME),
                 &prompt,
-                &format!("{remote_run_directory}/{REMOTE_SCHEMA_FILE_NAME}"),
+                &remote_run_directory.join(REMOTE_SCHEMA_FILE_NAME),
                 &schema,
             )?;
 
@@ -330,8 +329,8 @@ impl<'a> RemoteReviewService<'a> {
                 return Ok(());
             }
             runner.launch(
-                &remote_run_directory,
-                &worktree_path,
+                &remote_run_directory.to_string(),
+                worktree_path.as_str(),
                 dispatch_record.preferred_tool,
             )?;
 
@@ -672,10 +671,13 @@ impl<'a> RemoteReviewService<'a> {
         follow_up_request: Option<&str>,
         target_head_oid: Option<&str>,
     ) -> Result<ReviewRunRecord, TrackError> {
-        let dispatch_id = new_review_dispatch_id();
-        let branch_name = queued_review_branch_name(&dispatch_id);
-        let worktree_path =
-            queued_review_worktree_path(remote_agent, &review.workspace_key, &dispatch_id);
+        let dispatch_id = DispatchId::unique();
+        let branch_name = DispatchBranch::for_review(&dispatch_id);
+        let worktree_path = DispatchWorktreePath::for_review(
+            &remote_agent.workspace_root,
+            &review.workspace_key,
+            &dispatch_id,
+        );
         let follow_up_request = follow_up_request
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -776,13 +778,12 @@ impl<'a> RemoteReviewService<'a> {
             ));
         }
 
-        let Some(worktree_path) = dispatch_record.worktree_path.as_deref() else {
+        let Some(worktree_path) = dispatch_record.worktree_path.as_ref() else {
             return Ok(());
         };
-        let remote_run_directory =
-            derive_review_run_directory(worktree_path, &dispatch_record.dispatch_id)?;
+        let remote_run_directory = worktree_path.run_directory();
         let ssh_client = SshClient::new(&remote_agent)?;
-        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory)
+        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory.to_string())
     }
 
     async fn finalize_review_dispatch_locally(
@@ -823,6 +824,7 @@ impl<'a> RemoteReviewService<'a> {
         let branch_names = dispatch_history
             .iter()
             .filter_map(|record| record.branch_name.clone())
+            .map(String::from)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -1014,29 +1016,6 @@ impl ReviewRunRecordExt for ReviewRunRecord {
     }
 }
 
-fn new_review_dispatch_id() -> DispatchId {
-    DispatchId::new(format!("dispatch-{}", now_utc().unix_timestamp_nanos()))
-        .expect("generated dispatch ids should be valid path components")
-}
-
-fn queued_review_branch_name(dispatch_id: &str) -> String {
-    format!("track-review/{dispatch_id}")
-}
-
-fn queued_review_worktree_path(
-    remote_agent: &RemoteAgentRuntimeConfig,
-    workspace_key: &str,
-    dispatch_id: &str,
-) -> String {
-    format!(
-        "{}/{}/{}/{}",
-        remote_agent.workspace_root.trim_end_matches('/'),
-        workspace_key,
-        REVIEW_WORKTREE_DIRECTORY_NAME,
-        dispatch_id
-    )
-}
-
 fn review_dispatch_not_found<'a>(
     review_id: &'a str,
     detail: &'a str,
@@ -1081,16 +1060,12 @@ fn load_review_snapshots_for_records(
             continue;
         }
 
-        let Some(worktree_path) = record.worktree_path.as_deref() else {
-            continue;
-        };
-        let Ok(run_directory) = derive_review_run_directory(worktree_path, &record.dispatch_id)
-        else {
+        let Some(worktree_path) = record.worktree_path.as_ref() else {
             continue;
         };
 
         dispatch_ids.push(record.dispatch_id.to_string());
-        run_directories.push(run_directory);
+        run_directories.push(worktree_path.run_directory().to_string());
     }
 
     if run_directories.is_empty() {
@@ -1099,21 +1074,6 @@ fn load_review_snapshots_for_records(
 
     let snapshots = RemoteRunOps::new(ssh_client).read_snapshots(&run_directories)?;
     Ok(dispatch_ids.into_iter().zip(snapshots).collect())
-}
-
-fn derive_review_run_directory(
-    worktree_path: &str,
-    dispatch_id: &str,
-) -> Result<String, TrackError> {
-    worktree_path
-        .rsplit_once(&format!("/{REVIEW_WORKTREE_DIRECTORY_NAME}/"))
-        .map(|(prefix, _suffix)| format!("{prefix}/{REVIEW_RUN_DIRECTORY_NAME}/{dispatch_id}"))
-        .ok_or_else(|| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                "Could not derive the remote review run directory from the worktree path.",
-            )
-        })
 }
 
 #[derive(Debug, Default)]

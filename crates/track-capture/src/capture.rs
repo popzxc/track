@@ -69,6 +69,8 @@ fn build_task_body(
     let formatted_body = sanitize_model_body(normalized_title, body_markdown);
     let original_note =
         strip_capture_shorthand(raw_text, project_catalog, canonical_project, priority);
+    // TODO: We are using API, maybe we should transfer everything as JSON instead
+    // and only render it before we pass it to an LLM?
     let rendered_without_original = render_task_description(
         normalized_title,
         (!formatted_body.is_empty()).then_some(formatted_body.as_str()),

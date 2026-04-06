@@ -1,5 +1,6 @@
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{DispatchId, ProjectId, TaskId};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, TaskDispatchRecord};
 
@@ -63,8 +64,10 @@ impl TryFrom<TaskDispatchRow> for TaskDispatchRecord {
             updated_at,
             finished_at,
             remote_host: record.remote_host,
-            branch_name: record.branch_name,
-            worktree_path: record.worktree_path,
+            branch_name: record.branch_name.map(DispatchBranch::from_db_unchecked),
+            worktree_path: record
+                .worktree_path
+                .map(DispatchWorktreePath::from_db_unchecked),
             pull_request_url: record.pull_request_url,
             follow_up_request: record.follow_up_request,
             summary: record.summary,

@@ -1,5 +1,6 @@
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{ProjectId, ReviewId};
+use track_types::remote_layout::WorkspaceKey;
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{RemoteAgentPreferredTool, ReviewRecord};
 
@@ -50,7 +51,7 @@ impl TryFrom<ReviewRow> for ReviewRecord {
             repo_url: record.repo_url,
             git_url: record.git_url,
             base_branch: record.base_branch,
-            workspace_key: record.workspace_key,
+            workspace_key: WorkspaceKey::from_db_unchecked(record.workspace_key),
             preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
             project: record.project.map(ProjectId::from_db),
             main_user: record.main_user,

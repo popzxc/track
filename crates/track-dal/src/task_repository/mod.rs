@@ -355,13 +355,12 @@ fn first_non_empty_line(value: &str) -> Option<&str> {
 mod tests {
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
+    use track_types::ids::ProjectId;
     use track_types::time_utils::format_iso_8601_millis;
     use track_types::types::{Priority, Status, TaskCreateInput, TaskSource, TaskUpdateInput};
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{
-        parse_project_id, project_metadata, sample_task, temporary_database_path,
-    };
+    use crate::test_support::{project_metadata, sample_task, temporary_database_path};
 
     async fn database_with_projects(projects: &[&str]) -> (TempDir, DatabaseContext) {
         let (directory, database_path) = temporary_database_path();
@@ -373,7 +372,7 @@ mod tests {
         for project in projects {
             project_repository
                 .upsert_project_by_name(
-                    &parse_project_id(project),
+                    &ProjectId::new(project).unwrap(),
                     project_metadata(project),
                     Vec::new(),
                 )
@@ -391,7 +390,7 @@ mod tests {
 
         let stored = repository
             .create_task(TaskCreateInput {
-                project: parse_project_id("project-a"),
+                project: ProjectId::new("project-a").unwrap(),
                 priority: Priority::High,
                 description: "  First line\n\nMore context  ".to_owned(),
                 source: Some(TaskSource::Cli),
@@ -435,7 +434,7 @@ mod tests {
 
         let error = repository
             .create_task(TaskCreateInput {
-                project: parse_project_id("missing-project"),
+                project: ProjectId::new("missing-project").unwrap(),
                 priority: Priority::Medium,
                 description: "Investigate missing project".to_owned(),
                 source: Some(TaskSource::Web),
@@ -554,7 +553,7 @@ mod tests {
         );
 
         let project_a_tasks = repository
-            .list_tasks(true, Some(&parse_project_id("project-a")))
+            .list_tasks(true, Some(&ProjectId::new("project-a").unwrap()))
             .await
             .expect("project task list should load");
         assert_eq!(

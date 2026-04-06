@@ -3,6 +3,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::errors::{ErrorCode, TrackError};
 use crate::ids::{DispatchId, ProjectId, ReviewId, TaskId};
+use crate::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -216,9 +217,9 @@ pub struct RemoteAgentDispatchOutcome {
     #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
     pub pull_request_url: Option<String>,
     #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
-    pub branch_name: Option<String>,
+    pub branch_name: Option<DispatchBranch>,
     #[serde(rename = "worktreePath")]
-    pub worktree_path: String,
+    pub worktree_path: DispatchWorktreePath,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
@@ -234,7 +235,7 @@ pub struct RemoteAgentReviewOutcome {
     #[serde(rename = "githubReviewUrl", default)]
     pub github_review_url: Option<String>,
     #[serde(rename = "worktreePath")]
-    pub worktree_path: String,
+    pub worktree_path: DispatchWorktreePath,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
@@ -263,9 +264,9 @@ pub struct TaskDispatchRecord {
     #[serde(rename = "remoteHost")]
     pub remote_host: String,
     #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
-    pub branch_name: Option<String>,
+    pub branch_name: Option<DispatchBranch>,
     #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
+    pub worktree_path: Option<DispatchWorktreePath>,
     #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
     pub pull_request_url: Option<String>,
     #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
@@ -396,7 +397,7 @@ pub struct ReviewRecord {
     #[serde(rename = "baseBranch")]
     pub base_branch: String,
     #[serde(rename = "workspaceKey")]
-    pub workspace_key: String,
+    pub workspace_key: WorkspaceKey,
     #[serde(rename = "preferredTool", default)]
     pub preferred_tool: RemoteAgentPreferredTool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -427,7 +428,7 @@ pub struct ReviewRunRecord {
     #[serde(rename = "repositoryFullName")]
     pub repository_full_name: String,
     #[serde(rename = "workspaceKey")]
-    pub workspace_key: String,
+    pub workspace_key: WorkspaceKey,
     #[serde(rename = "preferredTool", default)]
     pub preferred_tool: RemoteAgentPreferredTool,
     pub status: DispatchStatus,
@@ -445,9 +446,9 @@ pub struct ReviewRunRecord {
     #[serde(rename = "remoteHost")]
     pub remote_host: String,
     #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
-    pub branch_name: Option<String>,
+    pub branch_name: Option<DispatchBranch>,
     #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
+    pub worktree_path: Option<DispatchWorktreePath>,
     #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
     pub follow_up_request: Option<String>,
     #[serde(rename = "targetHeadOid", skip_serializing_if = "Option::is_none")]

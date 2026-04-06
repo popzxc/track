@@ -2,6 +2,7 @@ mod records;
 
 use track_types::errors::TrackError;
 use track_types::ids::{DispatchId, TaskId};
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
 use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDispatchRecord};
 
@@ -24,8 +25,8 @@ impl<'a> DispatchRepository<'a> {
         dispatch_id: &DispatchId,
         remote_host: &str,
         preferred_tool: RemoteAgentPreferredTool,
-        branch_name: &str,
-        worktree_path: &str,
+        branch_name: &DispatchBranch,
+        worktree_path: &DispatchWorktreePath,
         pull_request_url: Option<&str>,
         follow_up_request: Option<&str>,
         summary: Option<&str>,
@@ -43,8 +44,8 @@ impl<'a> DispatchRepository<'a> {
             updated_at: timestamp,
             finished_at: None,
             remote_host: remote_host.to_owned(),
-            branch_name: Some(branch_name.to_owned()),
-            worktree_path: Some(worktree_path.to_owned()),
+            branch_name: Some(branch_name.clone()),
+            worktree_path: Some(worktree_path.clone()),
             pull_request_url: pull_request_url.map(ToOwned::to_owned),
             follow_up_request: follow_up_request.map(ToOwned::to_owned),
             summary: summary.map(ToOwned::to_owned),
@@ -360,15 +361,15 @@ impl<'a> DispatchRepository<'a> {
 
 #[cfg(test)]
 mod tests {
+    use track_types::ids::{DispatchId, TaskId};
+    use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
     use track_types::time_utils::{now_utc, parse_iso_8601_millis};
     use track_types::types::{
         DispatchStatus, Priority, RemoteAgentPreferredTool, Status, TaskSource,
     };
 
     use crate::database::DatabaseContext;
-    use crate::test_support::{
-        parse_dispatch_id, parse_task_id, sample_dispatch, sample_task, temporary_database_path,
-    };
+    use crate::test_support::{sample_dispatch, sample_task, temporary_database_path};
 
     #[tokio::test]
     async fn create_dispatch_persists_queued_dispatch_with_launch_context() {
@@ -394,15 +395,19 @@ mod tests {
             updated_at: timestamp,
             ..task
         };
+        let dispatch_id = DispatchId::new("dispatch-race-test").unwrap();
+        let branch_name = DispatchBranch::for_task(&dispatch_id);
+        let worktree_path =
+            DispatchWorktreePath::for_task("/home/track/workspace", &task.project, &dispatch_id);
 
         let record = repository
             .create_dispatch(
                 &task,
-                &parse_dispatch_id("dispatch-race-test"),
+                &dispatch_id,
                 "198.51.100.10",
                 track_types::types::RemoteAgentPreferredTool::Codex,
-                "track/dispatch-race-test",
-                "/home/track/workspace/project-a/worktrees/dispatch-race-test",
+                &branch_name,
+                &worktree_path,
                 None,
                 None,
                 None,
@@ -465,7 +470,10 @@ mod tests {
             .expect("updated dispatch should save");
 
         let loaded = repository
-            .get_dispatch(&parse_task_id("task-1"), &parse_dispatch_id("dispatch-1"))
+            .get_dispatch(
+                &TaskId::new("task-1").unwrap(),
+                &DispatchId::new("dispatch-1").unwrap(),
+            )
             .await
             .expect("dispatch should load")
             .expect("dispatch should exist");
@@ -508,7 +516,7 @@ mod tests {
             .expect("newer dispatch should save");
 
         let history = repository
-            .dispatches_for_task(&parse_task_id("task-1"))
+            .dispatches_for_task(&TaskId::new("task-1").unwrap())
             .await
             .expect("dispatch history should load");
         assert_eq!(
@@ -520,7 +528,7 @@ mod tests {
         );
 
         let latest = repository
-            .latest_dispatch_for_task(&parse_task_id("task-1"))
+            .latest_dispatch_for_task(&TaskId::new("task-1").unwrap())
             .await
             .expect("latest dispatch should load")
             .expect("latest dispatch should exist");
@@ -574,9 +582,9 @@ mod tests {
 
         let latest = repository
             .latest_dispatches_for_tasks(&[
-                parse_task_id("task-a"),
-                parse_task_id("task-b"),
-                parse_task_id("missing"),
+                TaskId::new("task-a").unwrap(),
+                TaskId::new("task-b").unwrap(),
+                TaskId::new("missing").unwrap(),
             ])
             .await
             .expect("latest dispatches should load");
@@ -706,7 +714,7 @@ mod tests {
             .expect("task ids should load");
         assert_eq!(
             task_ids,
-            vec![parse_task_id("task-a"), parse_task_id("task-b")]
+            vec![TaskId::new("task-a").unwrap(), TaskId::new("task-b").unwrap()]
         );
     }
 
@@ -744,18 +752,18 @@ mod tests {
             .expect("task b dispatch should save");
 
         repository
-            .delete_dispatch_history_for_task(&parse_task_id("task-a"))
+            .delete_dispatch_history_for_task(&TaskId::new("task-a").unwrap())
             .await
             .expect("task a history should delete");
 
         assert!(repository
-            .dispatches_for_task(&parse_task_id("task-a"))
+            .dispatches_for_task(&TaskId::new("task-a").unwrap())
             .await
             .expect("task a history should load")
             .is_empty());
         assert_eq!(
             repository
-                .dispatches_for_task(&parse_task_id("task-b"))
+                .dispatches_for_task(&TaskId::new("task-b").unwrap())
                 .await
                 .expect("task b history should load")
                 .len(),

@@ -93,6 +93,7 @@ struct RemoteReviewPromptTemplate<'a> {
 #[cfg(test)]
 mod tests {
     use track_types::ids::{DispatchId, ProjectId, ReviewId};
+    use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
     use track_types::time_utils::now_utc;
     use track_types::types::{
         DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
@@ -100,23 +101,11 @@ mod tests {
 
     use super::RemoteReviewPrompt;
 
-    fn parse_project_id(value: &str) -> ProjectId {
-        ProjectId::new(value).expect("test project ids should be valid")
-    }
-
-    fn parse_review_id(value: &str) -> ReviewId {
-        ReviewId::new(value).expect("test review ids should be valid")
-    }
-
-    fn parse_dispatch_id(value: &str) -> DispatchId {
-        DispatchId::new(value).expect("test dispatch ids should be valid")
-    }
-
     fn sample_review_record() -> ReviewRecord {
         let created_at = now_utc();
 
         ReviewRecord {
-            id: parse_review_id("20260326-120000-review-pr-42"),
+            id: ReviewId::new("20260326-120000-review-pr-42").unwrap(),
             pull_request_url: "https://github.com/acme/project-x/pull/42".to_owned(),
             pull_request_number: 42,
             pull_request_title: "Fix queue layout".to_owned(),
@@ -124,9 +113,9 @@ mod tests {
             repo_url: "https://github.com/acme/project-x".to_owned(),
             git_url: "git@github.com:acme/project-x.git".to_owned(),
             base_branch: "main".to_owned(),
-            workspace_key: "project-x".to_owned(),
+            workspace_key: WorkspaceKey::new("project-x").unwrap(),
             preferred_tool: RemoteAgentPreferredTool::Codex,
-            project: Some(parse_project_id("project-x")),
+            project: Some(ProjectId::new("project-x").unwrap()),
             main_user: "octocat".to_owned(),
             default_review_prompt: Some("Focus on regressions and missing tests.".to_owned()),
             extra_instructions: Some("Pay special attention to queue rendering.".to_owned()),
@@ -138,8 +127,9 @@ mod tests {
     #[test]
     fn builds_remote_review_prompt_with_follow_up_guidance_and_saved_context() {
         let review = sample_review_record();
+        let previous_dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
         let previous_review_run = ReviewRunRecord {
-            dispatch_id: parse_dispatch_id("review-dispatch-1"),
+            dispatch_id: previous_dispatch_id.clone(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -150,10 +140,12 @@ mod tests {
             updated_at: now_utc(),
             finished_at: Some(now_utc()),
             remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some("track-review/review-dispatch-1".to_owned()),
-            worktree_path: Some(
-                "~/workspace/project-x/review-worktrees/review-dispatch-1".to_owned(),
-            ),
+            branch_name: Some(DispatchBranch::for_review(&previous_dispatch_id)),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "~/workspace",
+                &review.workspace_key,
+                &previous_dispatch_id,
+            )),
             follow_up_request: None,
             target_head_oid: Some("abc123def456".to_owned()),
             summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
@@ -165,8 +157,9 @@ mod tests {
             notes: None,
             error_message: None,
         };
+        let current_dispatch_id = DispatchId::new("review-dispatch-2").unwrap();
         let current_review_run = ReviewRunRecord {
-            dispatch_id: parse_dispatch_id("review-dispatch-2"),
+            dispatch_id: current_dispatch_id.clone(),
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
@@ -177,10 +170,12 @@ mod tests {
             updated_at: now_utc(),
             finished_at: None,
             remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some("track-review/review-dispatch-2".to_owned()),
-            worktree_path: Some(
-                "~/workspace/project-x/review-worktrees/review-dispatch-2".to_owned(),
-            ),
+            branch_name: Some(DispatchBranch::for_review(&current_dispatch_id)),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "~/workspace",
+                &review.workspace_key,
+                &current_dispatch_id,
+            )),
             follow_up_request: Some(
                 "Check whether the main review comments were actually resolved.".to_owned(),
             ),
