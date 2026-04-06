@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 // model so the API can serialize it directly and the CLI can compare the two
 // sides without inventing an ad hoc JSON shape in each crate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
     pub component: String,
     pub version: String,
-    #[serde(rename = "gitCommit")]
     pub git_commit: String,
 }
 

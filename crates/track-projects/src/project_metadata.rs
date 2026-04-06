@@ -11,32 +11,28 @@ use crate::project_catalog::ProjectInfo;
 const DEFAULT_BASE_BRANCH: &str = "main";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectMetadata {
-    #[serde(rename = "repoUrl")]
     pub repo_url: Url,
-    #[serde(rename = "gitUrl")]
     pub git_url: String,
-    #[serde(rename = "baseBranch")]
     pub base_branch: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectRecord {
-    #[serde(rename = "canonicalName")]
     pub canonical_name: ProjectId,
     pub aliases: Vec<ProjectId>,
     pub metadata: ProjectMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectMetadataUpdateInput {
-    #[serde(rename = "repoUrl")]
     pub repo_url: String,
-    #[serde(rename = "gitUrl")]
     pub git_url: String,
-    #[serde(rename = "baseBranch")]
     pub base_branch: String,
     pub description: Option<String>,
 }
@@ -72,8 +68,8 @@ impl ProjectMetadataUpdateInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectUpsertInput {
-    #[serde(rename = "canonicalName")]
     pub canonical_name: ProjectId,
     #[serde(default)]
     pub aliases: Vec<ProjectId>,

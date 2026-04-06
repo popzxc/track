@@ -10,23 +10,27 @@ use crate::api_error::ApiError;
 use crate::AppState;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReviewSummaryResponse {
     review: ReviewRecord,
-    #[serde(rename = "latestRun", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     latest_run: Option<ReviewRunRecord>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReviewsResponse {
     reviews: Vec<ReviewSummaryResponse>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReviewRunsResponse {
     runs: Vec<ReviewRunRecord>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CreateReviewResponse {
     review: ReviewRecord,
     run: ReviewRunRecord,
@@ -102,6 +106,7 @@ pub(crate) async fn create_review(
 
 // TODO: duplicated
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FollowUpRequestInput {
     request: String,
 }
@@ -128,6 +133,7 @@ pub(crate) async fn follow_up_review(
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DeleteReviewResponse {
     ok: bool,
 }

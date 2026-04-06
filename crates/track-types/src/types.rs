@@ -107,15 +107,16 @@ impl DispatchStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: TaskId,
     pub project: ProjectId,
     pub priority: Priority,
     pub status: Status,
     pub description: String,
-    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
-    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub updated_at: OffsetDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<TaskSource>,
@@ -141,6 +142,7 @@ pub enum Confidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskCreateInput {
     pub project: ProjectId,
     pub priority: Priority,
@@ -169,6 +171,7 @@ impl TaskCreateInput {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskUpdateInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -242,48 +245,42 @@ pub struct RemoteAgentReviewOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskDispatchRecord {
-    #[serde(rename = "dispatchId")]
     pub dispatch_id: DispatchId,
-    #[serde(rename = "taskId")]
     pub task_id: TaskId,
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     pub preferred_tool: RemoteAgentPreferredTool,
     pub project: ProjectId,
     pub status: DispatchStatus,
-    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
-    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub updated_at: OffsetDateTime,
     #[serde(
-        rename = "finishedAt",
         with = "optional_iso_8601_timestamp",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub finished_at: Option<OffsetDateTime>,
-    #[serde(rename = "remoteHost")]
     pub remote_host: String,
-    #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<DispatchBranch>,
-    #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<DispatchWorktreePath>,
-    #[serde(rename = "pullRequestUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_request_url: Option<Url>,
-    #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub follow_up_request: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
-    #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
-    #[serde(
-        rename = "reviewRequestHeadOid",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub review_request_head_oid: Option<String>,
-    #[serde(rename = "reviewRequestUser", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub review_request_user: Option<String>,
 }
 
@@ -381,98 +378,73 @@ impl TaskDispatchRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewRecord {
     pub id: ReviewId,
-    #[serde(rename = "pullRequestUrl")]
     pub pull_request_url: Url,
-    #[serde(rename = "pullRequestNumber")]
     pub pull_request_number: u64,
-    #[serde(rename = "pullRequestTitle")]
     pub pull_request_title: String,
-    #[serde(rename = "repositoryFullName")]
     pub repository_full_name: String,
-    #[serde(rename = "repoUrl")]
     pub repo_url: Url,
-    #[serde(rename = "gitUrl")]
     pub git_url: String,
-    #[serde(rename = "baseBranch")]
     pub base_branch: String,
-    #[serde(rename = "workspaceKey")]
     pub workspace_key: WorkspaceKey,
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     pub preferred_tool: RemoteAgentPreferredTool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectId>,
-    #[serde(rename = "mainUser")]
     pub main_user: String,
-    #[serde(
-        rename = "defaultReviewPrompt",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_review_prompt: Option<String>,
-    #[serde(rename = "extraInstructions", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_instructions: Option<String>,
-    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
-    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewRunRecord {
-    #[serde(rename = "dispatchId")]
     pub dispatch_id: DispatchId,
-    #[serde(rename = "reviewId")]
     pub review_id: ReviewId,
-    #[serde(rename = "pullRequestUrl")]
     pub pull_request_url: Url,
-    #[serde(rename = "repositoryFullName")]
     pub repository_full_name: String,
-    #[serde(rename = "workspaceKey")]
     pub workspace_key: WorkspaceKey,
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     pub preferred_tool: RemoteAgentPreferredTool,
     pub status: DispatchStatus,
-    #[serde(rename = "createdAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
-    #[serde(rename = "updatedAt", with = "iso_8601_timestamp")]
+    #[serde(with = "iso_8601_timestamp")]
     pub updated_at: OffsetDateTime,
     #[serde(
-        rename = "finishedAt",
         with = "optional_iso_8601_timestamp",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub finished_at: Option<OffsetDateTime>,
-    #[serde(rename = "remoteHost")]
     pub remote_host: String,
-    #[serde(rename = "branchName", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<DispatchBranch>,
-    #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<DispatchWorktreePath>,
-    #[serde(rename = "followUpRequest", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub follow_up_request: Option<String>,
-    #[serde(rename = "targetHeadOid", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_head_oid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    #[serde(rename = "reviewSubmitted", default, alias = "reviewPosted")]
+    #[serde(default, alias = "reviewPosted")]
     pub review_submitted: bool,
-    #[serde(
-        rename = "githubReviewId",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_review_id: Option<String>,
-    #[serde(
-        rename = "githubReviewUrl",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_review_url: Option<Url>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
-    #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
 }
 
@@ -569,12 +541,12 @@ impl ReviewRunRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateReviewInput {
-    #[serde(rename = "pullRequestUrl")]
     pub pull_request_url: Url,
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     pub preferred_tool: Option<RemoteAgentPreferredTool>,
-    #[serde(rename = "extraInstructions", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_instructions: Option<String>,
 }
 
@@ -594,24 +566,19 @@ impl CreateReviewInput {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteCleanupSummary {
-    #[serde(rename = "closedTasksCleaned")]
     pub closed_tasks_cleaned: usize,
-    #[serde(rename = "missingTasksCleaned")]
     pub missing_tasks_cleaned: usize,
-    #[serde(rename = "localDispatchHistoriesRemoved")]
     pub local_dispatch_histories_removed: usize,
-    #[serde(rename = "remoteWorktreesRemoved")]
     pub remote_worktrees_removed: usize,
-    #[serde(rename = "remoteRunDirectoriesRemoved")]
     pub remote_run_directories_removed: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteResetSummary {
-    #[serde(rename = "workspaceEntriesRemoved")]
     pub workspace_entries_removed: usize,
-    #[serde(rename = "registryRemoved")]
     pub registry_removed: bool,
 }
 

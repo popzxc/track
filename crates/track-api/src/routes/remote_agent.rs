@@ -13,9 +13,9 @@ use crate::api_error::ApiError;
 use crate::AppState;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteAgentSettingsResponse {
     configured: bool,
-    #[serde(rename = "preferredTool")]
     preferred_tool: RemoteAgentPreferredTool,
     #[serde(skip_serializing_if = "Option::is_none")]
     host: Option<String>,
@@ -23,59 +23,50 @@ pub(crate) struct RemoteAgentSettingsResponse {
     user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     port: Option<u16>,
-    #[serde(rename = "shellPrelude", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     shell_prelude: Option<String>,
-    #[serde(rename = "reviewFollowUp", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteAgentReviewFollowUpSettingsResponse {
     enabled: bool,
-    #[serde(rename = "mainUser", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     main_user: Option<String>,
-    #[serde(
-        rename = "defaultReviewPrompt",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     default_review_prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteCleanupResponse {
     summary: RemoteCleanupSummary,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteResetResponse {
     summary: RemoteResetSummary,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PutRemoteAgentInput {
     host: String,
     user: String,
     #[serde(default = "default_remote_agent_port")]
     port: u16,
-    #[serde(
-        rename = "workspaceRoot",
-        default = "default_remote_agent_workspace_root"
-    )]
+    #[serde(default = "default_remote_agent_workspace_root")]
     workspace_root: String,
-    #[serde(
-        rename = "projectsRegistryPath",
-        default = "default_remote_projects_registry_path"
-    )]
+    #[serde(default = "default_remote_projects_registry_path")]
     projects_registry_path: String,
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     preferred_tool: RemoteAgentPreferredTool,
-    #[serde(rename = "shellPrelude")]
     shell_prelude: Option<String>,
-    #[serde(rename = "reviewFollowUp")]
     review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
-    #[serde(rename = "sshPrivateKey")]
     ssh_private_key: String,
-    #[serde(rename = "knownHosts")]
     known_hosts: Option<String>,
 }
 
@@ -92,12 +83,11 @@ fn default_remote_projects_registry_path() -> String {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateRemoteAgentSettingsInput {
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     preferred_tool: Option<RemoteAgentPreferredTool>,
-    #[serde(rename = "shellPrelude")]
     shell_prelude: String,
-    #[serde(rename = "reviewFollowUp")]
     review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
 }
 

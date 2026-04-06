@@ -9,6 +9,7 @@ use crate::api_error::ApiError;
 use crate::AppState;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DispatchesResponse {
     dispatches: Vec<TaskDispatchRecord>,
 }

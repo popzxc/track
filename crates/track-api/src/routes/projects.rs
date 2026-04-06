@@ -11,6 +11,7 @@ use crate::api_error::ApiError;
 use crate::AppState;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ProjectsResponse {
     projects: Vec<ProjectRecord>,
 }
@@ -50,6 +51,7 @@ pub(crate) async fn patch_project(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PutProjectInput {
     #[serde(default)]
     aliases: Vec<ProjectId>,

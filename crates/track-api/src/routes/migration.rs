@@ -23,11 +23,13 @@ pub(crate) async fn import_legacy_data() -> Json<MigrationImportResponse> {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MigrationStatusResponse {
     migration: MigrationStatus,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MigrationImportResponse {
     summary: MigrationImportSummary,
 }
@@ -39,24 +41,19 @@ enum MigrationState {
 }
 
 #[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct LegacyScanSummary {
-    #[serde(rename = "projectsFound")]
     projects_found: usize,
-    #[serde(rename = "aliasesFound")]
     aliases_found: usize,
-    #[serde(rename = "tasksFound")]
     tasks_found: usize,
-    #[serde(rename = "taskDispatchesFound")]
     task_dispatches_found: usize,
-    #[serde(rename = "reviewsFound")]
     reviews_found: usize,
-    #[serde(rename = "reviewRunsFound")]
     review_runs_found: usize,
-    #[serde(rename = "remoteAgentConfigured")]
     remote_agent_configured: bool,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SkippedLegacyRecord {
     kind: String,
     path: String,
@@ -64,24 +61,21 @@ struct SkippedLegacyRecord {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CleanupCandidate {
     path: String,
     reason: String,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MigrationStatus {
     state: MigrationState,
-    #[serde(rename = "requiresMigration")]
     requires_migration: bool,
-    #[serde(rename = "canImport")]
     can_import: bool,
-    #[serde(rename = "legacyDetected")]
     legacy_detected: bool,
     summary: LegacyScanSummary,
-    #[serde(rename = "skippedRecords")]
     skipped_records: Vec<SkippedLegacyRecord>,
-    #[serde(rename = "cleanupCandidates")]
     cleanup_candidates: Vec<CleanupCandidate>,
 }
 
@@ -100,25 +94,16 @@ impl MigrationStatus {
 }
 
 #[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct MigrationImportSummary {
-    #[serde(rename = "importedProjects")]
     imported_projects: usize,
-    #[serde(rename = "importedAliases")]
     imported_aliases: usize,
-    #[serde(rename = "importedTasks")]
     imported_tasks: usize,
-    #[serde(rename = "importedTaskDispatches")]
     imported_task_dispatches: usize,
-    #[serde(rename = "importedReviews")]
     imported_reviews: usize,
-    #[serde(rename = "importedReviewRuns")]
     imported_review_runs: usize,
-    #[serde(rename = "remoteAgentConfigImported")]
     remote_agent_config_imported: bool,
-    #[serde(rename = "copiedSecretFiles")]
     copied_secret_files: Vec<String>,
-    #[serde(rename = "skippedRecords")]
     skipped_records: Vec<SkippedLegacyRecord>,
-    #[serde(rename = "cleanupCandidates")]
     cleanup_candidates: Vec<CleanupCandidate>,
 }

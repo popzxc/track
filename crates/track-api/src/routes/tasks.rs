@@ -14,30 +14,34 @@ use crate::api_error::ApiError;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TaskListQuery {
-    #[serde(rename = "includeClosed")]
     include_closed: Option<bool>,
     project: Option<ProjectId>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TasksResponse {
     tasks: Vec<Task>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DeleteTaskResponse {
     ok: bool,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FollowUpRequestInput {
     request: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DispatchTaskInput {
-    #[serde(rename = "preferredTool", default)]
+    #[serde(default)]
     preferred_tool: Option<RemoteAgentPreferredTool>,
 }
 

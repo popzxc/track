@@ -9,6 +9,7 @@ use crate::AppState;
 
 // TODO: Used elsewhere but shouldn't (probably)
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RunRecordResponse {
     pub(crate) task: Task,
     pub(crate) dispatch: TaskDispatchRecord,
@@ -16,11 +17,13 @@ pub(crate) struct RunRecordResponse {
 
 // TODO: Used elsewhere but shouldn't (probably)
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RunsResponse {
     pub(crate) runs: Vec<RunRecordResponse>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RunsQuery {
     limit: Option<usize>,
 }
