@@ -3,11 +3,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::errors::TrackError;
 use crate::ids::{DispatchId, ProjectId};
+use crate::remote_layout::{invalid_remote_layout, DispatchLayoutKind};
 
-use super::{
-    impl_string_value, parse_dispatch_run_directory, WorkspaceKey, REVIEW_RUN_DIRECTORY_NAME,
-    TASK_RUN_DIRECTORY_NAME,
-};
+use super::{impl_string_value, WorkspaceKey, REVIEW_RUN_DIRECTORY_NAME, TASK_RUN_DIRECTORY_NAME};
 
 /// Absolute remote path to the sidecar directory that stores prompt, schema,
 /// status, and result files for one dispatch attempt.
@@ -78,6 +76,59 @@ impl<'de> Deserialize<'de> for DispatchRunDirectory {
 }
 
 impl_string_value!(DispatchRunDirectory);
+
+fn parse_dispatch_run_directory<'a>(
+    value: &'a str,
+) -> Result<(DispatchLayoutKind, &'a str, &'a str), TrackError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_remote_layout(
+            "Dispatch run directory",
+            "must not be empty.",
+        ));
+    }
+
+    if let Some((prefix, dispatch_id)) =
+        trimmed.rsplit_once(&format!("/{TASK_RUN_DIRECTORY_NAME}/"))
+    {
+        if prefix.is_empty() {
+            return Err(invalid_remote_layout(
+                "Dispatch run directory",
+                "must include a workspace prefix before the dispatch directory.",
+            ));
+        }
+        DispatchId::new(dispatch_id).map_err(|_| {
+            invalid_remote_layout(
+                "Dispatch run directory",
+                "must end with a valid dispatch id under the task run directory.",
+            )
+        })?;
+        return Ok((DispatchLayoutKind::Task, prefix, dispatch_id));
+    }
+
+    if let Some((prefix, dispatch_id)) =
+        trimmed.rsplit_once(&format!("/{REVIEW_RUN_DIRECTORY_NAME}/"))
+    {
+        if prefix.is_empty() {
+            return Err(invalid_remote_layout(
+                "Dispatch run directory",
+                "must include a workspace prefix before the dispatch directory.",
+            ));
+        }
+        DispatchId::new(dispatch_id).map_err(|_| {
+            invalid_remote_layout(
+                "Dispatch run directory",
+                "must end with a valid dispatch id under the review run directory.",
+            )
+        })?;
+        return Ok((DispatchLayoutKind::Review, prefix, dispatch_id));
+    }
+
+    Err(invalid_remote_layout(
+        "Dispatch run directory",
+        "must live under `dispatches/<dispatch-id>` or `review-runs/<dispatch-id>`.",
+    ))
+}
 
 #[cfg(test)]
 mod tests {

@@ -3,8 +3,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::errors::TrackError;
 use crate::ids::DispatchId;
+use crate::remote_layout::{invalid_remote_layout, DispatchLayoutKind};
 
-use super::{impl_string_value, parse_dispatch_branch, REVIEW_BRANCH_PREFIX, TASK_BRANCH_PREFIX};
+use super::{impl_string_value, REVIEW_BRANCH_PREFIX, TASK_BRANCH_PREFIX};
 
 /// Fully qualified Git branch name reserved for one remote dispatch or review
 /// run, for example `track/<dispatch-id>` or `track-review/<dispatch-id>`.
@@ -50,6 +51,41 @@ impl<'de> Deserialize<'de> for DispatchBranch {
 }
 
 impl_string_value!(DispatchBranch);
+
+fn parse_dispatch_branch(value: &str) -> Result<(DispatchLayoutKind, &str), TrackError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_remote_layout(
+            "Dispatch branch",
+            "must not be empty.",
+        ));
+    }
+
+    if let Some(dispatch_id) = trimmed.strip_prefix(TASK_BRANCH_PREFIX) {
+        DispatchId::new(dispatch_id).map_err(|_| {
+            invalid_remote_layout(
+                "Dispatch branch",
+                "must match `track/<dispatch-id>` or `track-review/<dispatch-id>`.",
+            )
+        })?;
+        return Ok((DispatchLayoutKind::Task, dispatch_id));
+    }
+
+    if let Some(dispatch_id) = trimmed.strip_prefix(REVIEW_BRANCH_PREFIX) {
+        DispatchId::new(dispatch_id).map_err(|_| {
+            invalid_remote_layout(
+                "Dispatch branch",
+                "must match `track/<dispatch-id>` or `track-review/<dispatch-id>`.",
+            )
+        })?;
+        return Ok((DispatchLayoutKind::Review, dispatch_id));
+    }
+
+    Err(invalid_remote_layout(
+        "Dispatch branch",
+        "must match `track/<dispatch-id>` or `track-review/<dispatch-id>`.",
+    ))
+}
 
 #[cfg(test)]
 mod tests {

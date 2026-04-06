@@ -3,10 +3,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::errors::TrackError;
 use crate::ids::{DispatchId, ProjectId};
+use crate::remote_layout::{invalid_remote_layout, DispatchLayoutKind};
 
 use super::{
-    impl_string_value, parse_dispatch_layout_path, DispatchRunDirectory, WorkspaceKey,
-    REVIEW_WORKTREE_DIRECTORY_NAME, TASK_WORKTREE_DIRECTORY_NAME,
+    impl_string_value, DispatchRunDirectory, WorkspaceKey, REVIEW_WORKTREE_DIRECTORY_NAME,
+    TASK_WORKTREE_DIRECTORY_NAME,
 };
 
 /// Absolute remote path to the dedicated Git worktree that one dispatch uses
@@ -89,6 +90,57 @@ impl<'de> Deserialize<'de> for DispatchWorktreePath {
 }
 
 impl_string_value!(DispatchWorktreePath);
+
+fn parse_dispatch_layout_path<'a>(
+    value: &'a str,
+    field_name: &str,
+) -> Result<(DispatchLayoutKind, &'a str, &'a str), TrackError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_remote_layout(field_name, "must not be empty."));
+    }
+
+    if let Some((prefix, dispatch_id)) =
+        trimmed.rsplit_once(&format!("/{TASK_WORKTREE_DIRECTORY_NAME}/"))
+    {
+        if prefix.is_empty() {
+            return Err(invalid_remote_layout(
+                field_name,
+                "must include a workspace prefix before the dispatch directory.",
+            ));
+        }
+        DispatchId::new(dispatch_id).map_err(|_| {
+            invalid_remote_layout(
+                field_name,
+                "must end with a valid dispatch id under the task worktree directory.",
+            )
+        })?;
+        return Ok((DispatchLayoutKind::Task, prefix, dispatch_id));
+    }
+
+    if let Some((prefix, dispatch_id)) =
+        trimmed.rsplit_once(&format!("/{REVIEW_WORKTREE_DIRECTORY_NAME}/"))
+    {
+        if prefix.is_empty() {
+            return Err(invalid_remote_layout(
+                field_name,
+                "must include a workspace prefix before the dispatch directory.",
+            ));
+        }
+        DispatchId::new(dispatch_id).map_err(|_| {
+            invalid_remote_layout(
+                field_name,
+                "must end with a valid dispatch id under the review worktree directory.",
+            )
+        })?;
+        return Ok((DispatchLayoutKind::Review, prefix, dispatch_id));
+    }
+
+    Err(invalid_remote_layout(
+        field_name,
+        "must live under `worktrees/<dispatch-id>` or `review-worktrees/<dispatch-id>`.",
+    ))
+}
 
 #[cfg(test)]
 mod tests {
