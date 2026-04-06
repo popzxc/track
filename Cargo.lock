@@ -3038,6 +3038,7 @@ name = "track-remote-agent"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "hex",
  "insta",
  "serde",
  "serde_json",

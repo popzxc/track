@@ -66,7 +66,7 @@ impl ReadDispatchSnapshotsScript {
                     let value = match *presence {
                         "missing" => None,
                         "present" => {
-                            Some(decode_hex_string(columns.get(2).copied().unwrap_or(""))?)
+                            Some(decode_file_from_hex(columns.get(2).copied().unwrap_or(""))?)
                         }
                         _ => {
                             return Err(TrackError::new(
@@ -115,26 +115,16 @@ struct ReadDispatchSnapshotsTemplate<'a> {
     finished_at_file: &'a str,
 }
 
-fn decode_hex_string(hex: &str) -> Result<String, TrackError> {
-    if !hex.len().is_multiple_of(2) {
-        return Err(TrackError::new(
+// The shell report hex-encodes file contents so tabs and newlines cannot break
+// the line-oriented transport format. This helper restores the original text
+// after the report reaches Rust.
+fn decode_file_from_hex(encoded: &str) -> Result<String, TrackError> {
+    let bytes = hex::decode(encoded).map_err(|error| {
+        TrackError::new(
             ErrorCode::RemoteDispatchFailed,
-            "Remote dispatch refresh data is not valid hexadecimal.",
-        ));
-    }
-
-    let mut bytes = Vec::with_capacity(hex.len() / 2);
-    let mut index = 0;
-    while index < hex.len() {
-        let byte = u8::from_str_radix(&hex[index..index + 2], 16).map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Remote dispatch refresh data is not valid hexadecimal: {error}"),
-            )
-        })?;
-        bytes.push(byte);
-        index += 2;
-    }
+            format!("Remote dispatch refresh data is not valid hexadecimal: {error}"),
+        )
+    })?;
 
     String::from_utf8(bytes).map_err(|error| {
         TrackError::new(
