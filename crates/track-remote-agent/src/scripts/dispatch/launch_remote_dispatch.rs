@@ -1,4 +1,5 @@
 use serde::Serialize;
+use track_types::remote_layout::{DispatchRunDirectory, DispatchWorktreePath};
 
 use crate::scripts::remote_path_helpers_shell;
 use crate::template_renderer::render_template;
@@ -21,8 +22,15 @@ impl LaunchRemoteDispatchScript {
         )
     }
 
-    pub(crate) fn arguments(&self, remote_run_directory: &str, worktree_path: &str) -> Vec<String> {
-        vec![remote_run_directory.to_owned(), worktree_path.to_owned()]
+    pub(crate) fn arguments(
+        &self,
+        remote_run_directory: &DispatchRunDirectory,
+        worktree_path: &DispatchWorktreePath,
+    ) -> Vec<String> {
+        vec![
+            remote_run_directory.as_str().to_owned(),
+            worktree_path.as_str().to_owned(),
+        ]
     }
 }
 

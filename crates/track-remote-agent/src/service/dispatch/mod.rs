@@ -239,13 +239,11 @@ impl<'a> RemoteDispatchService<'a> {
                 dispatch_record.follow_up_request.is_some(),
             )?;
 
-            let branch_name_string = branch_name.clone().into_inner();
-            let worktree_path_string = worktree_path.clone().into_inner();
             let prompt = RemoteDispatchPrompt::new(
                 &task.project,
                 &project_metadata,
-                &branch_name_string,
-                &worktree_path_string,
+                &branch_name,
+                &worktree_path,
                 &task.description,
                 dispatch_record.pull_request_url.as_ref(),
                 dispatch_record.follow_up_request.as_deref(),
@@ -969,11 +967,7 @@ fn load_dispatch_snapshots_for_records(
         };
 
         dispatch_ids.push(record.dispatch_id.to_string());
-        run_directories.push(
-            worktree_path
-                .run_directory_for(&record.dispatch_id)
-                .into_inner(),
-        );
+        run_directories.push(worktree_path.run_directory_for(&record.dispatch_id));
     }
 
     if run_directories.is_empty() {
@@ -987,23 +981,16 @@ fn load_dispatch_snapshots_for_records(
 fn derive_remote_run_directory_for_record(
     record: &TaskDispatchRecord,
     remote_agent: &RemoteAgentRuntimeConfig,
-) -> Option<String> {
+) -> Option<DispatchRunDirectory> {
     if let Some(worktree_path) = record.worktree_path.as_ref() {
-        return Some(
-            worktree_path
-                .run_directory_for(&record.dispatch_id)
-                .into_inner(),
-        );
+        return Some(worktree_path.run_directory_for(&record.dispatch_id));
     }
 
-    Some(
-        DispatchRunDirectory::for_task(
-            &remote_agent.workspace_root,
-            &record.project,
-            &record.dispatch_id,
-        )
-        .into_inner(),
-    )
+    Some(DispatchRunDirectory::for_task(
+        &remote_agent.workspace_root,
+        &record.project,
+        &record.dispatch_id,
+    ))
 }
 
 pub(super) fn refresh_dispatch_record_from_snapshot(
@@ -1051,11 +1038,13 @@ pub(super) fn refresh_dispatch_record_from_snapshot(
     ))
 }
 
-pub(super) fn unique_worktree_paths(dispatch_history: &[TaskDispatchRecord]) -> Vec<String> {
+pub(super) fn unique_worktree_paths(
+    dispatch_history: &[TaskDispatchRecord],
+) -> Vec<track_types::remote_layout::DispatchWorktreePath> {
     dispatch_history
         .iter()
         .filter_map(|record| record.worktree_path.as_ref())
-        .map(|path| path.clone().into_inner())
+        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -1064,7 +1053,7 @@ pub(super) fn unique_worktree_paths(dispatch_history: &[TaskDispatchRecord]) -> 
 pub(super) fn unique_run_directories(
     dispatch_history: &[TaskDispatchRecord],
     remote_agent: &RemoteAgentRuntimeConfig,
-) -> Vec<String> {
+) -> Vec<DispatchRunDirectory> {
     dispatch_history
         .iter()
         .filter_map(|record| derive_remote_run_directory_for_record(record, remote_agent))

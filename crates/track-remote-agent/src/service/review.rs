@@ -822,7 +822,6 @@ impl<'a> RemoteReviewService<'a> {
         let branch_names = dispatch_history
             .iter()
             .filter_map(|record| record.branch_name.clone())
-            .map(|branch_name| branch_name.into_inner())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -1063,7 +1062,7 @@ fn load_review_snapshots_for_records(
         };
 
         dispatch_ids.push(record.dispatch_id.to_string());
-        run_directories.push(worktree_path.run_directory().into_inner());
+        run_directories.push(worktree_path.run_directory());
     }
 
     if run_directories.is_empty() {

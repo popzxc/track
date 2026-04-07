@@ -37,6 +37,12 @@ impl DispatchLayoutKind {
 macro_rules! impl_string_value {
     ($name:ident) => {
         impl $name {
+            /// Borrows the underlying string representation without crossing
+            /// an application boundary.
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+
             /// Consumes this strong value at an application boundary and
             /// returns the underlying string representation.
             pub fn into_inner(self) -> String {
@@ -59,6 +65,12 @@ macro_rules! impl_string_value {
         impl PartialEq<String> for $name {
             fn eq(&self, other: &String) -> bool {
                 self.0 == *other
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
             }
         }
     };

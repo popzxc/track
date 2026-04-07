@@ -1,4 +1,5 @@
 use track_types::errors::TrackError;
+use track_types::remote_layout::{DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath};
 use track_types::types::RemoteResetSummary;
 
 use crate::scripts::{
@@ -12,18 +13,18 @@ use crate::types::{RemoteArtifactCleanupCounts, RemoteTaskCleanupMode};
 /// to the requested cleanup policy and reports how much state was reclaimed.
 pub(crate) struct CleanupTaskArtifactsAction<'a> {
     ssh_client: &'a SshClient,
-    checkout_path: &'a str,
-    worktree_paths: &'a [String],
-    run_directories: &'a [String],
+    checkout_path: &'a RemoteCheckoutPath,
+    worktree_paths: &'a [DispatchWorktreePath],
+    run_directories: &'a [DispatchRunDirectory],
     cleanup_mode: RemoteTaskCleanupMode,
 }
 
 impl<'a> CleanupTaskArtifactsAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        checkout_path: &'a str,
-        worktree_paths: &'a [String],
-        run_directories: &'a [String],
+        checkout_path: &'a RemoteCheckoutPath,
+        worktree_paths: &'a [DispatchWorktreePath],
+        run_directories: &'a [DispatchRunDirectory],
         cleanup_mode: RemoteTaskCleanupMode,
     ) -> Self {
         Self {
@@ -51,19 +52,19 @@ impl<'a> CleanupTaskArtifactsAction<'a> {
 /// saved review runs once that review history no longer needs them.
 pub(crate) struct CleanupReviewArtifactsAction<'a> {
     ssh_client: &'a SshClient,
-    checkout_path: &'a str,
-    branch_names: &'a [String],
-    worktree_paths: &'a [String],
-    run_directories: &'a [String],
+    checkout_path: &'a RemoteCheckoutPath,
+    branch_names: &'a [DispatchBranch],
+    worktree_paths: &'a [DispatchWorktreePath],
+    run_directories: &'a [DispatchRunDirectory],
 }
 
 impl<'a> CleanupReviewArtifactsAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        checkout_path: &'a str,
-        branch_names: &'a [String],
-        worktree_paths: &'a [String],
-        run_directories: &'a [String],
+        checkout_path: &'a RemoteCheckoutPath,
+        branch_names: &'a [DispatchBranch],
+        worktree_paths: &'a [DispatchWorktreePath],
+        run_directories: &'a [DispatchRunDirectory],
     ) -> Self {
         Self {
             ssh_client,
@@ -93,16 +94,16 @@ impl<'a> CleanupReviewArtifactsAction<'a> {
 pub(crate) struct CleanupOrphanedRemoteArtifactsAction<'a> {
     ssh_client: &'a SshClient,
     workspace_root: &'a str,
-    kept_worktree_paths: &'a [String],
-    kept_run_directories: &'a [String],
+    kept_worktree_paths: &'a [DispatchWorktreePath],
+    kept_run_directories: &'a [DispatchRunDirectory],
 }
 
 impl<'a> CleanupOrphanedRemoteArtifactsAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
         workspace_root: &'a str,
-        kept_worktree_paths: &'a [String],
-        kept_run_directories: &'a [String],
+        kept_worktree_paths: &'a [DispatchWorktreePath],
+        kept_run_directories: &'a [DispatchRunDirectory],
     ) -> Self {
         Self {
             ssh_client,
@@ -135,11 +136,14 @@ impl<'a> CleanupOrphanedRemoteArtifactsAction<'a> {
 /// runs but no longer have a local reason to stay on the remote machine.
 pub(crate) struct CleanupReviewWorkspaceCachesAction<'a> {
     ssh_client: &'a SshClient,
-    checkout_paths: &'a [String],
+    checkout_paths: &'a [RemoteCheckoutPath],
 }
 
 impl<'a> CleanupReviewWorkspaceCachesAction<'a> {
-    pub(crate) fn new(ssh_client: &'a SshClient, checkout_paths: &'a [String]) -> Self {
+    pub(crate) fn new(
+        ssh_client: &'a SshClient,
+        checkout_paths: &'a [RemoteCheckoutPath],
+    ) -> Self {
         Self {
             ssh_client,
             checkout_paths,
@@ -152,8 +156,8 @@ impl<'a> CleanupReviewWorkspaceCachesAction<'a> {
         }
 
         let script = CleanupReviewWorkspaceCachesScript;
-        self.ssh_client
-            .run_script(&script.render(), self.checkout_paths)?;
+        let arguments = script.arguments(self.checkout_paths);
+        self.ssh_client.run_script(&script.render(), &arguments)?;
 
         Ok(())
     }

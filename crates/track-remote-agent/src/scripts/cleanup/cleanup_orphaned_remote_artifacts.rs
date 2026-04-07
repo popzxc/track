@@ -1,5 +1,6 @@
 use serde::Serialize;
 use track_types::errors::TrackError;
+use track_types::remote_layout::{DispatchRunDirectory, DispatchWorktreePath};
 
 use crate::constants::{
     REMOTE_CODEX_PID_FILE_NAME, REMOTE_LAUNCHER_PID_FILE_NAME, REVIEW_RUN_DIRECTORY_NAME,
@@ -36,13 +37,21 @@ impl CleanupOrphanedRemoteArtifactsScript {
     pub(crate) fn arguments(
         &self,
         workspace_root: &str,
-        kept_worktree_paths: &[String],
-        kept_run_directories: &[String],
+        kept_worktree_paths: &[DispatchWorktreePath],
+        kept_run_directories: &[DispatchRunDirectory],
     ) -> Vec<String> {
         let mut arguments = vec![workspace_root.to_owned()];
-        arguments.extend(kept_worktree_paths.iter().cloned());
+        arguments.extend(
+            kept_worktree_paths
+                .iter()
+                .map(|worktree_path| worktree_path.as_str().to_owned()),
+        );
         arguments.push("--".to_owned());
-        arguments.extend(kept_run_directories.iter().cloned());
+        arguments.extend(
+            kept_run_directories
+                .iter()
+                .map(|run_directory| run_directory.as_str().to_owned()),
+        );
         arguments
     }
 

@@ -1,4 +1,5 @@
 use serde::Serialize;
+use track_types::remote_layout::{DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath};
 
 use crate::constants::{REMOTE_CODEX_PID_FILE_NAME, REMOTE_LAUNCHER_PID_FILE_NAME};
 use crate::scripts::remote_path_helpers_shell;
@@ -25,17 +26,29 @@ impl CleanupReviewArtifactsScript {
 
     pub(crate) fn arguments(
         &self,
-        checkout_path: &str,
-        branch_names: &[String],
-        worktree_paths: &[String],
-        run_directories: &[String],
+        checkout_path: &RemoteCheckoutPath,
+        branch_names: &[DispatchBranch],
+        worktree_paths: &[DispatchWorktreePath],
+        run_directories: &[DispatchRunDirectory],
     ) -> Vec<String> {
-        let mut arguments = vec![checkout_path.to_owned()];
-        arguments.extend(branch_names.iter().cloned());
+        let mut arguments = vec![checkout_path.as_str().to_owned()];
+        arguments.extend(
+            branch_names
+                .iter()
+                .map(|branch_name| branch_name.as_str().to_owned()),
+        );
         arguments.push("--worktrees".to_owned());
-        arguments.extend(worktree_paths.iter().cloned());
+        arguments.extend(
+            worktree_paths
+                .iter()
+                .map(|worktree_path| worktree_path.as_str().to_owned()),
+        );
         arguments.push("--runs".to_owned());
-        arguments.extend(run_directories.iter().cloned());
+        arguments.extend(
+            run_directories
+                .iter()
+                .map(|run_directory| run_directory.as_str().to_owned()),
+        );
         arguments
     }
 }

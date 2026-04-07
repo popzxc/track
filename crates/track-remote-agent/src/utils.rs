@@ -1,15 +1,17 @@
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::remote_layout::DispatchRunDirectory;
+use track_types::remote_layout::{DispatchRunDirectory, DispatchWorktreePath};
 use track_types::types::{ReviewRunRecord, TaskDispatchRecord};
 use track_types::urls::Url;
 
 use track_config::runtime::RemoteAgentRuntimeConfig;
 
-pub(crate) fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord]) -> Vec<String> {
+pub(crate) fn unique_review_worktree_paths(
+    dispatch_history: &[ReviewRunRecord],
+) -> Vec<DispatchWorktreePath> {
     dispatch_history
         .iter()
         .filter_map(|record| record.worktree_path.as_ref())
-        .map(|path| path.clone().into_inner())
+        .cloned()
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -18,12 +20,12 @@ pub(crate) fn unique_review_worktree_paths(dispatch_history: &[ReviewRunRecord])
 pub(crate) fn unique_review_run_directories(
     dispatch_history: &[ReviewRunRecord],
     remote_agent: &RemoteAgentRuntimeConfig,
-) -> Vec<String> {
+) -> Vec<DispatchRunDirectory> {
     dispatch_history
         .iter()
         .filter_map(|record| {
             if let Some(worktree_path) = record.worktree_path.as_ref() {
-                return Some(worktree_path.run_directory().into_inner());
+                return Some(worktree_path.run_directory());
             }
 
             Some(
@@ -32,7 +34,6 @@ pub(crate) fn unique_review_run_directories(
                     &record.workspace_key,
                     &record.dispatch_id,
                 )
-                .into_inner(),
             )
         })
         .collect::<std::collections::BTreeSet<_>>()

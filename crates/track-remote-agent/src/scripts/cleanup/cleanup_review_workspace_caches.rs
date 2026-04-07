@@ -1,4 +1,5 @@
 use serde::Serialize;
+use track_types::remote_layout::RemoteCheckoutPath;
 
 use crate::scripts::remote_path_helpers_shell;
 use crate::template_renderer::render_template;
@@ -18,6 +19,13 @@ impl CleanupReviewWorkspaceCachesScript {
                 path_helpers: remote_path_helpers_shell(),
             },
         )
+    }
+
+    pub(crate) fn arguments(&self, checkout_paths: &[RemoteCheckoutPath]) -> Vec<String> {
+        checkout_paths
+            .iter()
+            .map(|checkout_path| checkout_path.as_str().to_owned())
+            .collect()
     }
 }
 

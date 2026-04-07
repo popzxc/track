@@ -1,5 +1,6 @@
 use serde::Serialize;
 use track_types::errors::{ErrorCode, TrackError};
+use track_types::remote_layout::DispatchRunDirectory;
 
 use crate::constants::{
     REMOTE_FINISHED_AT_FILE_NAME, REMOTE_RESULT_FILE_NAME, REMOTE_STATUS_FILE_NAME,
@@ -29,6 +30,13 @@ impl ReadDispatchSnapshotsScript {
                 finished_at_file: REMOTE_FINISHED_AT_FILE_NAME,
             },
         )
+    }
+
+    pub(crate) fn arguments(&self, run_directories: &[DispatchRunDirectory]) -> Vec<String> {
+        run_directories
+            .iter()
+            .map(|run_directory| run_directory.as_str().to_owned())
+            .collect()
     }
 
     pub(crate) fn parse_report(

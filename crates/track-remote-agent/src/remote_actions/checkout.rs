@@ -1,6 +1,7 @@
 use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::git_remote::GitRemote;
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, RemoteCheckoutPath};
 
 use crate::scripts::{
     CreateReviewWorktreeScript, CreateWorktreeScript, EnsureCheckoutScript,
@@ -14,7 +15,7 @@ pub(crate) struct EnsureCheckoutAction<'a> {
     ssh_client: &'a SshClient,
     metadata: &'a ProjectMetadata,
     repository_name: &'a str,
-    checkout_path: &'a str,
+    checkout_path: &'a RemoteCheckoutPath,
     github_login: &'a str,
 }
 
@@ -23,7 +24,7 @@ impl<'a> EnsureCheckoutAction<'a> {
         ssh_client: &'a SshClient,
         metadata: &'a ProjectMetadata,
         repository_name: &'a str,
-        checkout_path: &'a str,
+        checkout_path: &'a RemoteCheckoutPath,
         github_login: &'a str,
     ) -> Self {
         Self {
@@ -69,19 +70,19 @@ impl<'a> EnsureCheckoutAction<'a> {
 /// own branch and filesystem state without mutating the shared checkout.
 pub(crate) struct CreateWorktreeAction<'a> {
     ssh_client: &'a SshClient,
-    checkout_path: &'a str,
+    checkout_path: &'a RemoteCheckoutPath,
     base_branch: &'a str,
-    branch_name: &'a str,
-    worktree_path: &'a str,
+    branch_name: &'a DispatchBranch,
+    worktree_path: &'a DispatchWorktreePath,
 }
 
 impl<'a> CreateWorktreeAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        checkout_path: &'a str,
+        checkout_path: &'a RemoteCheckoutPath,
         base_branch: &'a str,
-        branch_name: &'a str,
-        worktree_path: &'a str,
+        branch_name: &'a DispatchBranch,
+        worktree_path: &'a DispatchWorktreePath,
     ) -> Self {
         Self {
             ssh_client,
@@ -110,20 +111,20 @@ impl<'a> CreateWorktreeAction<'a> {
 /// inspects the exact code state that the local tracker requested.
 pub(crate) struct CreateReviewWorktreeAction<'a> {
     ssh_client: &'a SshClient,
-    checkout_path: &'a str,
+    checkout_path: &'a RemoteCheckoutPath,
     pull_request_number: u64,
-    branch_name: &'a str,
-    worktree_path: &'a str,
+    branch_name: &'a DispatchBranch,
+    worktree_path: &'a DispatchWorktreePath,
     target_head_oid: Option<&'a str>,
 }
 
 impl<'a> CreateReviewWorktreeAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        checkout_path: &'a str,
+        checkout_path: &'a RemoteCheckoutPath,
         pull_request_number: u64,
-        branch_name: &'a str,
-        worktree_path: &'a str,
+        branch_name: &'a DispatchBranch,
+        worktree_path: &'a DispatchWorktreePath,
         target_head_oid: Option<&'a str>,
     ) -> Self {
         Self {
@@ -155,17 +156,17 @@ impl<'a> CreateReviewWorktreeAction<'a> {
 /// branch context instead of rebuilding the task environment from scratch.
 pub(crate) struct EnsureFollowUpWorktreeAction<'a> {
     ssh_client: &'a SshClient,
-    checkout_path: &'a str,
-    branch_name: &'a str,
-    worktree_path: &'a str,
+    checkout_path: &'a RemoteCheckoutPath,
+    branch_name: &'a DispatchBranch,
+    worktree_path: &'a DispatchWorktreePath,
 }
 
 impl<'a> EnsureFollowUpWorktreeAction<'a> {
     pub(crate) fn new(
         ssh_client: &'a SshClient,
-        checkout_path: &'a str,
-        branch_name: &'a str,
-        worktree_path: &'a str,
+        checkout_path: &'a RemoteCheckoutPath,
+        branch_name: &'a DispatchBranch,
+        worktree_path: &'a DispatchWorktreePath,
     ) -> Self {
         Self {
             ssh_client,

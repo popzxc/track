@@ -32,18 +32,6 @@ impl<'a> RemoteReviewPrompt<'a> {
     }
 
     pub(crate) fn render(&self) -> String {
-        let branch_name = self
-            .dispatch_record
-            .branch_name
-            .clone()
-            .map(|branch_name| branch_name.into_inner())
-            .expect("queued review dispatches should always have a branch name");
-        let worktree_path = self
-            .dispatch_record
-            .worktree_path
-            .clone()
-            .map(|worktree_path| worktree_path.into_inner())
-            .expect("queued review dispatches should always have a worktree path");
         let git_url = self.review.git_url.clone().into_remote_string();
         let template_context = RemoteReviewPromptTemplate {
             pull_request_url: self.review.pull_request_url.as_str(),
@@ -52,8 +40,18 @@ impl<'a> RemoteReviewPrompt<'a> {
             repo_url: self.review.repo_url.as_str(),
             git_url: &git_url,
             base_branch: &self.review.base_branch,
-            prepared_branch: &branch_name,
-            worktree_path: &worktree_path,
+            prepared_branch: self
+                .dispatch_record
+                .branch_name
+                .as_ref()
+                .map(track_types::remote_layout::DispatchBranch::as_str)
+                .expect("queued review dispatches should always have a branch name"),
+            worktree_path: self
+                .dispatch_record
+                .worktree_path
+                .as_ref()
+                .map(track_types::remote_layout::DispatchWorktreePath::as_str)
+                .expect("queued review dispatches should always have a worktree path"),
             target_head_oid: self.dispatch_record.target_head_oid.as_deref(),
             main_user: &self.review.main_user,
             follow_up_request: self.dispatch_record.follow_up_request.as_deref(),

@@ -1,4 +1,5 @@
 use serde::Serialize;
+use track_types::remote_layout::DispatchRunDirectory;
 
 use crate::constants::{
     REMOTE_CODEX_PID_FILE_NAME, REMOTE_FINISHED_AT_FILE_NAME, REMOTE_LAUNCHER_PID_FILE_NAME,
@@ -29,8 +30,8 @@ impl CancelRemoteDispatchScript {
         )
     }
 
-    pub(crate) fn arguments(&self, remote_run_directory: &str) -> Vec<String> {
-        vec![remote_run_directory.to_owned()]
+    pub(crate) fn arguments(&self, remote_run_directory: &DispatchRunDirectory) -> Vec<String> {
+        vec![remote_run_directory.as_str().to_owned()]
     }
 }
 

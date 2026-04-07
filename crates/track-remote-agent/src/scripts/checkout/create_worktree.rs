@@ -1,4 +1,5 @@
 use serde::Serialize;
+use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, RemoteCheckoutPath};
 
 use crate::scripts::remote_path_helpers_shell;
 use crate::template_renderer::render_template;
@@ -26,16 +27,16 @@ impl CreateWorktreeScript {
 
     pub(crate) fn arguments(
         &self,
-        checkout_path: &str,
+        checkout_path: &RemoteCheckoutPath,
         base_branch: &str,
-        branch_name: &str,
-        worktree_path: &str,
+        branch_name: &DispatchBranch,
+        worktree_path: &DispatchWorktreePath,
     ) -> Vec<String> {
         vec![
-            checkout_path.to_owned(),
+            checkout_path.as_str().to_owned(),
             base_branch.to_owned(),
-            branch_name.to_owned(),
-            worktree_path.to_owned(),
+            branch_name.as_str().to_owned(),
+            worktree_path.as_str().to_owned(),
         ]
     }
 }

@@ -1,5 +1,6 @@
 use serde::Serialize;
 use track_projects::project_metadata::ProjectMetadata;
+use track_types::remote_layout::RemoteCheckoutPath;
 
 use crate::scripts::remote_path_helpers_shell;
 use crate::template_renderer::render_template;
@@ -30,15 +31,15 @@ impl EnsureCheckoutScript {
         &self,
         metadata: &ProjectMetadata,
         repository_name: &str,
-        checkout_path: &str,
+        checkout_path: &RemoteCheckoutPath,
         github_login: &str,
     ) -> Vec<String> {
         vec![
-            metadata.repo_url.to_string(),
+            metadata.repo_url.as_str().to_owned(),
             repository_name.to_owned(),
             metadata.git_url.clone().into_remote_string(),
             metadata.base_branch.clone(),
-            checkout_path.to_owned(),
+            checkout_path.as_str().to_owned(),
             github_login.to_owned(),
         ]
     }
