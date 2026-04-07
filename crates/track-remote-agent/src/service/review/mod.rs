@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Condvar, Mutex, OnceLock};
 
 use track_config::paths::collapse_home_path;
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
@@ -27,6 +26,10 @@ use super::remote_agent_services::{
     load_refresh_ssh_client, RefreshRemoteClient, RemoteAgentConfigProvider, RemoteRunOps,
     RemoteWorkspaceOps,
 };
+
+pub(crate) use self::guard::ReviewDispatchStartGuard;
+
+mod guard;
 
 pub struct RemoteReviewService<'a> {
     pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
@@ -944,75 +947,6 @@ impl<'a> RemoteReviewService<'a> {
     }
 }
 
-// =============================================================================
-// Review Run Record Transitions
-// =============================================================================
-//
-// Review runs have the same lifecycle shape as task dispatches, but the field
-// meanings are review-specific. Keeping these transitions as local extension
-// methods makes the service read in terms of review-state changes instead of
-// field-by-field mutation.
-trait ReviewRunRecordExt {
-    fn into_preparing(self, summary: &str) -> Self;
-    fn into_running(self) -> Self;
-    fn into_failed(self, error_message: String) -> Self;
-    fn into_canceled_from_ui(self) -> Self;
-    fn into_locally_finalized(
-        self,
-        status: DispatchStatus,
-        summary: &str,
-        error_message: Option<&str>,
-    ) -> Self;
-}
-
-impl ReviewRunRecordExt for ReviewRunRecord {
-    fn into_preparing(mut self, summary: &str) -> Self {
-        self.status = DispatchStatus::Preparing;
-        self.summary = Some(summary.to_owned());
-        self.updated_at = now_utc();
-        self.finished_at = None;
-        self.error_message = None;
-        self
-    }
-
-    fn into_running(mut self) -> Self {
-        self.status = DispatchStatus::Running;
-        self.updated_at = now_utc();
-        self.finished_at = None;
-        self.summary = Some("The remote agent is reviewing the prepared pull request.".to_owned());
-        self.error_message = None;
-        self
-    }
-
-    fn into_failed(mut self, error_message: String) -> Self {
-        self.status = DispatchStatus::Failed;
-        self.updated_at = now_utc();
-        self.finished_at = Some(self.updated_at);
-        self.error_message = Some(error_message);
-        self
-    }
-
-    fn into_canceled_from_ui(self) -> Self {
-        self.into_locally_finalized(DispatchStatus::Canceled, "Canceled from the web UI.", None)
-    }
-
-    fn into_locally_finalized(
-        mut self,
-        status: DispatchStatus,
-        summary: &str,
-        error_message: Option<&str>,
-    ) -> Self {
-        let finished_at = now_utc();
-        self.status = status;
-        self.updated_at = finished_at;
-        self.finished_at = Some(finished_at);
-        self.summary = Some(summary.to_owned());
-        self.notes = None;
-        self.error_message = error_message.map(ToOwned::to_owned);
-        self
-    }
-}
-
 fn review_dispatch_not_found<'a>(
     review_id: &'a str,
     detail: &'a str,
@@ -1071,61 +1005,4 @@ fn load_review_snapshots_for_records(
 
     let snapshots = RemoteRunOps::new(ssh_client).read_snapshots(&run_directories)?;
     Ok(dispatch_ids.into_iter().zip(snapshots).collect())
-}
-
-#[derive(Debug, Default)]
-struct ReviewDispatchStartGate {
-    active_review_ids: Mutex<BTreeSet<String>>,
-    wake_waiters: Condvar,
-}
-
-#[derive(Debug)]
-pub(crate) struct ReviewDispatchStartGuard {
-    review_id: String,
-}
-
-impl ReviewDispatchStartGuard {
-    pub(crate) fn acquire(review_id: &str) -> Self {
-        let gate = review_dispatch_start_gate();
-        let mut active_review_ids = gate
-            .active_review_ids
-            .lock()
-            .expect("review dispatch start gate should not be poisoned");
-
-        while active_review_ids.contains(review_id) {
-            active_review_ids = gate
-                .wake_waiters
-                .wait(active_review_ids)
-                .expect("review dispatch start gate should not be poisoned");
-        }
-
-        active_review_ids.insert(review_id.to_owned());
-
-        Self {
-            review_id: review_id.to_owned(),
-        }
-    }
-}
-
-impl Drop for ReviewDispatchStartGuard {
-    fn drop(&mut self) {
-        let gate = review_dispatch_start_gate();
-        let mut active_review_ids = gate
-            .active_review_ids
-            .lock()
-            .expect("review dispatch start gate should not be poisoned");
-        active_review_ids.remove(&self.review_id);
-        gate.wake_waiters.notify_all();
-    }
-}
-
-fn review_dispatch_start_gate() -> &'static ReviewDispatchStartGate {
-    static GATE: OnceLock<ReviewDispatchStartGate> = OnceLock::new();
-
-    // Reviews are now follow-up capable, so the same "check for active work,
-    // then persist a preparing record" race that tasks already guard against
-    // applies here too. Keeping a dedicated gate per review id preserves the
-    // review domain boundary without forcing the task flow to share review-only
-    // coordination state.
-    GATE.get_or_init(ReviewDispatchStartGate::default)
 }

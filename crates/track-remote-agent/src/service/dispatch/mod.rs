@@ -34,7 +34,7 @@ use super::remote_agent_services::{
 };
 
 pub(crate) use self::guard::TaskDispatchStartGuard;
-use self::record_ext::{first_follow_up_line, TaskDispatchRecordExt};
+use self::record_ext::first_follow_up_line;
 
 mod guard;
 mod record_ext;

@@ -5,6 +5,7 @@ use crate::errors::{ErrorCode, TrackError};
 use crate::git_remote::GitRemote;
 use crate::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use crate::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
+use crate::time_utils::now_utc;
 use crate::urls::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -376,6 +377,52 @@ impl TaskDispatchRecord {
         self.error_message = Some(error_message.into());
         self
     }
+
+    pub fn into_preparing(mut self, summary: &str) -> Self {
+        self.status = DispatchStatus::Preparing;
+        self.summary = Some(summary.to_owned());
+        self.updated_at = now_utc();
+        self.finished_at = None;
+        self.error_message = None;
+        self
+    }
+
+    pub fn into_running(mut self) -> Self {
+        self.status = DispatchStatus::Running;
+        self.updated_at = now_utc();
+        self.finished_at = None;
+        self.summary = Some("The remote agent is working in the prepared environment.".to_owned());
+        self.error_message = None;
+        self
+    }
+
+    pub fn into_failed(mut self, error_message: String) -> Self {
+        self.status = DispatchStatus::Failed;
+        self.updated_at = now_utc();
+        self.finished_at = Some(self.updated_at);
+        self.error_message = Some(error_message);
+        self
+    }
+
+    pub fn into_canceled_from_ui(self) -> Self {
+        self.into_locally_finalized(DispatchStatus::Canceled, "Canceled from the web UI.", None)
+    }
+
+    pub fn into_locally_finalized(
+        mut self,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Self {
+        let finished_at = now_utc();
+        self.status = status;
+        self.updated_at = finished_at;
+        self.finished_at = Some(finished_at);
+        self.summary = Some(summary.to_owned());
+        self.notes = None;
+        self.error_message = error_message.map(ToOwned::to_owned);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,6 +584,52 @@ impl ReviewRunRecord {
         self.updated_at = refreshed_at;
         self.finished_at = Some(finished_at);
         self.error_message = Some(error_message.into());
+        self
+    }
+
+    pub fn into_preparing(mut self, summary: &str) -> Self {
+        self.status = DispatchStatus::Preparing;
+        self.summary = Some(summary.to_owned());
+        self.updated_at = now_utc();
+        self.finished_at = None;
+        self.error_message = None;
+        self
+    }
+
+    pub fn into_running(mut self) -> Self {
+        self.status = DispatchStatus::Running;
+        self.updated_at = now_utc();
+        self.finished_at = None;
+        self.summary = Some("The remote agent is reviewing the prepared pull request.".to_owned());
+        self.error_message = None;
+        self
+    }
+
+    pub fn into_failed(mut self, error_message: String) -> Self {
+        self.status = DispatchStatus::Failed;
+        self.updated_at = now_utc();
+        self.finished_at = Some(self.updated_at);
+        self.error_message = Some(error_message);
+        self
+    }
+
+    pub fn into_canceled_from_ui(self) -> Self {
+        self.into_locally_finalized(DispatchStatus::Canceled, "Canceled from the web UI.", None)
+    }
+
+    pub fn into_locally_finalized(
+        mut self,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Self {
+        let finished_at = now_utc();
+        self.status = status;
+        self.updated_at = finished_at;
+        self.finished_at = Some(finished_at);
+        self.summary = Some(summary.to_owned());
+        self.notes = None;
+        self.error_message = error_message.map(ToOwned::to_owned);
         self
     }
 }
