@@ -52,12 +52,19 @@ db-prepare:
 install-cli:
   {{cargo}} install --path crates/track-cli --force --locked
 
+# Install the CLI from the current checkout (CUDA).
+install-cli-cuda:
+  {{cargo}} install --path crates/track-cli --features cuda --force --locked
+
 # Start the repository-local Docker stack.
 install-docker:
   TRACK_UID=${TRACK_UID:-$(id -u)} TRACK_GID=${TRACK_GID:-$(id -g)} docker compose up --build -d
 
 # Install the CLI and start the local Docker stack.
 install-all: install-cli install-docker
+
+# Install the CLI and start the local Docker stack (CUDA).
+install-all-cuda: install-cli-cuda install-docker
 
 # Run Rust tests except the SSH-backed integration crate.
 test-rust:
