@@ -31,6 +31,7 @@ use crate::fixture::RemoteFixture;
 // precisely while still exercising the production router and background work.
 pub struct ApiHarness {
     app: axum::Router,
+    config_service: Arc<RemoteAgentConfigService>,
     database: DatabaseContext,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
@@ -82,7 +83,7 @@ impl ApiHarness {
 
         let app = build_app(
             AppState {
-                config_service,
+                config_service: config_service.clone(),
                 database: database.clone(),
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
@@ -91,6 +92,7 @@ impl ApiHarness {
 
         Self {
             app,
+            config_service,
             database,
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
@@ -122,6 +124,20 @@ impl ApiHarness {
             .await
             .expect("task should be created")
             .task
+    }
+
+    pub fn database(&self) -> DatabaseContext {
+        self.database.clone()
+    }
+
+    pub async fn remote_agent_runtime_config(
+        &self,
+    ) -> track_config::runtime::RemoteAgentRuntimeConfig {
+        self.config_service
+            .load_remote_agent_runtime_config()
+            .await
+            .expect("remote-agent runtime config should load")
+            .expect("remote-agent runtime config should exist")
     }
 
     pub async fn dispatch_task(&self, task_id: &str) -> serde_json::Value {

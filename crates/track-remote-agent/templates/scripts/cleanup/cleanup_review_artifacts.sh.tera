@@ -25,6 +25,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 RUN_DIRECTORIES=("$@")
+WORKTREES_REMOVED=0
+RUN_DIRECTORIES_REMOVED=0
 
 kill_if_running() {
   PID="$1"
@@ -55,6 +57,7 @@ for RAW_RUN_DIR in "${RUN_DIRECTORIES[@]}"; do
 
   if [ -e "$RUN_DIR" ]; then
     rm -rf "$RUN_DIR"
+    RUN_DIRECTORIES_REMOVED=$((RUN_DIRECTORIES_REMOVED + 1))
   fi
 done
 
@@ -67,6 +70,7 @@ for RAW_WORKTREE_PATH in "${WORKTREE_PATHS[@]}"; do
 
   if [ -e "$WORKTREE_PATH" ]; then
     rm -rf "$WORKTREE_PATH"
+    WORKTREES_REMOVED=$((WORKTREES_REMOVED + 1))
   fi
 done
 
@@ -79,3 +83,7 @@ done
 if [ -d "$CHECKOUT_PATH/.git" ]; then
   git -C "$CHECKOUT_PATH" worktree prune >&2 || true
 fi
+
+printf '{"worktreesRemoved":%s,"runDirectoriesRemoved":%s}\n' \
+  "$WORKTREES_REMOVED" \
+  "$RUN_DIRECTORIES_REMOVED"

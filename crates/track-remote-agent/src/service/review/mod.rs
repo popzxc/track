@@ -1,5 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use track_config::paths::collapse_home_path;
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::database::DatabaseContext;
@@ -14,18 +12,15 @@ use track_types::types::{
     CreateReviewInput, DispatchStatus, RemoteAgentReviewOutcome, ReviewRecord, ReviewRunRecord,
 };
 
-use crate::constants::{PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME};
-use crate::prompts::RemoteReviewPrompt;
-use crate::remote_actions::FetchPullRequestMetadataAction;
-use crate::schemas::RemoteReviewSchema;
-use crate::ssh::SshClient;
-use crate::types::{ClaudeStructuredOutputEnvelope, RemoteDispatchSnapshot};
-use crate::utils::{unique_review_run_directories, unique_review_worktree_paths};
-
 use super::remote_agent_services::{
-    load_refresh_ssh_client, RefreshRemoteClient, RemoteAgentConfigProvider, RemoteRunOps,
-    RemoteWorkspaceOps,
+    load_refresh_remote_workspace, RefreshRemoteWorkspace, RemoteAgentConfigProvider,
 };
+use crate::constants::PREPARING_STALE_AFTER;
+use crate::prompts::RemoteReviewPrompt;
+use crate::schemas::RemoteReviewSchema;
+use crate::types::ClaudeStructuredOutputEnvelope;
+use crate::RemoteRunSnapshotView;
+use crate::RemoteWorkspace;
 
 pub(crate) use self::guard::ReviewDispatchStartGuard;
 
@@ -62,10 +57,10 @@ impl<'a> RemoteReviewService<'a> {
     ) -> Result<(ReviewRecord, ReviewRunRecord), TrackError> {
         let validated_input = input.validate();
         let (remote_agent, review_settings) = self.load_review_runtime_prerequisites().await?;
-        let ssh_client = SshClient::new(&remote_agent)?;
-        let pull_request_metadata =
-            FetchPullRequestMetadataAction::new(&ssh_client, &validated_input.pull_request_url)
-                .execute()?;
+        let workspace = self.remote_workspace(remote_agent.clone())?;
+        let pull_request_metadata = workspace
+            .projects()
+            .fetch_pull_request_metadata(&validated_input.pull_request_url)?;
         let initial_target_head_oid = pull_request_metadata.head_oid.clone();
         let project_match = self
             .project_repository()
@@ -79,7 +74,7 @@ impl<'a> RemoteReviewService<'a> {
         let workspace_key = project_match
             .as_ref()
             .map(|project| project.canonical_name.as_workspace_key())
-            .unwrap_or_else(|| pull_request_metadata.workspace_key());
+            .unwrap_or_else(|| pull_request_metadata.workspace_key.clone());
         let review_timestamp = now_utc();
         let mut review_id = ReviewId::new(
             TaskId::unique(
@@ -195,9 +190,10 @@ impl<'a> RemoteReviewService<'a> {
         self.ensure_no_blocking_active_review_dispatch(review_id)
             .await?;
 
-        let ssh_client = SshClient::new(&remote_agent)?;
-        let pull_request_metadata =
-            FetchPullRequestMetadataAction::new(&ssh_client, &review.pull_request_url).execute()?;
+        let workspace = self.remote_workspace(remote_agent.clone())?;
+        let pull_request_metadata = workspace
+            .projects()
+            .fetch_pull_request_metadata(&review.pull_request_url)?;
         let previous_updated_at = review.updated_at;
         review.updated_at = now_utc();
         self.review_repository().save_review(&review).await?;
@@ -225,7 +221,8 @@ impl<'a> RemoteReviewService<'a> {
         mut dispatch_record: ReviewRunRecord,
     ) -> Result<ReviewRunRecord, TrackError> {
         if let Some(existing_record) = self
-            .load_saved_review_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)
+            .review_dispatch_repository()
+            .get_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)
             .await?
         {
             if !existing_record.status.is_active() {
@@ -237,11 +234,11 @@ impl<'a> RemoteReviewService<'a> {
             .worktree_path
             .clone()
             .expect("queued review dispatches should store a worktree path");
-        let branch_name = dispatch_record
+        let _branch_name = dispatch_record
             .branch_name
             .clone()
             .expect("queued review dispatches should store a branch name");
-        let remote_run_directory = worktree_path.run_directory();
+        let _remote_run_directory = worktree_path.run_directory();
 
         let launch_result = async {
             if !self
@@ -256,9 +253,7 @@ impl<'a> RemoteReviewService<'a> {
             let (remote_agent, review) = self
                 .load_review_dispatch_prerequisites(&dispatch_record.review_id)
                 .await?;
-            let ssh_client = SshClient::new(&remote_agent)?;
-            let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-            let runner = RemoteRunOps::new(&ssh_client);
+            let workspace = self.remote_workspace(remote_agent)?;
 
             if !self
                 .save_review_preparing_phase(
@@ -269,7 +264,7 @@ impl<'a> RemoteReviewService<'a> {
             {
                 return Ok::<(), TrackError>(());
             }
-            let checkout_path = workspace.ensure_review_checkout(&review)?;
+            let checkout_path = workspace.projects().ensure_review_checkout(&review)?;
 
             if !self
                 .save_review_preparing_phase(&mut dispatch_record, "Preparing the review worktree.")
@@ -277,11 +272,10 @@ impl<'a> RemoteReviewService<'a> {
             {
                 return Ok::<(), TrackError>(());
             }
-            workspace.prepare_review_worktree(
+            workspace.review_runs().prepare_worktree(
+                &dispatch_record,
                 &checkout_path,
                 review.pull_request_number,
-                &branch_name,
-                &worktree_path,
                 dispatch_record.target_head_oid.as_deref(),
             )?;
 
@@ -306,17 +300,17 @@ impl<'a> RemoteReviewService<'a> {
             {
                 return Ok::<(), TrackError>(());
             }
-            runner.upload_prompt_and_schema(
-                &remote_run_directory.join(REMOTE_PROMPT_FILE_NAME),
-                &prompt,
-                &remote_run_directory.join(REMOTE_SCHEMA_FILE_NAME),
-                &schema,
-            )?;
+            workspace
+                .review_runs()
+                .upload_run_files(&dispatch_record, &prompt, &schema)?;
 
-            if !self
-                .dispatch_is_still_active(&dispatch_record.review_id, &dispatch_record.dispatch_id)
+            let dispatch_is_still_active = self
+                .review_dispatch_repository()
+                .get_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)
                 .await?
-            {
+                .map(|record| record.status.is_active())
+                .unwrap_or(false);
+            if !dispatch_is_still_active {
                 return Ok::<(), TrackError>(());
             }
 
@@ -329,11 +323,7 @@ impl<'a> RemoteReviewService<'a> {
             {
                 return Ok(());
             }
-            runner.launch(
-                &remote_run_directory,
-                &worktree_path,
-                dispatch_record.preferred_tool,
-            )?;
+            workspace.review_runs().launch(&dispatch_record)?;
 
             Ok(())
         }
@@ -342,10 +332,8 @@ impl<'a> RemoteReviewService<'a> {
         match launch_result {
             Ok(()) => {
                 if let Some(existing_record) = self
-                    .load_saved_review_dispatch(
-                        &dispatch_record.review_id,
-                        &dispatch_record.dispatch_id,
-                    )
+                    .review_dispatch_repository()
+                    .get_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)
                     .await?
                 {
                     if !existing_record.status.is_active() {
@@ -486,9 +474,11 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         records: Vec<ReviewRunRecord>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let ssh_client = match load_refresh_ssh_client(self.config_service).await? {
-            RefreshRemoteClient::Available(ssh_client) => ssh_client,
-            RefreshRemoteClient::UnavailableLocally { error_message } => {
+        let workspace = match load_refresh_remote_workspace(self.config_service, self.database)
+            .await?
+        {
+            RefreshRemoteWorkspace::Available(workspace) => workspace,
+            RefreshRemoteWorkspace::UnavailableLocally { error_message } => {
                 return self
                     .release_active_review_dispatches_after_reconciliation_loss(
                         records,
@@ -498,7 +488,9 @@ impl<'a> RemoteReviewService<'a> {
                     .await;
             }
         };
-        let snapshots_by_dispatch_id = load_review_snapshots_for_records(&ssh_client, &records)?;
+        let snapshots_by_dispatch_id = workspace
+            .review_runs()
+            .load_snapshots_for_active_records(&records)?;
         let mut refreshed_records = Vec::with_capacity(records.len());
         for record in records {
             if !record.status.is_active() {
@@ -571,7 +563,7 @@ impl<'a> RemoteReviewService<'a> {
     pub(super) fn refresh_review_dispatch_record_from_snapshot(
         &self,
         record: ReviewRunRecord,
-        snapshot: &RemoteDispatchSnapshot,
+        snapshot: &RemoteRunSnapshotView,
     ) -> Result<ReviewRunRecord, TrackError> {
         if snapshot.is_missing() {
             if let Some(updated) = record
@@ -709,35 +701,14 @@ impl<'a> RemoteReviewService<'a> {
         Ok(dispatch_record)
     }
 
-    async fn load_saved_review_dispatch(
-        &self,
-        review_id: &ReviewId,
-        dispatch_id: &DispatchId,
-    ) -> Result<Option<ReviewRunRecord>, TrackError> {
-        self.review_dispatch_repository()
-            .get_dispatch(review_id, dispatch_id)
-            .await
-    }
-
-    async fn dispatch_is_still_active(
-        &self,
-        review_id: &ReviewId,
-        dispatch_id: &DispatchId,
-    ) -> Result<bool, TrackError> {
-        Ok(self
-            .load_saved_review_dispatch(review_id, dispatch_id)
-            .await?
-            .map(|record| record.status.is_active())
-            .unwrap_or(false))
-    }
-
     async fn save_review_preparing_phase(
         &self,
         dispatch_record: &mut ReviewRunRecord,
         summary: &str,
     ) -> Result<bool, TrackError> {
         if let Some(saved_record) = self
-            .load_saved_review_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)
+            .review_dispatch_repository()
+            .get_dispatch(&dispatch_record.review_id, &dispatch_record.dispatch_id)
             .await?
         {
             if !saved_record.status.is_active() {
@@ -782,9 +753,9 @@ impl<'a> RemoteReviewService<'a> {
         let Some(worktree_path) = dispatch_record.worktree_path.as_ref() else {
             return Ok(());
         };
-        let remote_run_directory = worktree_path.run_directory();
-        let ssh_client = SshClient::new(&remote_agent)?;
-        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory)
+        let workspace = self.remote_workspace(remote_agent)?;
+        let _ = worktree_path;
+        workspace.review_runs().cancel(dispatch_record).map(|_| ())
     }
 
     async fn finalize_review_dispatch_locally(
@@ -817,24 +788,11 @@ impl<'a> RemoteReviewService<'a> {
         let remote_agent = self
             .load_remote_agent_for_review_cleanup(&review.id)
             .await?;
-        let ssh_client = SshClient::new(&remote_agent)?;
-        let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-        let checkout_path = workspace.resolve_checkout_path(&review.workspace_key)?;
-        let worktree_paths = unique_review_worktree_paths(dispatch_history);
-        let run_directories = unique_review_run_directories(dispatch_history, &remote_agent);
-        let branch_names = dispatch_history
-            .iter()
-            .filter_map(|record| record.branch_name.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        workspace.cleanup_review_artifacts(
-            &checkout_path,
-            &branch_names,
-            &worktree_paths,
-            &run_directories,
-        )
+        let workspace = self.remote_workspace(remote_agent)?;
+        workspace
+            .review_runs()
+            .cleanup(review, dispatch_history)
+            .map(|_| ())
     }
 
     // =============================================================================
@@ -945,6 +903,13 @@ impl<'a> RemoteReviewService<'a> {
 
         Ok(remote_agent)
     }
+
+    fn remote_workspace(
+        &self,
+        remote_agent: RemoteAgentRuntimeConfig,
+    ) -> Result<RemoteWorkspace, TrackError> {
+        RemoteWorkspace::new(remote_agent, self.database.clone())
+    }
 }
 
 fn review_dispatch_not_found<'a>(
@@ -977,32 +942,4 @@ pub(super) fn select_previous_submitted_review_run<'a>(
             && record.review_submitted
             && (record.github_review_url.is_some() || record.github_review_id.is_some())
     })
-}
-
-fn load_review_snapshots_for_records(
-    ssh_client: &SshClient,
-    records: &[ReviewRunRecord],
-) -> Result<BTreeMap<String, RemoteDispatchSnapshot>, TrackError> {
-    let mut dispatch_ids = Vec::new();
-    let mut run_directories = Vec::new();
-
-    for record in records {
-        if !record.status.is_active() {
-            continue;
-        }
-
-        let Some(worktree_path) = record.worktree_path.as_ref() else {
-            continue;
-        };
-
-        dispatch_ids.push(record.dispatch_id.to_string());
-        run_directories.push(worktree_path.run_directory());
-    }
-
-    if run_directories.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    let snapshots = RemoteRunOps::new(ssh_client).read_snapshots(&run_directories)?;
-    Ok(dispatch_ids.into_iter().zip(snapshots).collect())
 }

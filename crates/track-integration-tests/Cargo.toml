@@ -13,6 +13,7 @@ track-api = { workspace = true }
 track-config = { workspace = true }
 track-dal = { workspace = true }
 track-projects = { workspace = true }
+track-remote-agent = { workspace = true }
 track-types = { workspace = true }
 
 [dev-dependencies]

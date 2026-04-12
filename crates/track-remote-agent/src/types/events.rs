@@ -4,7 +4,7 @@ use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::TaskDispatchRecord;
 use track_types::urls::Url;
 
-use crate::types::GithubPullRequestReviewState;
+use crate::RemotePullRequestReviewState;
 
 /// Summarizes one reconciliation pass over saved review follow-up state.
 ///
@@ -48,7 +48,7 @@ impl RemoteReviewFollowUpEvent {
         detail: impl Into<String>,
         dispatch_record: &TaskDispatchRecord,
         reviewer: &str,
-        pull_request_state: Option<&GithubPullRequestReviewState>,
+        pull_request_state: Option<&RemotePullRequestReviewState>,
     ) -> Self {
         let latest_review_state = pull_request_state
             .and_then(|state| state.latest_eligible_review.as_ref())

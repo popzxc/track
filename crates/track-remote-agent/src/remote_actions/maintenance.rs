@@ -1,5 +1,7 @@
 use track_types::errors::TrackError;
-use track_types::remote_layout::{DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath};
+use track_types::remote_layout::{
+    DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath,
+};
 use track_types::types::RemoteResetSummary;
 
 use crate::scripts::{
@@ -75,7 +77,7 @@ impl<'a> CleanupReviewArtifactsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
+    pub(crate) fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
         let script = CleanupReviewArtifactsScript;
         let arguments = script.arguments(
             self.checkout_path,
@@ -83,9 +85,9 @@ impl<'a> CleanupReviewArtifactsAction<'a> {
             self.worktree_paths,
             self.run_directories,
         );
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
 
-        Ok(())
+        script.parse_report(&report)
     }
 }
 
@@ -140,10 +142,7 @@ pub(crate) struct CleanupReviewWorkspaceCachesAction<'a> {
 }
 
 impl<'a> CleanupReviewWorkspaceCachesAction<'a> {
-    pub(crate) fn new(
-        ssh_client: &'a SshClient,
-        checkout_paths: &'a [RemoteCheckoutPath],
-    ) -> Self {
+    pub(crate) fn new(ssh_client: &'a SshClient, checkout_paths: &'a [RemoteCheckoutPath]) -> Self {
         Self {
             ssh_client,
             checkout_paths,

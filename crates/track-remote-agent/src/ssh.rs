@@ -26,6 +26,16 @@ pub(crate) enum ScriptOutput {
 
 impl SshClient {
     pub(crate) fn new(config: &RemoteAgentRuntimeConfig) -> Result<Self, TrackError> {
+        if !config.managed_key_path.exists() {
+            return Err(TrackError::new(
+                ErrorCode::RemoteAgentNotConfigured,
+                format!(
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task.",
+                    collapse_home_path(&config.managed_key_path)
+                ),
+            ));
+        }
+
         if let Some(parent_directory) = config.managed_known_hosts_path.parent() {
             fs::create_dir_all(parent_directory).map_err(|error| {
                 TrackError::new(

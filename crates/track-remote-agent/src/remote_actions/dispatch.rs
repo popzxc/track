@@ -8,7 +8,7 @@ use crate::scripts::{
     RemoteAgentLauncherScript,
 };
 use crate::ssh::SshClient;
-use crate::types::RemoteDispatchSnapshot;
+use crate::RemoteRunSnapshotView;
 
 /// Publishes the remote launcher and starts one agent run inside a prepared
 /// run directory and worktree.
@@ -97,16 +97,14 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<Vec<RemoteDispatchSnapshot>, TrackError> {
+    pub(crate) fn execute(&self) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
         if self.run_directories.is_empty() {
             return Ok(Vec::new());
         }
 
         let script = ReadDispatchSnapshotsScript;
         let arguments = script.arguments(self.run_directories);
-        let report = self
-            .ssh_client
-            .run_script(&script.render(), &arguments)?;
+        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
 
         script.parse_report(&report)
     }

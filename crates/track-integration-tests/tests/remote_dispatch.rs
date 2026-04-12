@@ -84,10 +84,6 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
         .ends_with(&format!("/project-a/worktrees/{dispatch_id}")));
 
     let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
-    let registry_contents =
-        fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
-    assert!(registry_contents.contains("\"project-a\""));
-
     let remote_status = fixture.read_remote_file(&format!("{remote_run_directory}/status.txt"));
     assert_eq!(remote_status.trim(), "completed");
 
@@ -974,7 +970,6 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
     assert!(fixture.remote_path_exists("/home/track/workspace/project-a"));
     assert!(fixture.remote_path_exists(&original_worktree_path));
     assert!(fixture.remote_path_exists(&original_run_directory));
-    assert!(fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
     assert!(harness.task_exists(&task.id).await);
     assert!(harness.dispatch_history_exists(&task.id).await);
 
@@ -986,12 +981,9 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
             .expect("reset summary should include workspaceEntriesRemoved")
             >= 1
     );
-    assert_eq!(reset_summary["registryRemoved"], true);
-
     assert!(!fixture.remote_path_exists("/home/track/workspace/project-a"));
     assert!(!fixture.remote_path_exists(&original_worktree_path));
     assert!(!fixture.remote_path_exists(&original_run_directory));
-    assert!(!fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
     assert!(harness.task_exists(&task.id).await);
     assert!(harness.dispatch_history_exists(&task.id).await);
 
@@ -1021,7 +1013,6 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
     assert!(fixture.remote_path_exists("/home/track/workspace/project-a"));
     assert!(fixture.remote_path_exists(&second_worktree_path));
     assert!(fixture.remote_path_exists(&second_run_directory));
-    assert!(fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1215,11 +1206,6 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         .as_str()
         .expect("project-b task should have a worktree path")
         .contains("/project-b/worktrees/"));
-
-    let registry_contents =
-        fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
-    assert!(registry_contents.contains("\"project-a\""));
-    assert!(registry_contents.contains("\"project-b\""));
 
     assert_remote_dispatch_artifacts(
         &fixture,

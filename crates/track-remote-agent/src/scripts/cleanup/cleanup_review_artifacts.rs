@@ -1,9 +1,13 @@
 use serde::Serialize;
-use track_types::remote_layout::{DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::remote_layout::{
+    DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath,
+};
 
 use crate::constants::{REMOTE_CODEX_PID_FILE_NAME, REMOTE_LAUNCHER_PID_FILE_NAME};
 use crate::scripts::remote_path_helpers_shell;
 use crate::template_renderer::render_template;
+use crate::types::{RemoteArtifactCleanupCounts, RemoteArtifactCleanupReport};
 
 const CLEANUP_REVIEW_ARTIFACTS_TEMPLATE: &str =
     include_str!("../../../templates/scripts/cleanup/cleanup_review_artifacts.sh.tera");
@@ -50,6 +54,20 @@ impl CleanupReviewArtifactsScript {
                 .map(|run_directory| run_directory.as_str().to_owned()),
         );
         arguments
+    }
+
+    pub(crate) fn parse_report(
+        &self,
+        report: &str,
+    ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+        serde_json::from_str::<RemoteArtifactCleanupReport>(report)
+            .map(Into::into)
+            .map_err(|error| {
+                TrackError::new(
+                    ErrorCode::RemoteDispatchFailed,
+                    format!("Remote review cleanup report is not valid JSON: {error}"),
+                )
+            })
     }
 }
 

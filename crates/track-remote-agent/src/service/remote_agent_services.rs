@@ -8,37 +8,21 @@ use track_dal::project_repository::ProjectRepository;
 use track_dal::review_dispatch_repository::ReviewDispatchRepository;
 use track_dal::review_repository::ReviewRepository;
 use track_dal::task_repository::FileTaskRepository;
-use track_projects::project_metadata::ProjectMetadata;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::remote_layout::{
-    DispatchBranch, DispatchRunDirectory, DispatchWorktreePath, RemoteCheckoutPath, WorkspaceKey,
-};
 use track_types::time_utils::format_iso_8601_millis;
 use track_types::types::{
-    DispatchStatus, RemoteAgentPreferredTool, RemoteCleanupSummary, RemoteResetSummary,
-    ReviewRecord, Status, TaskDispatchRecord,
+    DispatchStatus, RemoteCleanupSummary, RemoteResetSummary, Status, TaskDispatchRecord,
 };
 
 use crate::prompts::RemoteDispatchPrompt;
-use crate::remote_actions::{
-    CancelRemoteDispatchAction, CleanupOrphanedRemoteArtifactsAction, CleanupReviewArtifactsAction,
-    CleanupReviewWorkspaceCachesAction, CleanupTaskArtifactsAction, CreateReviewWorktreeAction,
-    CreateWorktreeAction, EnsureCheckoutAction, EnsureFollowUpWorktreeAction,
-    FetchGithubLoginAction, FetchPullRequestReviewStateAction, LaunchRemoteDispatchAction,
-    LoadRemoteRegistryAction, PostPullRequestCommentAction, ReadDispatchSnapshotsAction,
-    ResetWorkspaceAction, UploadRemoteFileAction, WriteRemoteRegistryAction,
-};
-use crate::ssh::SshClient;
 use crate::types::{
-    RemoteArtifactCleanupCounts, RemoteDispatchSnapshot, RemoteProjectRegistryEntry,
-    RemoteProjectRegistryFile, RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation,
-    RemoteTaskCleanupMode,
+    RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation, RemoteTaskCleanupMode,
 };
 use crate::utils::{
     build_review_follow_up_notification_comment, contextualize_track_error,
-    describe_remote_reset_blockers, parse_github_repository_name, unique_review_run_directories,
-    unique_review_worktree_paths,
+    describe_remote_reset_blockers, unique_review_run_directories, unique_review_worktree_paths,
 };
+use crate::RemoteWorkspace;
 
 use super::dispatch::{unique_run_directories, unique_worktree_paths, RemoteDispatchService};
 use super::review::RemoteReviewService;
@@ -123,8 +107,7 @@ impl<'a> RemoteAgentServices<'a> {
     ) -> Result<RemoteCleanupSummary, TrackError> {
         let dispatch_service = self.dispatch();
         let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
-        let ssh_client = SshClient::new(&remote_agent)?;
-        let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
+        let workspace = self.remote_workspace(remote_agent.clone())?;
         let task_ids_with_history = self.dispatch_repository().task_ids_with_history().await?;
         let review_ids_with_history = self
             .review_dispatch_repository()
@@ -243,7 +226,7 @@ impl<'a> RemoteAgentServices<'a> {
             }
         }
 
-        let orphan_cleanup_counts = workspace.cleanup_orphaned_artifacts(
+        let orphan_cleanup_counts = workspace.maintenance().cleanup_orphaned_artifacts(
             &kept_worktree_paths.into_iter().collect::<Vec<_>>(),
             &kept_run_directories.into_iter().collect::<Vec<_>>(),
         )?;
@@ -257,7 +240,9 @@ impl<'a> RemoteAgentServices<'a> {
                     && !active_review_workspace_keys.contains(workspace_key)
             })
             .collect::<Vec<_>>();
-        workspace.cleanup_reclaimable_review_workspaces(&reclaimable_review_workspace_keys)?;
+        workspace
+            .maintenance()
+            .cleanup_reclaimable_review_workspaces(&reclaimable_review_workspace_keys)?;
 
         Ok(summary)
     }
@@ -284,8 +269,9 @@ impl<'a> RemoteAgentServices<'a> {
         }
 
         let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
-        let ssh_client = SshClient::new(&remote_agent)?;
-        RemoteWorkspaceOps::new(&ssh_client, &remote_agent).reset_workspace()
+        self.remote_workspace(remote_agent)?
+            .maintenance()
+            .reset_workspace()
     }
 
     pub async fn reconcile_review_follow_up(
@@ -324,7 +310,7 @@ impl<'a> RemoteAgentServices<'a> {
         let latest_dispatches = dispatch_service
             .latest_dispatches_for_tasks(&task_ids)
             .await?;
-        let ssh_client = SshClient::new(&remote_agent)?;
+        let workspace = self.remote_workspace(remote_agent)?;
         let mut reconciliation = RemoteReviewFollowUpReconciliation::default();
 
         for dispatch_record in latest_dispatches {
@@ -343,21 +329,18 @@ impl<'a> RemoteAgentServices<'a> {
                 Err(error) => return Err(error),
             };
 
-            let pull_request_state = FetchPullRequestReviewStateAction::new(
-                &ssh_client,
-                pull_request_url,
-                &review_follow_up.main_user,
-            )
-            .execute()
-            .map_err(|error| {
-                contextualize_track_error(
-                    error,
-                    format!(
-                        "Review follow-up could not inspect task {} PR {} for reviewer @{}",
-                        dispatch_record.task_id, pull_request_url, review_follow_up.main_user
-                    ),
-                )
-            });
+            let pull_request_state = workspace
+                .projects()
+                .fetch_pull_request_review_state(pull_request_url, &review_follow_up.main_user)
+                .map_err(|error| {
+                    contextualize_track_error(
+                        error,
+                        format!(
+                            "Review follow-up could not inspect task {} PR {} for reviewer @{}",
+                            dispatch_record.task_id, pull_request_url, review_follow_up.main_user
+                        ),
+                    )
+                });
             let pull_request_state = match pull_request_state {
                 Ok(pull_request_state) => pull_request_state,
                 Err(error) => {
@@ -460,21 +443,18 @@ impl<'a> RemoteAgentServices<'a> {
                 &review_follow_up.main_user,
                 &pull_request_state.head_oid,
             );
-            let notify_reviewer_result = PostPullRequestCommentAction::new(
-                &ssh_client,
-                pull_request_url,
-                &notification_comment,
-            )
-            .execute()
-            .map_err(|error| {
-                contextualize_track_error(
-                    error,
-                    format!(
-                        "Review follow-up could not notify reviewer @{} for task {} PR {}",
-                        review_follow_up.main_user, dispatch_record.task_id, pull_request_url
-                    ),
-                )
-            });
+            let notify_reviewer_result = workspace
+                .projects()
+                .post_pull_request_comment(pull_request_url, &notification_comment)
+                .map_err(|error| {
+                    contextualize_track_error(
+                        error,
+                        format!(
+                            "Review follow-up could not notify reviewer @{} for task {} PR {}",
+                            review_follow_up.main_user, dispatch_record.task_id, pull_request_url
+                        ),
+                    )
+                });
             if let Err(error) = notify_reviewer_result {
                 reconciliation.failures += 1;
                 reconciliation.events.push(RemoteReviewFollowUpEvent::new(
@@ -532,6 +512,13 @@ impl<'a> RemoteAgentServices<'a> {
         Ok(remote_agent)
     }
 
+    fn remote_workspace(
+        &self,
+        remote_agent: RemoteAgentRuntimeConfig,
+    ) -> Result<RemoteWorkspace, TrackError> {
+        RemoteWorkspace::new(remote_agent, self.database.clone())
+    }
+
     async fn mark_review_notification_for_head(
         &self,
         dispatch_record: &TaskDispatchRecord,
@@ -552,352 +539,24 @@ impl<'a> RemoteAgentServices<'a> {
     }
 }
 
-// =============================================================================
-// Shared Remote Runner Operations
-// =============================================================================
-//
-// Dispatches and reviews share the same SSH-backed mechanics for uploading
-// prompt files, launching runs, canceling them, and reading snapshots. These
-// helpers stay in the owner module because they are infrastructure, not either
-// domain's business policy.
-pub(super) struct RemoteRunOps<'a> {
-    ssh_client: &'a SshClient,
-}
-
-impl<'a> RemoteRunOps<'a> {
-    pub(super) fn new(ssh_client: &'a SshClient) -> Self {
-        Self { ssh_client }
-    }
-
-    pub(super) fn upload_prompt_and_schema(
-        &self,
-        prompt_path: &str,
-        prompt: &str,
-        schema_path: &str,
-        schema: &str,
-    ) -> Result<(), TrackError> {
-        UploadRemoteFileAction::new(self.ssh_client, prompt_path, prompt).execute()?;
-        UploadRemoteFileAction::new(self.ssh_client, schema_path, schema).execute()?;
-        Ok(())
-    }
-
-    pub(super) fn launch(
-        &self,
-        remote_run_directory: &DispatchRunDirectory,
-        worktree_path: &DispatchWorktreePath,
-        preferred_tool: RemoteAgentPreferredTool,
-    ) -> Result<(), TrackError> {
-        LaunchRemoteDispatchAction::new(
-            self.ssh_client,
-            remote_run_directory,
-            worktree_path,
-            preferred_tool,
-        )
-        .execute()
-    }
-
-    pub(super) fn cancel(
-        &self,
-        remote_run_directory: &DispatchRunDirectory,
-    ) -> Result<(), TrackError> {
-        CancelRemoteDispatchAction::new(self.ssh_client, remote_run_directory).execute()
-    }
-
-    pub(super) fn read_snapshots(
-        &self,
-        run_directories: &[DispatchRunDirectory],
-    ) -> Result<Vec<RemoteDispatchSnapshot>, TrackError> {
-        ReadDispatchSnapshotsAction::new(self.ssh_client, run_directories).execute()
-    }
-}
-
-// =============================================================================
-// Shared Remote Workspace Operations
-// =============================================================================
-//
-// The remote registry and checkout layout are shared across task dispatches,
-// PR reviews, cleanup, and reset. Keeping that machinery here prevents the
-// domain services from mixing persistence concerns with shell-script details.
-pub(super) struct RemoteWorkspaceOps<'a> {
-    ssh_client: &'a SshClient,
-    remote_agent: &'a RemoteAgentRuntimeConfig,
-}
-
-impl<'a> RemoteWorkspaceOps<'a> {
-    pub(super) fn new(
-        ssh_client: &'a SshClient,
-        remote_agent: &'a RemoteAgentRuntimeConfig,
-    ) -> Self {
-        Self {
-            ssh_client,
-            remote_agent,
-        }
-    }
-
-    pub(super) fn ensure_task_checkout(
-        &self,
-        project_name: &track_types::ids::ProjectId,
-        metadata: &ProjectMetadata,
-    ) -> Result<RemoteCheckoutPath, TrackError> {
-        let mut remote_registry = self.load_registry()?;
-        let github_login = FetchGithubLoginAction::new(self.ssh_client).execute()?;
-        let repository_name = parse_github_repository_name(&metadata.repo_url)?;
-        let checkout_path = self.checkout_path_from_registry_or_default(
-            &remote_registry,
-            &project_name.as_workspace_key(),
-        );
-        let fork_git_url = EnsureCheckoutAction::new(
-            self.ssh_client,
-            metadata,
-            &repository_name,
-            &checkout_path,
-            &github_login,
-        )
-        .execute()?;
-
-        remote_registry.projects.insert(
-            project_name.as_workspace_key(),
-            RemoteProjectRegistryEntry::from_project_metadata(
-                checkout_path.clone().into_inner(),
-                fork_git_url,
-                metadata,
-            ),
-        );
-        self.write_registry(&remote_registry)?;
-
-        Ok(checkout_path)
-    }
-
-    pub(super) fn ensure_review_checkout(
-        &self,
-        review: &ReviewRecord,
-    ) -> Result<RemoteCheckoutPath, TrackError> {
-        let mut remote_registry = self.load_registry()?;
-        let github_login = FetchGithubLoginAction::new(self.ssh_client).execute()?;
-        let repository_name = parse_github_repository_name(&review.repo_url)?;
-        let checkout_path =
-            self.checkout_path_from_registry_or_default(&remote_registry, &review.workspace_key);
-        let review_metadata = ProjectMetadata {
-            repo_url: review.repo_url.clone(),
-            git_url: review.git_url.clone(),
-            base_branch: review.base_branch.clone(),
-            description: None,
-        };
-        let fork_git_url = EnsureCheckoutAction::new(
-            self.ssh_client,
-            &review_metadata,
-            &repository_name,
-            &checkout_path,
-            &github_login,
-        )
-        .execute()?;
-
-        remote_registry.projects.insert(
-            review.workspace_key.clone(),
-            RemoteProjectRegistryEntry::from_review(
-                checkout_path.clone().into_inner(),
-                fork_git_url,
-                review,
-            ),
-        );
-        self.write_registry(&remote_registry)?;
-
-        Ok(checkout_path)
-    }
-
-    pub(super) fn prepare_task_worktree(
-        &self,
-        checkout_path: &RemoteCheckoutPath,
-        base_branch: &str,
-        branch_name: &DispatchBranch,
-        worktree_path: &DispatchWorktreePath,
-        reuse_existing_worktree: bool,
-    ) -> Result<(), TrackError> {
-        if reuse_existing_worktree {
-            EnsureFollowUpWorktreeAction::new(
-                self.ssh_client,
-                checkout_path,
-                branch_name,
-                worktree_path,
-            )
-            .execute()
-        } else {
-            CreateWorktreeAction::new(
-                self.ssh_client,
-                checkout_path,
-                base_branch,
-                branch_name,
-                worktree_path,
-            )
-            .execute()
-        }
-    }
-
-    pub(super) fn prepare_review_worktree(
-        &self,
-        checkout_path: &RemoteCheckoutPath,
-        pull_request_number: u64,
-        branch_name: &DispatchBranch,
-        worktree_path: &DispatchWorktreePath,
-        target_head_oid: Option<&str>,
-    ) -> Result<(), TrackError> {
-        CreateReviewWorktreeAction::new(
-            self.ssh_client,
-            checkout_path,
-            pull_request_number,
-            branch_name,
-            worktree_path,
-            target_head_oid,
-        )
-        .execute()
-    }
-
-    pub(super) fn resolve_checkout_path(
-        &self,
-        workspace_key: &WorkspaceKey,
-    ) -> Result<RemoteCheckoutPath, TrackError> {
-        let remote_registry = self.load_registry()?;
-        Ok(self.checkout_path_from_registry_or_default(&remote_registry, workspace_key))
-    }
-
-    pub(super) fn cleanup_task_artifacts(
-        &self,
-        checkout_path: &RemoteCheckoutPath,
-        worktree_paths: &[DispatchWorktreePath],
-        run_directories: &[DispatchRunDirectory],
-        cleanup_mode: RemoteTaskCleanupMode,
-    ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-        CleanupTaskArtifactsAction::new(
-            self.ssh_client,
-            checkout_path,
-            worktree_paths,
-            run_directories,
-            cleanup_mode,
-        )
-        .execute()
-    }
-
-    pub(super) fn cleanup_review_artifacts(
-        &self,
-        checkout_path: &RemoteCheckoutPath,
-        branch_names: &[DispatchBranch],
-        worktree_paths: &[DispatchWorktreePath],
-        run_directories: &[DispatchRunDirectory],
-    ) -> Result<(), TrackError> {
-        CleanupReviewArtifactsAction::new(
-            self.ssh_client,
-            checkout_path,
-            branch_names,
-            worktree_paths,
-            run_directories,
-        )
-        .execute()
-    }
-
-    pub(super) fn cleanup_orphaned_artifacts(
-        &self,
-        kept_worktree_paths: &[DispatchWorktreePath],
-        kept_run_directories: &[DispatchRunDirectory],
-    ) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-        CleanupOrphanedRemoteArtifactsAction::new(
-            self.ssh_client,
-            &self.remote_agent.workspace_root,
-            kept_worktree_paths,
-            kept_run_directories,
-        )
-        .execute()
-    }
-
-    pub(super) fn cleanup_reclaimable_review_workspaces(
-        &self,
-        workspace_keys: &[WorkspaceKey],
-    ) -> Result<(), TrackError> {
-        if workspace_keys.is_empty() {
-            return Ok(());
-        }
-
-        let mut remote_registry = self.load_registry()?;
-        let checkout_paths = workspace_keys
-            .iter()
-            .map(|workspace_key| {
-                self.checkout_path_from_registry_or_default(&remote_registry, workspace_key)
-            })
-            .collect::<Vec<_>>();
-
-        CleanupReviewWorkspaceCachesAction::new(self.ssh_client, &checkout_paths).execute()?;
-
-        let mut registry_changed = false;
-        for workspace_key in workspace_keys {
-            registry_changed |= remote_registry.projects.remove(workspace_key).is_some();
-        }
-
-        if registry_changed {
-            self.write_registry(&remote_registry)?;
-        }
-
-        Ok(())
-    }
-
-    pub(super) fn reset_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
-        ResetWorkspaceAction::new(
-            self.ssh_client,
-            &self.remote_agent.workspace_root,
-            &self.remote_agent.projects_registry_path,
-        )
-        .execute()
-    }
-
-    fn load_registry(&self) -> Result<RemoteProjectRegistryFile, TrackError> {
-        LoadRemoteRegistryAction::new(self.ssh_client, &self.remote_agent.projects_registry_path)
-            .execute()
-    }
-
-    fn write_registry(
-        &self,
-        remote_registry: &RemoteProjectRegistryFile,
-    ) -> Result<(), TrackError> {
-        WriteRemoteRegistryAction::new(
-            self.ssh_client,
-            &self.remote_agent.projects_registry_path,
-            remote_registry,
-        )
-        .execute()
-    }
-
-    fn checkout_path_from_registry_or_default(
-        &self,
-        remote_registry: &RemoteProjectRegistryFile,
-        workspace_key: &WorkspaceKey,
-    ) -> RemoteCheckoutPath {
-        remote_registry
-            .projects
-            .get(workspace_key)
-            .map(|entry| RemoteCheckoutPath::from_registry_unchecked(entry.checkout_path.clone()))
-            .unwrap_or_else(|| self.default_checkout_path(workspace_key))
-    }
-
-    fn default_checkout_path(&self, workspace_key: &WorkspaceKey) -> RemoteCheckoutPath {
-        RemoteCheckoutPath::for_workspace(&self.remote_agent.workspace_root, workspace_key)
-    }
-}
-
-pub(super) enum RefreshRemoteClient {
-    Available(SshClient),
+pub(super) enum RefreshRemoteWorkspace {
+    Available(RemoteWorkspace),
     UnavailableLocally { error_message: String },
 }
 
-pub(super) async fn load_refresh_ssh_client(
+pub(super) async fn load_refresh_remote_workspace(
     config_service: &dyn RemoteAgentConfigProvider,
-) -> Result<RefreshRemoteClient, TrackError> {
+    database: &DatabaseContext,
+) -> Result<RefreshRemoteWorkspace, TrackError> {
     let remote_agent = match config_service.load_remote_agent_runtime_config().await {
         Ok(Some(config)) => config,
         Ok(None) => {
-            return Ok(RefreshRemoteClient::UnavailableLocally {
+            return Ok(RefreshRemoteWorkspace::UnavailableLocally {
                 error_message: "Remote agent configuration is missing locally.".to_owned(),
             });
         }
         Err(error) if error.remote_unavailable() => {
-            return Ok(RefreshRemoteClient::UnavailableLocally {
+            return Ok(RefreshRemoteWorkspace::UnavailableLocally {
                 error_message: error.to_string(),
             });
         }
@@ -905,7 +564,7 @@ pub(super) async fn load_refresh_ssh_client(
     };
 
     if !remote_agent.managed_key_path.exists() {
-        return Ok(RefreshRemoteClient::UnavailableLocally {
+        return Ok(RefreshRemoteWorkspace::UnavailableLocally {
             error_message: format!(
                 "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
                 collapse_home_path(&remote_agent.managed_key_path)
@@ -913,7 +572,8 @@ pub(super) async fn load_refresh_ssh_client(
         });
     }
 
-    Ok(RefreshRemoteClient::Available(SshClient::new(
-        &remote_agent,
+    Ok(RefreshRemoteWorkspace::Available(RemoteWorkspace::new(
+        remote_agent,
+        database.clone(),
     )?))
 }

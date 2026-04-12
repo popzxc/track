@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
@@ -18,19 +18,19 @@ use track_types::types::{
 };
 use track_types::urls::Url;
 
-use crate::constants::{PREPARING_STALE_AFTER, REMOTE_PROMPT_FILE_NAME, REMOTE_SCHEMA_FILE_NAME};
+use crate::constants::PREPARING_STALE_AFTER;
 use crate::prompts::RemoteDispatchPrompt;
 use crate::schemas::RemoteDispatchSchema;
-use crate::ssh::SshClient;
 use crate::types::{
-    ClaudeStructuredOutputEnvelope, RemoteArtifactCleanupCounts, RemoteDispatchSnapshot,
-    RemoteTaskCleanupMode,
+    ClaudeStructuredOutputEnvelope, RemoteArtifactCleanupCounts, RemoteTaskCleanupMode,
 };
 use crate::utils::parse_github_repository_name;
+use crate::RemoteRunSnapshotView;
+use crate::RemoteTaskArtifactCleanupMode;
+use crate::RemoteWorkspace;
 
 use super::remote_agent_services::{
-    load_refresh_ssh_client, RefreshRemoteClient, RemoteAgentConfigProvider, RemoteRunOps,
-    RemoteWorkspaceOps,
+    load_refresh_remote_workspace, RefreshRemoteWorkspace, RemoteAgentConfigProvider,
 };
 
 pub(crate) use self::guard::TaskDispatchStartGuard;
@@ -183,7 +183,8 @@ impl<'a> RemoteDispatchService<'a> {
         mut dispatch_record: TaskDispatchRecord,
     ) -> Result<TaskDispatchRecord, TrackError> {
         if let Some(existing_record) = self
-            .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+            .dispatch_repository()
+            .get_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
             .await?
         {
             if !existing_record.status.is_active() {
@@ -199,8 +200,6 @@ impl<'a> RemoteDispatchService<'a> {
             .branch_name
             .clone()
             .expect("queued dispatches should always store a branch name");
-        let remote_run_directory = worktree_path.run_directory_for(&dispatch_record.dispatch_id);
-
         let launch_result = async {
             if !self
                 .save_preparing_phase(&mut dispatch_record, "Checking remote agent prerequisites.")
@@ -211,9 +210,7 @@ impl<'a> RemoteDispatchService<'a> {
             let (remote_agent, task, project_metadata) = self
                 .load_dispatch_prerequisites(&dispatch_record.task_id)
                 .await?;
-            let ssh_client = SshClient::new(&remote_agent)?;
-            let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-            let runner = RemoteRunOps::new(&ssh_client);
+            let workspace = self.remote_workspace(remote_agent)?;
             if !self
                 .save_preparing_phase(
                     &mut dispatch_record,
@@ -223,7 +220,9 @@ impl<'a> RemoteDispatchService<'a> {
             {
                 return Ok::<(), TrackError>(());
             }
-            let checkout_path = workspace.ensure_task_checkout(&task.project, &project_metadata)?;
+            let checkout_path = workspace
+                .projects()
+                .ensure_task_checkout(&task.project, &project_metadata)?;
 
             if !self
                 .save_preparing_phase(&mut dispatch_record, "Preparing the task worktree.")
@@ -231,11 +230,10 @@ impl<'a> RemoteDispatchService<'a> {
             {
                 return Ok::<(), TrackError>(());
             }
-            workspace.prepare_task_worktree(
+            workspace.task_runs().prepare_worktree(
+                &dispatch_record,
                 &checkout_path,
                 &project_metadata.base_branch,
-                &branch_name,
-                &worktree_path,
                 dispatch_record.follow_up_request.is_some(),
             )?;
 
@@ -259,21 +257,21 @@ impl<'a> RemoteDispatchService<'a> {
             {
                 return Ok::<(), TrackError>(());
             }
-            runner.upload_prompt_and_schema(
-                &remote_run_directory.join(REMOTE_PROMPT_FILE_NAME),
-                &prompt,
-                &remote_run_directory.join(REMOTE_SCHEMA_FILE_NAME),
-                &schema,
-            )?;
+            workspace
+                .task_runs()
+                .upload_run_files(&dispatch_record, &prompt, &schema)?;
 
             // Cancellation can arrive while the API is still preparing the
             // remote checkout. We re-read the persisted record right before the
             // expensive remote-agent launch so a user-triggered cancel can stop
             // the flow before it starts spending more tokens.
-            if !self
-                .dispatch_is_still_active(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+            let dispatch_is_still_active = self
+                .dispatch_repository()
+                .get_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
                 .await?
-            {
+                .map(|record| record.status.is_active())
+                .unwrap_or(false);
+            if !dispatch_is_still_active {
                 return Ok(());
             }
 
@@ -283,11 +281,7 @@ impl<'a> RemoteDispatchService<'a> {
             {
                 return Ok(());
             }
-            runner.launch(
-                &remote_run_directory,
-                &worktree_path,
-                dispatch_record.preferred_tool,
-            )?;
+            workspace.task_runs().launch(&dispatch_record)?;
 
             Ok(())
         }
@@ -296,7 +290,8 @@ impl<'a> RemoteDispatchService<'a> {
         match launch_result {
             Ok(()) => {
                 if let Some(existing_record) = self
-                    .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+                    .dispatch_repository()
+                    .get_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
                     .await?
                 {
                     if !existing_record.status.is_active() {
@@ -560,9 +555,11 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         records: Vec<TaskDispatchRecord>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let ssh_client = match load_refresh_ssh_client(self.config_service).await? {
-            RefreshRemoteClient::Available(ssh_client) => ssh_client,
-            RefreshRemoteClient::UnavailableLocally { error_message } => {
+        let workspace = match load_refresh_remote_workspace(self.config_service, self.database)
+            .await?
+        {
+            RefreshRemoteWorkspace::Available(workspace) => workspace,
+            RefreshRemoteWorkspace::UnavailableLocally { error_message } => {
                 return self
                     .release_active_dispatches_after_reconciliation_loss(
                         records,
@@ -572,10 +569,10 @@ impl<'a> RemoteDispatchService<'a> {
                     .await;
             }
         };
-        let snapshots_by_dispatch_id = match load_dispatch_snapshots_for_records(
-            &ssh_client,
-            &records,
-        ) {
+        let snapshots_by_dispatch_id = match workspace
+            .task_runs()
+            .load_snapshots_for_active_records(&records)
+        {
             Ok(snapshots) => snapshots,
             Err(error) => {
                 let error_message = error.to_string();
@@ -688,19 +685,23 @@ impl<'a> RemoteDispatchService<'a> {
         }
 
         let remote_agent = self.load_remote_agent(task_id).await?;
-        let ssh_client = SshClient::new(&remote_agent)?;
-        let workspace = RemoteWorkspaceOps::new(&ssh_client, &remote_agent);
-        let checkout_path =
-            workspace.resolve_checkout_path(&dispatch_history[0].project.as_workspace_key())?;
-        let worktree_paths = unique_worktree_paths(dispatch_history);
-        let run_directories = unique_run_directories(dispatch_history, &remote_agent);
-
-        workspace.cleanup_task_artifacts(
+        let workspace = self.remote_workspace(remote_agent)?;
+        let checkout_path = workspace
+            .projects()
+            .resolve_checkout_path_for_project(&dispatch_history[0].project);
+        let summary = workspace.task_runs().cleanup(
             &checkout_path,
-            &worktree_paths,
-            &run_directories,
-            cleanup_mode,
-        )
+            dispatch_history,
+            match cleanup_mode {
+                RemoteTaskCleanupMode::CloseTask => RemoteTaskArtifactCleanupMode::CloseTask,
+                RemoteTaskCleanupMode::DeleteTask => RemoteTaskArtifactCleanupMode::DeleteTask,
+            },
+        )?;
+
+        Ok(RemoteArtifactCleanupCounts {
+            worktrees_removed: summary.worktrees_removed,
+            run_directories_removed: summary.run_directories_removed,
+        })
     }
 
     pub(super) async fn finalize_active_dispatches_locally(
@@ -760,28 +761,6 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(())
     }
 
-    async fn dispatch_is_still_active(
-        &self,
-        task_id: &TaskId,
-        dispatch_id: &DispatchId,
-    ) -> Result<bool, TrackError> {
-        Ok(self
-            .load_saved_dispatch(task_id, dispatch_id)
-            .await?
-            .map(|record| record.status.is_active())
-            .unwrap_or(false))
-    }
-
-    async fn load_saved_dispatch(
-        &self,
-        task_id: &TaskId,
-        dispatch_id: &DispatchId,
-    ) -> Result<Option<TaskDispatchRecord>, TrackError> {
-        self.dispatch_repository()
-            .get_dispatch(task_id, dispatch_id)
-            .await
-    }
-
     async fn cancel_remote_dispatch_if_possible(
         &self,
         dispatch_record: &TaskDispatchRecord,
@@ -791,9 +770,9 @@ impl<'a> RemoteDispatchService<'a> {
         let Some(worktree_path) = dispatch_record.worktree_path.as_ref() else {
             return Ok(());
         };
-        let remote_run_directory = worktree_path.run_directory_for(&dispatch_record.dispatch_id);
-        let ssh_client = SshClient::new(&remote_agent)?;
-        RemoteRunOps::new(&ssh_client).cancel(&remote_run_directory)
+        let workspace = self.remote_workspace(remote_agent)?;
+        let _ = worktree_path;
+        workspace.task_runs().cancel(dispatch_record).map(|_| ())
     }
 
     async fn save_preparing_phase(
@@ -802,7 +781,8 @@ impl<'a> RemoteDispatchService<'a> {
         summary: &str,
     ) -> Result<bool, TrackError> {
         if let Some(saved_record) = self
-            .load_saved_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
+            .dispatch_repository()
+            .get_dispatch(&dispatch_record.task_id, &dispatch_record.dispatch_id)
             .await?
         {
             if !saved_record.status.is_active() {
@@ -897,6 +877,13 @@ impl<'a> RemoteDispatchService<'a> {
 
         Ok(remote_agent)
     }
+
+    fn remote_workspace(
+        &self,
+        remote_agent: RemoteAgentRuntimeConfig,
+    ) -> Result<RemoteWorkspace, TrackError> {
+        RemoteWorkspace::new(remote_agent, self.database.clone())
+    }
 }
 
 fn validate_project_metadata_for_dispatch(metadata: &ProjectMetadata) -> Result<(), TrackError> {
@@ -950,34 +937,6 @@ pub(super) fn latest_pull_request_for_branch(
         .and_then(|record| record.pull_request_url.clone())
 }
 
-fn load_dispatch_snapshots_for_records(
-    ssh_client: &SshClient,
-    records: &[TaskDispatchRecord],
-) -> Result<BTreeMap<String, RemoteDispatchSnapshot>, TrackError> {
-    let mut dispatch_ids = Vec::new();
-    let mut run_directories = Vec::new();
-
-    for record in records {
-        if !record.status.is_active() {
-            continue;
-        }
-
-        let Some(worktree_path) = record.worktree_path.as_ref() else {
-            continue;
-        };
-
-        dispatch_ids.push(record.dispatch_id.to_string());
-        run_directories.push(worktree_path.run_directory_for(&record.dispatch_id));
-    }
-
-    if run_directories.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    let snapshots = RemoteRunOps::new(ssh_client).read_snapshots(&run_directories)?;
-    Ok(dispatch_ids.into_iter().zip(snapshots).collect())
-}
-
 fn derive_remote_run_directory_for_record(
     record: &TaskDispatchRecord,
     remote_agent: &RemoteAgentRuntimeConfig,
@@ -995,7 +954,7 @@ fn derive_remote_run_directory_for_record(
 
 pub(super) fn refresh_dispatch_record_from_snapshot(
     record: TaskDispatchRecord,
-    snapshot: &RemoteDispatchSnapshot,
+    snapshot: &RemoteRunSnapshotView,
 ) -> Result<TaskDispatchRecord, TrackError> {
     if snapshot.is_missing() {
         if let Some(updated) = record

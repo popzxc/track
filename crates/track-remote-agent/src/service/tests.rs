@@ -27,7 +27,7 @@ use track_types::types::{
 };
 use track_types::urls::Url;
 
-use crate::types::RemoteDispatchSnapshot;
+use crate::RemoteRunSnapshotView;
 
 use super::dispatch::{
     latest_pull_request_for_branch, refresh_dispatch_record_from_snapshot,
@@ -335,7 +335,7 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
         review_request_head_oid: None,
         review_request_user: None,
     };
-    let snapshot = RemoteDispatchSnapshot::completed(
+    let snapshot = RemoteRunSnapshotView::completed(
         json!({
             "result": "Mock Claude completed successfully.",
             "structured_output": {
@@ -348,7 +348,7 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
             }
         })
         .to_string(),
-        "2026-03-18T10:35:31Z\n",
+        now_utc(),
     );
 
     let refreshed = refresh_dispatch_record_from_snapshot(record, &snapshot)
@@ -406,7 +406,7 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
         notes: None,
         error_message: None,
     };
-    let snapshot = RemoteDispatchSnapshot::completed(
+    let snapshot = RemoteRunSnapshotView::completed(
         json!({
             "result": "Mock Claude reviewed the pull request successfully.",
             "structured_output": {
@@ -420,7 +420,7 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
             }
         })
         .to_string(),
-        "2026-03-18T10:35:31Z\n",
+        now_utc(),
     );
 
     let refreshed = context
@@ -480,7 +480,7 @@ fn refresh_marks_remote_canceled_runs_as_terminal() {
         review_request_head_oid: None,
         review_request_user: None,
     };
-    let snapshot = RemoteDispatchSnapshot::canceled("2026-03-18T10:35:31Z\n");
+    let snapshot = RemoteRunSnapshotView::canceled(now_utc());
 
     let refreshed = refresh_dispatch_record_from_snapshot(record, &snapshot)
         .expect("canceled snapshot should refresh");

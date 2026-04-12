@@ -10,7 +10,6 @@ mod dispatch;
 mod files;
 mod github;
 mod maintenance;
-mod registry;
 
 pub(crate) use checkout::{
     CreateReviewWorktreeAction, CreateWorktreeAction, EnsureCheckoutAction,
@@ -19,7 +18,7 @@ pub(crate) use checkout::{
 pub(crate) use dispatch::{
     CancelRemoteDispatchAction, LaunchRemoteDispatchAction, ReadDispatchSnapshotsAction,
 };
-pub(crate) use files::{ReadRemoteFileAction, UploadRemoteFileAction};
+pub(crate) use files::UploadRemoteFileAction;
 pub(crate) use github::{
     FetchGithubLoginAction, FetchPullRequestMetadataAction, FetchPullRequestReviewStateAction,
     PostPullRequestCommentAction,
@@ -28,4 +27,3 @@ pub(crate) use maintenance::{
     CleanupOrphanedRemoteArtifactsAction, CleanupReviewArtifactsAction,
     CleanupReviewWorkspaceCachesAction, CleanupTaskArtifactsAction, ResetWorkspaceAction,
 };
-pub(crate) use registry::{LoadRemoteRegistryAction, WriteRemoteRegistryAction};

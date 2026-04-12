@@ -27,7 +27,7 @@ pub(crate) use dispatch::{
     LaunchRemoteDispatchScript, PostPullRequestCommentScript, ReadDispatchSnapshotsScript,
     RemoteAgentLauncherScript,
 };
-pub(crate) use files::{PrepareRemoteUploadScript, ReadRemoteFileScript};
+pub(crate) use files::PrepareRemoteUploadScript;
 
 const REMOTE_SCRIPT_WRAPPER_TEMPLATE: &str =
     include_str!("../../templates/scripts/remote_script_wrapper.sh.tera");

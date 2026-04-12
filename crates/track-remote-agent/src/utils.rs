@@ -28,13 +28,11 @@ pub(crate) fn unique_review_run_directories(
                 return Some(worktree_path.run_directory());
             }
 
-            Some(
-                DispatchRunDirectory::for_review(
-                    &remote_agent.workspace_root,
-                    &record.workspace_key,
-                    &record.dispatch_id,
-                )
-            )
+            Some(DispatchRunDirectory::for_review(
+                &remote_agent.workspace_root,
+                &record.workspace_key,
+                &record.dispatch_id,
+            ))
         })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
