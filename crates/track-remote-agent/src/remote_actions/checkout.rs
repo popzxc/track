@@ -3,9 +3,9 @@ use track_types::errors::{ErrorCode, TrackError};
 use track_types::git_remote::GitRemote;
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, RemoteCheckoutPath};
 
-use crate::scripts::{
-    CreateReviewWorktreeScript, CreateWorktreeScript, EnsureCheckoutScript,
-    EnsureFollowUpWorktreeScript,
+use crate::helper::{
+    CreateReviewWorktreeRequest, CreateWorktreeRequest, EmptyResponse, EnsureCheckoutRequest,
+    EnsureCheckoutResponse, EnsureFollowUpWorktreeRequest,
 };
 use crate::ssh::SshClient;
 
@@ -37,14 +37,21 @@ impl<'a> EnsureCheckoutAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<GitRemote, TrackError> {
-        let script = EnsureCheckoutScript;
-        let arguments = script.arguments(
-            self.metadata,
-            self.repository_name,
-            self.checkout_path,
-            self.github_login,
-        );
-        let fork_git_url = self.ssh_client.run_script(&script.render(), &arguments)?;
+        let git_url = self.metadata.git_url.clone().into_remote_string();
+        let response = self
+            .ssh_client
+            .run_helper_json::<_, EnsureCheckoutResponse>(
+                "ensure-checkout",
+                &EnsureCheckoutRequest {
+                    repo_url: self.metadata.repo_url.as_str(),
+                    repository_name: self.repository_name,
+                    git_url: &git_url,
+                    base_branch: &self.metadata.base_branch,
+                    checkout_path: self.checkout_path.as_str(),
+                    github_login: self.github_login,
+                },
+            )?;
+        let fork_git_url = response.fork_git_url;
 
         let fork_git_url = fork_git_url.trim();
         if fork_git_url.is_empty() {
@@ -94,14 +101,15 @@ impl<'a> CreateWorktreeAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let script = CreateWorktreeScript;
-        let arguments = script.arguments(
-            self.checkout_path,
-            self.base_branch,
-            self.branch_name,
-            self.worktree_path,
-        );
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        self.ssh_client.run_helper_json::<_, EmptyResponse>(
+            "create-worktree",
+            &CreateWorktreeRequest {
+                checkout_path: self.checkout_path.as_str(),
+                base_branch: self.base_branch,
+                branch_name: self.branch_name.as_str(),
+                worktree_path: self.worktree_path.as_str(),
+            },
+        )?;
 
         Ok(())
     }
@@ -138,15 +146,16 @@ impl<'a> CreateReviewWorktreeAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let script = CreateReviewWorktreeScript;
-        let arguments = script.arguments(
-            self.checkout_path,
-            self.pull_request_number,
-            self.branch_name,
-            self.worktree_path,
-            self.target_head_oid,
-        );
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        self.ssh_client.run_helper_json::<_, EmptyResponse>(
+            "create-review-worktree",
+            &CreateReviewWorktreeRequest {
+                checkout_path: self.checkout_path.as_str(),
+                pull_request_number: self.pull_request_number,
+                branch_name: self.branch_name.as_str(),
+                worktree_path: self.worktree_path.as_str(),
+                target_head_oid: self.target_head_oid,
+            },
+        )?;
 
         Ok(())
     }
@@ -177,9 +186,14 @@ impl<'a> EnsureFollowUpWorktreeAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let script = EnsureFollowUpWorktreeScript;
-        let arguments = script.arguments(self.checkout_path, self.branch_name, self.worktree_path);
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        self.ssh_client.run_helper_json::<_, EmptyResponse>(
+            "ensure-follow-up-worktree",
+            &EnsureFollowUpWorktreeRequest {
+                checkout_path: self.checkout_path.as_str(),
+                branch_name: self.branch_name.as_str(),
+                worktree_path: self.worktree_path.as_str(),
+            },
+        )?;
 
         Ok(())
     }

@@ -1,3 +1,0 @@
-set -eu
-{{ path_helpers }}REMOTE_PATH="$(expand_remote_path "$1")"
-mkdir -p "$(dirname "$REMOTE_PATH")"

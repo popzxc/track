@@ -2,13 +2,12 @@ use track_types::errors::TrackError;
 use track_types::remote_layout::{DispatchRunDirectory, DispatchWorktreePath};
 use track_types::types::RemoteAgentPreferredTool;
 
-use crate::remote_actions::UploadRemoteFileAction;
-use crate::scripts::{
-    CancelRemoteDispatchScript, LaunchRemoteDispatchScript, ReadDispatchSnapshotsScript,
-    RemoteAgentLauncherScript,
+use crate::helper::{
+    CancelRunRequest, EmptyResponse, LaunchRunRequest, ReadRunSnapshotsRequest,
+    ReadRunSnapshotsResponse,
 };
 use crate::ssh::SshClient;
-use crate::RemoteRunSnapshotView;
+use crate::{RemoteRunObservedStatus, RemoteRunSnapshotView};
 
 /// Publishes the remote launcher and starts one agent run inside a prepared
 /// run directory and worktree.
@@ -35,19 +34,16 @@ impl<'a> LaunchRemoteDispatchAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let launcher_contents =
-            RemoteAgentLauncherScript::new(self.preferred_tool, self.ssh_client.shell_prelude())
-                .render();
-        UploadRemoteFileAction::new(
-            self.ssh_client,
-            &format!("{}/launch.sh", self.remote_run_directory.as_str()),
-            &launcher_contents,
-        )
-        .execute()?;
-
-        let script = LaunchRemoteDispatchScript;
-        let arguments = script.arguments(self.remote_run_directory, self.worktree_path);
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        self.ssh_client.run_helper_json::<_, EmptyResponse>(
+            "launch-run",
+            &LaunchRunRequest {
+                run_directory: self.remote_run_directory.as_str(),
+                worktree_path: self.worktree_path.as_str(),
+                preferred_tool: self.preferred_tool,
+                shell_prelude: (!self.ssh_client.shell_prelude().trim().is_empty())
+                    .then_some(self.ssh_client.shell_prelude()),
+            },
+        )?;
 
         Ok(())
     }
@@ -72,9 +68,12 @@ impl<'a> CancelRemoteDispatchAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let script = CancelRemoteDispatchScript;
-        let arguments = script.arguments(self.remote_run_directory);
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        self.ssh_client.run_helper_json::<_, EmptyResponse>(
+            "cancel-run",
+            &CancelRunRequest {
+                run_directory: self.remote_run_directory.as_str(),
+            },
+        )?;
         Ok(())
     }
 }
@@ -102,10 +101,30 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
             return Ok(Vec::new());
         }
 
-        let script = ReadDispatchSnapshotsScript;
-        let arguments = script.arguments(self.run_directories);
-        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
+        let run_directories = self
+            .run_directories
+            .iter()
+            .map(|run_directory| run_directory.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let response = self
+            .ssh_client
+            .run_helper_json::<_, ReadRunSnapshotsResponse>(
+                "read-run-snapshots",
+                &ReadRunSnapshotsRequest {
+                    run_directories: &run_directories,
+                },
+            )?;
 
-        script.parse_report(&report)
+        Ok(response
+            .snapshots
+            .into_iter()
+            .map(|snapshot| RemoteRunSnapshotView {
+                run_directory: DispatchRunDirectory::from_db_unchecked(snapshot.run_directory),
+                status: RemoteRunObservedStatus::from_status_file_contents(snapshot.status),
+                result: snapshot.result,
+                stderr: snapshot.stderr,
+                finished_at: snapshot.finished_at,
+            })
+            .collect())
     }
 }

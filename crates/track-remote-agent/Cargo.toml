@@ -8,6 +8,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Remote dispatch and review orchestration for track."
 readme = "../../README.md"
+build = "build.rs"
 
 [dependencies]
 async-trait = { workspace = true }

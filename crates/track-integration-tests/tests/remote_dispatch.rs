@@ -60,11 +60,23 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
     let terminal_dispatch = harness
         .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
         .await;
+    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
+    let remote_status = fixture
+        .remote_path_exists(&format!("{remote_run_directory}/status.txt"))
+        .then(|| fixture.read_remote_file(&format!("{remote_run_directory}/status.txt")));
+    let remote_stderr = fixture
+        .remote_path_exists(&format!("{remote_run_directory}/stderr.log"))
+        .then(|| fixture.read_remote_file(&format!("{remote_run_directory}/stderr.log")));
     assert_eq!(
         terminal_dispatch["status"]
             .as_str()
             .expect("terminal status should be a string"),
-        "succeeded"
+        "succeeded",
+        "terminal dispatch: {}\nremote status: {:?}\nremote stderr: {:?}",
+        serde_json::to_string_pretty(&terminal_dispatch)
+            .expect("terminal dispatch should serialize"),
+        remote_status,
+        remote_stderr
     );
     assert_eq!(
         terminal_dispatch["pullRequestUrl"]
@@ -83,8 +95,7 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
         .expect("terminal dispatch should include worktreePath")
         .ends_with(&format!("/project-a/worktrees/{dispatch_id}")));
 
-    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
-    let remote_status = fixture.read_remote_file(&format!("{remote_run_directory}/status.txt"));
+    let remote_status = remote_status.expect("remote status should exist after completion");
     assert_eq!(remote_status.trim(), "completed");
 
     let remote_result = fixture.read_remote_file(&format!("{remote_run_directory}/result.json"));

@@ -1,7 +1,0 @@
-set -eu
-{{ path_helpers }}REMOTE_PATH="$(expand_remote_path "$1")"
-if [ -f "$REMOTE_PATH" ]; then
-  cat "$REMOTE_PATH"
-else
-  exit {{ missing_exit_code }}
-fi

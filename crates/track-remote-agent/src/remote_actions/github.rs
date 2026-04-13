@@ -2,7 +2,10 @@ use track_types::errors::{ErrorCode, TrackError};
 use track_types::time_utils::parse_iso_8601_seconds;
 use track_types::urls::Url;
 
-use crate::scripts::{FetchGithubApiScript, FetchGithubLoginScript, PostPullRequestCommentScript};
+use crate::helper::{
+    EmptyRequest, EmptyResponse, GithubApiRequest, GithubApiResponse, GithubLoginResponse,
+    PostPullRequestCommentRequest,
+};
 use crate::ssh::SshClient;
 use crate::types::{
     GithubPullRequestApiResponse, GithubPullRequestMetadata, GithubPullRequestReference,
@@ -22,8 +25,10 @@ impl<'a> FetchGithubLoginAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<String, TrackError> {
-        let script = FetchGithubLoginScript;
-        let login = self.ssh_client.run_script(&script.render(), &[])?;
+        let login = self
+            .ssh_client
+            .run_helper_json::<_, GithubLoginResponse>("github-login", &EmptyRequest {})?
+            .login;
 
         let login = login.trim().to_owned();
         if login.is_empty() {
@@ -55,11 +60,15 @@ impl<'a> FetchPullRequestMetadataAction<'a> {
     pub(crate) fn execute(&self) -> Result<GithubPullRequestMetadata, TrackError> {
         let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
         let pull_request_endpoint = reference.pull_request_endpoint();
-        let script = FetchGithubApiScript;
-        let arguments = script.arguments(&pull_request_endpoint);
         let pull_request_json = self
             .ssh_client
-            .run_script(&script.render(), &arguments)
+            .run_helper_json::<_, GithubApiResponse>(
+                "fetch-gh-api",
+                &GithubApiRequest {
+                    endpoint: &pull_request_endpoint,
+                },
+            )
+            .map(|response| response.output)
             .map_err(|error| {
                 contextualize_track_error(
                     error,
@@ -117,11 +126,15 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
     pub(crate) fn execute(&self) -> Result<GithubPullRequestReviewState, TrackError> {
         let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
         let pull_request_endpoint = reference.pull_request_endpoint();
-        let fetch_api_script = FetchGithubApiScript;
-        let pull_request_arguments = fetch_api_script.arguments(&pull_request_endpoint);
         let pull_request_json = self
             .ssh_client
-            .run_script(&fetch_api_script.render(), &pull_request_arguments)
+            .run_helper_json::<_, GithubApiResponse>(
+                "fetch-gh-api",
+                &GithubApiRequest {
+                    endpoint: &pull_request_endpoint,
+                },
+            )
+            .map(|response| response.output)
             .map_err(|error| {
                 contextualize_track_error(
                     error,
@@ -147,10 +160,15 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
             )?;
 
         let reviews_endpoint = reference.reviews_endpoint();
-        let review_arguments = fetch_api_script.arguments(&reviews_endpoint);
         let reviews_json = self
             .ssh_client
-            .run_script(&fetch_api_script.render(), &review_arguments)
+            .run_helper_json::<_, GithubApiResponse>(
+                "fetch-gh-api",
+                &GithubApiRequest {
+                    endpoint: &reviews_endpoint,
+                },
+            )
+            .map(|response| response.output)
             .map_err(|error| {
                 contextualize_track_error(
                     error,
@@ -227,10 +245,14 @@ impl<'a> PostPullRequestCommentAction<'a> {
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
         let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
         let issue_comments_endpoint = reference.issue_comments_endpoint();
-        let script = PostPullRequestCommentScript;
-        let arguments = script.arguments(&issue_comments_endpoint, self.comment_body);
         self.ssh_client
-            .run_script(&script.render(), &arguments)
+            .run_helper_json::<_, EmptyResponse>(
+                "post-pr-comment",
+                &PostPullRequestCommentRequest {
+                    endpoint: &issue_comments_endpoint,
+                    body: self.comment_body,
+                },
+            )
             .map_err(|error| {
                 contextualize_track_error(
                     error,

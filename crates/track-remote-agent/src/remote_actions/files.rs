@@ -1,11 +1,6 @@
-use std::env;
-use std::fs;
+use track_types::errors::TrackError;
 
-use track_config::paths::path_to_string;
-use track_types::errors::{ErrorCode, TrackError};
-use track_types::time_utils::now_utc;
-
-use crate::scripts::PrepareRemoteUploadScript;
+use crate::helper::{EmptyResponse, WriteFileRequest};
 use crate::ssh::SshClient;
 
 /// Uploads one logical artifact to the remote machine after preparing its
@@ -27,29 +22,14 @@ impl<'a> UploadRemoteFileAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        let script = PrepareRemoteUploadScript;
-        let arguments = script.arguments(self.remote_path);
-        self.ssh_client.run_script(&script.render(), &arguments)?;
-
-        let local_temp_file = env::temp_dir().join(format!(
-            "track-remote-upload-{}",
-            now_utc().unix_timestamp_nanos()
-        ));
-        fs::write(&local_temp_file, self.contents).map_err(|error| {
-            TrackError::new(
-                ErrorCode::DispatchWriteFailed,
-                format!(
-                    "Could not write a temporary upload file at {}: {error}",
-                    path_to_string(&local_temp_file)
-                ),
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "write-file",
+                &WriteFileRequest {
+                    path: self.remote_path,
+                    contents: self.contents,
+                },
             )
-        })?;
-
-        let upload_result = self
-            .ssh_client
-            .copy_local_file_to_remote(&local_temp_file, self.remote_path);
-        let _ = fs::remove_file(&local_temp_file);
-
-        upload_result
+            .map(|_| ())
     }
 }

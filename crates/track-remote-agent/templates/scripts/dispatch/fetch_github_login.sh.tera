@@ -1,2 +1,0 @@
-set -eu
-gh api user --jq .login

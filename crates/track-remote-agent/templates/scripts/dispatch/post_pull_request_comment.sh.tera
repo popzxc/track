@@ -1,4 +1,0 @@
-set -eu
-ENDPOINT="$1"
-BODY="$2"
-gh api --method POST "$ENDPOINT" -f body="$BODY" >/dev/null

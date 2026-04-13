@@ -1,33 +1,20 @@
-//! Remote shell-script definitions used by the remote-agent crate.
+//! Shared shell utilities that remain relevant after the helper migration.
 //!
-//! Each script is represented as its own type so the service layer can talk in
-//! terms of named remote operations instead of opaque shell snippets.
+//! The embedded Python helper now owns the remote operation surface, but the
+//! SSH transport still needs two tiny shell capabilities:
+//!
+//! 1. expand home-relative paths predictably during bootstrap
+//! 2. prepend the user-configured shell prelude before a bootstrap snippet
+//!
+//! Keeping those pieces here avoids spreading ad hoc shell assembly through the
+//! transport layer while the rest of the historical script code stays out of
+//! the normal build.
 
 use std::borrow::Cow;
 
 use serde::Serialize;
 
-mod checkout;
-mod cleanup;
-mod dispatch;
-mod files;
-
 use crate::template_renderer::render_template;
-
-pub(crate) use checkout::{
-    CreateReviewWorktreeScript, CreateWorktreeScript, EnsureCheckoutScript,
-    EnsureFollowUpWorktreeScript,
-};
-pub(crate) use cleanup::{
-    CleanupOrphanedRemoteArtifactsScript, CleanupReviewArtifactsScript,
-    CleanupReviewWorkspaceCachesScript, CleanupTaskArtifactsScript, ResetWorkspaceScript,
-};
-pub(crate) use dispatch::{
-    CancelRemoteDispatchScript, FetchGithubApiScript, FetchGithubLoginScript,
-    LaunchRemoteDispatchScript, PostPullRequestCommentScript, ReadDispatchSnapshotsScript,
-    RemoteAgentLauncherScript,
-};
-pub(crate) use files::PrepareRemoteUploadScript;
 
 const REMOTE_SCRIPT_WRAPPER_TEMPLATE: &str =
     include_str!("../../templates/scripts/remote_script_wrapper.sh.tera");

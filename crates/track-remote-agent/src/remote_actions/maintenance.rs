@@ -4,12 +4,16 @@ use track_types::remote_layout::{
 };
 use track_types::types::RemoteResetSummary;
 
-use crate::scripts::{
-    CleanupOrphanedRemoteArtifactsScript, CleanupReviewArtifactsScript,
-    CleanupReviewWorkspaceCachesScript, CleanupTaskArtifactsScript, ResetWorkspaceScript,
+use crate::helper::{
+    CleanupOrphanedArtifactsRequest, CleanupReviewArtifactsRequest,
+    CleanupReviewWorkspaceCachesRequest, CleanupTaskArtifactsRequest, EmptyResponse,
+    ResetWorkspaceRequest,
 };
 use crate::ssh::SshClient;
-use crate::types::{RemoteArtifactCleanupCounts, RemoteTaskCleanupMode};
+use crate::types::{
+    RemoteArtifactCleanupCounts, RemoteArtifactCleanupReport, RemoteTaskCleanupMode,
+    RemoteWorkspaceResetReport,
+};
 
 /// Removes the remote artifacts owned by one task's dispatch history according
 /// to the requested cleanup policy and reports how much state was reclaimed.
@@ -39,14 +43,31 @@ impl<'a> CleanupTaskArtifactsAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-        let script = CleanupTaskArtifactsScript::from_mode(self.cleanup_mode);
-        let arguments = script.arguments(
-            self.checkout_path,
-            self.worktree_paths,
-            self.run_directories,
-        );
-        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
-        script.parse_report(&report)
+        let worktree_paths = self
+            .worktree_paths
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let run_directories = self
+            .run_directories
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let report = self
+            .ssh_client
+            .run_helper_json::<_, RemoteArtifactCleanupReport>(
+                "cleanup-task-artifacts",
+                &CleanupTaskArtifactsRequest {
+                    checkout_path: self.checkout_path.as_str(),
+                    worktree_paths: &worktree_paths,
+                    run_directories: &run_directories,
+                    cleanup_mode: match self.cleanup_mode {
+                        RemoteTaskCleanupMode::CloseTask => "closeTask",
+                        RemoteTaskCleanupMode::DeleteTask => "deleteTask",
+                    },
+                },
+            )?;
+        Ok(report.into())
     }
 }
 
@@ -78,16 +99,34 @@ impl<'a> CleanupReviewArtifactsAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
-        let script = CleanupReviewArtifactsScript;
-        let arguments = script.arguments(
-            self.checkout_path,
-            self.branch_names,
-            self.worktree_paths,
-            self.run_directories,
-        );
-        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
+        let branch_names = self
+            .branch_names
+            .iter()
+            .map(|branch| branch.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let worktree_paths = self
+            .worktree_paths
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let run_directories = self
+            .run_directories
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let report = self
+            .ssh_client
+            .run_helper_json::<_, RemoteArtifactCleanupReport>(
+                "cleanup-review-artifacts",
+                &CleanupReviewArtifactsRequest {
+                    checkout_path: self.checkout_path.as_str(),
+                    branch_names: &branch_names,
+                    worktree_paths: &worktree_paths,
+                    run_directories: &run_directories,
+                },
+            )?;
 
-        script.parse_report(&report)
+        Ok(report.into())
     }
 }
 
@@ -123,14 +162,27 @@ impl<'a> CleanupOrphanedRemoteArtifactsAction<'a> {
         // local registry of every worktree ever created.
         // TODO: If the checkout layout ever becomes user-configurable, replace
         // this directory derivation with a registry-backed lookup.
-        let script = CleanupOrphanedRemoteArtifactsScript;
-        let arguments = script.arguments(
-            self.workspace_root,
-            self.kept_worktree_paths,
-            self.kept_run_directories,
-        );
-        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
-        script.parse_report(&report)
+        let kept_worktree_paths = self
+            .kept_worktree_paths
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let kept_run_directories = self
+            .kept_run_directories
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let report = self
+            .ssh_client
+            .run_helper_json::<_, RemoteArtifactCleanupReport>(
+                "cleanup-orphaned-artifacts",
+                &CleanupOrphanedArtifactsRequest {
+                    workspace_root: self.workspace_root,
+                    keep_worktree_paths: &kept_worktree_paths,
+                    keep_run_directories: &kept_run_directories,
+                },
+            )?;
+        Ok(report.into())
     }
 }
 
@@ -154,9 +206,17 @@ impl<'a> CleanupReviewWorkspaceCachesAction<'a> {
             return Ok(());
         }
 
-        let script = CleanupReviewWorkspaceCachesScript;
-        let arguments = script.arguments(self.checkout_paths);
-        self.ssh_client.run_script(&script.render(), &arguments)?;
+        let checkout_paths = self
+            .checkout_paths
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect::<Vec<_>>();
+        self.ssh_client.run_helper_json::<_, EmptyResponse>(
+            "cleanup-review-workspace-caches",
+            &CleanupReviewWorkspaceCachesRequest {
+                checkout_paths: &checkout_paths,
+            },
+        )?;
 
         Ok(())
     }
@@ -184,9 +244,15 @@ impl<'a> ResetWorkspaceAction<'a> {
     }
 
     pub(crate) fn execute(&self) -> Result<RemoteResetSummary, TrackError> {
-        let script = ResetWorkspaceScript;
-        let arguments = script.arguments(self.workspace_root, self.projects_registry_path);
-        let report = self.ssh_client.run_script(&script.render(), &arguments)?;
-        script.parse_report(&report)
+        let report = self
+            .ssh_client
+            .run_helper_json::<_, RemoteWorkspaceResetReport>(
+                "reset-workspace",
+                &ResetWorkspaceRequest {
+                    workspace_root: self.workspace_root,
+                    projects_registry_path: self.projects_registry_path,
+                },
+            )?;
+        Ok(report.into_summary())
     }
 }

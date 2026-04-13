@@ -11,8 +11,3 @@ where
     tera::Tera::one_off(template_source, &context, false)
         .expect("template rendering should succeed")
 }
-
-pub(crate) fn render_static_template(template_source: &str) -> String {
-    tera::Tera::one_off(template_source, &tera::Context::new(), false)
-        .expect("static template rendering should succeed")
-}
