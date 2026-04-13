@@ -23,7 +23,8 @@ Make sure these tools exist locally before you continue:
 - `tar`
 - `cmake`
 - `clang`
-- `docker compose`
+- a Compose-capable container CLI: `docker compose` or `podman compose` (`docker compose` is preferred,
+  even if used with `alias docker=podman` under the hood)
 - one C compiler: `cc`, `gcc`, or `clang`
 - one C++ compiler: `c++`, `g++`, or `clang++`
 
@@ -38,7 +39,7 @@ jq --version
 tar --version
 cmake --version
 clang --version
-docker compose version
+docker compose version || podman compose version
 command -v cc || command -v gcc || command -v clang
 command -v c++ || command -v g++ || command -v clang++
 ```

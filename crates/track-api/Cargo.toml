@@ -15,13 +15,21 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls"] }
+time = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 tower-http = { workspace = true, features = ["fs", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
-track-core = { workspace = true }
+track-config = { workspace = true }
+track-dal = { workspace = true }
+track-projects = { workspace = true }
+track-remote-agent = { workspace = true }
+track-types = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

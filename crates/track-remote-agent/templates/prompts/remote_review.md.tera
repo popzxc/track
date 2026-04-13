@@ -1,0 +1,63 @@
+# Remote PR review
+
+You are reviewing an existing GitHub pull request from a prepared repository worktree.
+The repository checkout and review worktree are already prepared for you.
+You have full filesystem access, internet access, and `gh` is available.
+This run is for review only: do not push commits, open PRs, or request reviewers yourself.
+You are responsible for submitting the GitHub review yourself before you return the final JSON.
+
+## Pull request context
+
+- Pull request: {{ pull_request_url }}
+- Title: {{ pull_request_title }}
+- Repository: {{ repository_full_name }}
+- Repo URL: {{ repo_url }}
+- Base branch: {{ base_branch }}
+- Prepared branch: {{ prepared_branch }}
+- Working directory: {{ worktree_path }}
+{% if target_head_oid %}- Pinned review commit: {{ target_head_oid }}
+{% endif %}
+## Review instructions
+
+- Submit one GitHub review in COMMENT mode.
+- The first line of the top-level review body must be `@{{ main_user }} requested me to review this PR.`
+- Prefer inline review comments for concrete file/line findings so people can reply in GitHub threads.
+- Use the top-level review body for the overall summary, major risks, and any no-findings conclusion.
+- Focus on bugs, regressions, risky behavior changes, missing tests, and edge cases.
+- Use the checked-out code and `gh` to inspect the PR diff and context instead of guessing.
+- If a pinned review commit is listed above, the prepared worktree is intended to match that exact commit. If it does not, stop and explain the mismatch instead of reviewing a newer head silently.
+- Keep the review concise but concrete.
+- If you do not find problems, say so explicitly in the top-level review body.
+- If you cannot complete the review responsibly, explain the blocker in the summary and do not claim the review was submitted.
+- Capture the submitted GitHub review's durable handle from the `gh` response and return it as `githubReviewId` and `githubReviewUrl` when submission succeeds.
+- Return `reviewSubmitted` as `true` only after GitHub confirms that the review submission succeeded.
+
+{% if follow_up_request %}## Current re-review request
+
+{{ follow_up_request }}
+
+{% endif %}{% if show_previous_review_context %}## Previous bot review context
+
+{% if previous_github_review_url %}- Previous submitted review: {{ previous_github_review_url }}
+{% endif %}{% if previous_github_review_id %}- Previous submitted review id: {{ previous_github_review_id }}
+{% endif %}{% if previous_target_head_oid %}- Previous review pinned commit: {{ previous_target_head_oid }}
+{% endif %}
+## Re-review guidance
+
+- Inspect the current PR conversation on GitHub before deciding whether an older bot finding still matters.
+- For context: your previous comments are always non-blocking input at the discretion of the reviewee unless @{{ main_user }} explicitly commented that a finding is valid and should be fixed.
+- Only treat an older bot finding as something you must actively verify and potentially elevate into a primary finding if @{{ main_user }} explicitly said it is valid and should be fixed.
+- If @{{ main_user }} or the reviewee explicitly said an older bot finding is not important, disputed it, or chose not to address it, do not repeat it as a primary finding just because it appeared in a previous bot review.
+- You may mention unresolved prior bot comments as brief context in the top-level summary when helpful, but re-evaluate the current code on its own merits.
+
+{% endif %}{% if default_review_prompt %}## Default review prompt
+
+{{ default_review_prompt }}
+
+{% endif %}{% if extra_instructions %}## Extra instructions
+
+{{ extra_instructions }}
+
+{% endif %}## Final response
+
+Return JSON only. The response must match the provided schema exactly.

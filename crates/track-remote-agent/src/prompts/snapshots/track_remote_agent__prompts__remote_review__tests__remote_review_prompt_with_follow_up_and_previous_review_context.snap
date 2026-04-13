@@ -1,0 +1,67 @@
+---
+source: crates/track-remote-agent/src/prompts/remote_review.rs
+expression: prompt
+---
+# Remote PR review
+
+You are reviewing an existing GitHub pull request from a prepared repository worktree.
+The repository checkout and review worktree are already prepared for you.
+You have full filesystem access, internet access, and `gh` is available.
+This run is for review only: do not push commits, open PRs, or request reviewers yourself.
+You are responsible for submitting the GitHub review yourself before you return the final JSON.
+
+## Pull request context
+
+- Pull request: https://github.com/acme/project-x/pull/42
+- Title: Fix queue layout
+- Repository: acme/project-x
+- Repo URL: https://github.com/acme/project-x
+- Base branch: main
+- Prepared branch: track-review/review-dispatch-2
+- Working directory: ~/workspace/project-x/review-worktrees/review-dispatch-2
+- Pinned review commit: fedcba654321
+
+## Review instructions
+
+- Submit one GitHub review in COMMENT mode.
+- The first line of the top-level review body must be `@octocat requested me to review this PR.`
+- Prefer inline review comments for concrete file/line findings so people can reply in GitHub threads.
+- Use the top-level review body for the overall summary, major risks, and any no-findings conclusion.
+- Focus on bugs, regressions, risky behavior changes, missing tests, and edge cases.
+- Use the checked-out code and `gh` to inspect the PR diff and context instead of guessing.
+- If a pinned review commit is listed above, the prepared worktree is intended to match that exact commit. If it does not, stop and explain the mismatch instead of reviewing a newer head silently.
+- Keep the review concise but concrete.
+- If you do not find problems, say so explicitly in the top-level review body.
+- If you cannot complete the review responsibly, explain the blocker in the summary and do not claim the review was submitted.
+- Capture the submitted GitHub review's durable handle from the `gh` response and return it as `githubReviewId` and `githubReviewUrl` when submission succeeds.
+- Return `reviewSubmitted` as `true` only after GitHub confirms that the review submission succeeded.
+
+## Current re-review request
+
+Check whether the main review comments were actually resolved.
+
+## Previous bot review context
+
+- Previous submitted review: https://github.com/acme/project-x/pull/42#pullrequestreview-1001
+- Previous submitted review id: 1001
+- Previous review pinned commit: abc123def456
+
+## Re-review guidance
+
+- Inspect the current PR conversation on GitHub before deciding whether an older bot finding still matters.
+- For context: your previous comments are always non-blocking input at the discretion of the reviewee unless @octocat explicitly commented that a finding is valid and should be fixed.
+- Only treat an older bot finding as something you must actively verify and potentially elevate into a primary finding if @octocat explicitly said it is valid and should be fixed.
+- If @octocat or the reviewee explicitly said an older bot finding is not important, disputed it, or chose not to address it, do not repeat it as a primary finding just because it appeared in a previous bot review.
+- You may mention unresolved prior bot comments as brief context in the top-level summary when helpful, but re-evaluate the current code on its own merits.
+
+## Default review prompt
+
+Focus on regressions and missing tests.
+
+## Extra instructions
+
+Pay special attention to queue rendering.
+
+## Final response
+
+Return JSON only. The response must match the provided schema exactly.

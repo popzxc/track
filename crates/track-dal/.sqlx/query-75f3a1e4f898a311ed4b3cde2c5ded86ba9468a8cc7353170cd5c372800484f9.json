@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM backend_settings WHERE setting_key = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "75f3a1e4f898a311ed4b3cde2c5ded86ba9468a8cc7353170cd5c372800484f9"
+}

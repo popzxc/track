@@ -1,13 +1,8 @@
-use track_core::config::ConfigService;
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
-use track_core::project_discovery::discover_projects;
-use track_core::project_repository::ProjectRepository;
-use track_core::task_description::render_task_description;
-use track_core::task_repository::FileTaskRepository;
-use track_core::types::{
-    Confidence, ParsedTaskCandidate, Priority, StoredTask, TaskCreateInput, TaskSource,
-};
+use track_config::runtime::TrackRuntimeConfig;
+use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::task_description::render_task_description;
+use track_types::types::{Confidence, ParsedTaskCandidate, Priority, TaskCreateInput, TaskSource};
 
 use crate::task_parser::TaskParserFactory;
 
@@ -74,6 +69,8 @@ fn build_task_body(
     let formatted_body = sanitize_model_body(normalized_title, body_markdown);
     let original_note =
         strip_capture_shorthand(raw_text, project_catalog, canonical_project, priority);
+    // TODO: We are using API, maybe we should transfer everything as JSON instead
+    // and only render it before we pass it to an LLM?
     let rendered_without_original = render_task_description(
         normalized_title,
         (!formatted_body.is_empty()).then_some(formatted_body.as_str()),
@@ -137,7 +134,7 @@ fn strip_capture_shorthand(
     if let Some((candidate_project, rest)) = split_first_token(remainder) {
         let matches_project = project_catalog
             .resolve(candidate_project)
-            .map(|project| project.canonical_name == canonical_project)
+            .map(|project| project.canonical_name.as_str() == canonical_project)
             .unwrap_or(false);
 
         if matches_project {
@@ -201,17 +198,10 @@ fn strip_markdown_heading(line: &str) -> &str {
         .trim()
 }
 
-pub struct TaskCaptureService<'a> {
-    pub config_service: &'a ConfigService,
-    pub project_repository: &'a ProjectRepository,
-    pub task_repository: &'a FileTaskRepository,
-    pub task_parser_factory: &'a dyn TaskParserFactory,
-}
-
 pub fn build_task_create_input_from_text(
     raw_text: &str,
     project_catalog: &ProjectCatalog,
-    runtime_config: &track_core::types::TrackRuntimeConfig,
+    runtime_config: &TrackRuntimeConfig,
     source: Option<TaskSource>,
     task_parser_factory: &dyn TaskParserFactory,
 ) -> Result<TaskCreateInput, TrackError> {
@@ -238,7 +228,7 @@ pub fn build_task_create_input_from_text(
         &body_markdown,
         raw_text,
         project_catalog,
-        &project.canonical_name,
+        project.canonical_name.as_str(),
         priority,
     );
 
@@ -249,73 +239,23 @@ pub fn build_task_create_input_from_text(
         source,
     })
 }
-
-impl<'a> TaskCaptureService<'a> {
-    pub fn create_task_from_text(
-        &self,
-        raw_text: &str,
-        source: Option<TaskSource>,
-    ) -> Result<StoredTask, TrackError> {
-        if raw_text.trim().is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::EmptyInput,
-                "Please provide a task description.",
-            ));
-        }
-
-        let config = self.config_service.load_runtime_config()?;
-        if config.project_roots.is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::NoProjectRoots,
-                "No project roots configured.",
-            ));
-        }
-
-        let project_catalog = discover_projects(&config)?;
-        if project_catalog.is_empty() {
-            return Err(TrackError::new(
-                ErrorCode::NoProjectsDiscovered,
-                "No git repositories found under configured roots.",
-            ));
-        }
-
-        let task_input = build_task_create_input_from_text(
-            raw_text,
-            &project_catalog,
-            &config,
-            source,
-            self.task_parser_factory,
-        )?;
-
-        // The CLI is the only component that can reliably inspect host
-        // repositories, so task capture seeds `PROJECT.md` before the task hits
-        // disk. The API can then work entirely from the persisted `.track`
-        // directory, including inside Docker where source checkouts are not
-        // mounted.
-        let project = project_catalog
-            .resolve(&task_input.project)
-            .expect("validated task input should point at a known project")
-            .clone();
-        self.project_repository.ensure_project(&project)?;
-        self.task_repository.create_task(task_input)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
-    use track_core::types::{Confidence, ParsedTaskCandidate, Priority};
+    use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+    use track_types::ids::ProjectId;
+    use track_types::types::{Confidence, ParsedTaskCandidate, Priority};
 
     use super::{build_task_body, validate_parsed_task_candidate};
 
     #[test]
     fn resolves_aliases_to_canonical_project_names() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "project-x".to_owned(),
+            canonical_name: ProjectId::new("project-x")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/project-x"),
-            aliases: vec!["proj-x".to_owned()],
+            aliases: vec![ProjectId::new("proj-x").expect("fixture project ids should validate")],
         }]);
 
         let (project, priority, title, body_markdown) = validate_parsed_task_candidate(
@@ -340,9 +280,10 @@ mod tests {
     #[test]
     fn preserves_raw_capture_context_when_it_contains_more_than_the_summary() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "zksync-airbender".to_owned(),
+            canonical_name: ProjectId::new("zksync-airbender")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/zksync-airbender"),
-            aliases: vec!["airbender".to_owned()],
+            aliases: vec![ProjectId::new("airbender").expect("fixture project ids should validate")],
         }]);
 
         let body = build_task_body(
@@ -363,9 +304,10 @@ mod tests {
     #[test]
     fn avoids_duplicating_context_when_the_note_matches_the_summary() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "project-x".to_owned(),
+            canonical_name: ProjectId::new("project-x")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/project-x"),
-            aliases: vec!["proj-x".to_owned()],
+            aliases: vec![ProjectId::new("proj-x").expect("fixture project ids should validate")],
         }]);
 
         let body = build_task_body(
@@ -383,7 +325,8 @@ mod tests {
     #[test]
     fn removes_repeated_title_from_the_formatted_markdown_body() {
         let project_catalog = ProjectCatalog::new(vec![ProjectInfo {
-            canonical_name: "project-x".to_owned(),
+            canonical_name: ProjectId::new("project-x")
+                .expect("fixture project ids should validate"),
             path: PathBuf::from("/tmp/project-x"),
             aliases: vec![],
         }]);

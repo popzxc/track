@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1\n                FROM projects\n                WHERE canonical_name = ?1\n            ) AS \"exists!: i64\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "60a86a7da6aeb78b9830d1eda455aec6cea9c745a1df0c403b1893e055875331"
+}

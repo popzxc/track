@@ -42,9 +42,11 @@ Then open:
 http://localhost:3210
 ```
 
-`track-backend` forwards to the installed release Compose file and exports your
-current UID/GID before calling `docker compose`, which keeps the bind-mounted
-backend state directory writable without requiring a local image build.
+`track-backend` forwards to the installed release Compose file, exports your
+current UID/GID, and auto-detects whether your machine is using Docker or
+Podman. On rootless Podman it adds the `keep-id` user-namespace override so
+the bind-mounted backend state directory stays writable without requiring a
+local image build.
 
 By default the shipped Compose file binds the backend to `127.0.0.1` only.
 That is intentional because `track` does not provide a login or authorization

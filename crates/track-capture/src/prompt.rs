@@ -1,5 +1,5 @@
 use serde_json::json;
-use track_core::project_catalog::ProjectCatalog;
+use track_projects::project_catalog::ProjectCatalog;
 
 pub struct LlamaCppPrompt {
     pub system_prompt: String,
@@ -68,7 +68,7 @@ pub fn build_task_parser_json_schema(project_catalog: &ProjectCatalog) -> serde_
                 "type": ["string", "null"],
                 "enum": allowed_projects
                     .into_iter()
-                    .map(serde_json::Value::String)
+                    .map(|project| serde_json::Value::String(project.into_inner()))
                     .chain(std::iter::once(serde_json::Value::Null))
                     .collect::<Vec<_>>(),
             },

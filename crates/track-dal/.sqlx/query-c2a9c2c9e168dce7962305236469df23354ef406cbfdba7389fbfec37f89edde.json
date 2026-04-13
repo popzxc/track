@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT\n                canonical_name AS \"canonical_name!\",\n                repo_url AS \"repo_url!\",\n                git_url AS \"git_url!\",\n                base_branch AS \"base_branch!\",\n                description AS \"description?\"\n            FROM projects\n            WHERE canonical_name = ?1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "canonical_name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_url!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_url!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "base_branch!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "description?",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "c2a9c2c9e168dce7962305236469df23354ef406cbfdba7389fbfec37f89edde"
+}

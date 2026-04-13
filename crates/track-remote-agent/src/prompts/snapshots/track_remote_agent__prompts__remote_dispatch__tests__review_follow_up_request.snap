@@ -1,0 +1,10 @@
+---
+source: crates/track-remote-agent/src/prompts/remote_dispatch.rs
+expression: request
+---
+Respond to new review feedback from @octocat on the existing PR.
+
+Use `gh` to fetch submitted PR reviews and inline review comments from @octocat only.
+Only use reviews with state COMMENTED or CHANGES_REQUESTED that were submitted after 2026-03-25T12:00:00.000Z.
+Ignore APPROVED reviews and all feedback from other users.
+Keep using the existing PR at https://github.com/acme/project-x/pull/42 unless you explain why that is impossible.

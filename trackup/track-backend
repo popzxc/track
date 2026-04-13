@@ -17,6 +17,36 @@ TRACK_SHARE_DIR="${TRACK_ROOT_DIR}/share"
 COMPOSE_FILE="${TRACK_SHARE_DIR}/track-backend.compose.yaml"
 TRACK_BACKEND_STATE_DIR="${HOME}/.track/backend"
 
+detect_container_cli() {
+  if command -v docker >/dev/null 2>&1; then
+    printf 'docker\n'
+    return 0
+  fi
+
+  if command -v podman >/dev/null 2>&1; then
+    printf 'podman\n'
+    return 0
+  fi
+
+  printf 'track-backend: neither `docker` nor `podman` is available\n' >&2
+  exit 1
+}
+
+container_cli_reports_podman() {
+  local container_cli version_output
+
+  container_cli="$1"
+  version_output="$("$container_cli" --version 2>&1 || true)"
+  case "$version_output" in
+    *[Pp]odman*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 if [ ! -f "$COMPOSE_FILE" ]; then
   printf 'track-backend: missing compose file at %s\n' "$COMPOSE_FILE" >&2
   exit 1
@@ -40,4 +70,20 @@ if [ "${1:-}" = "up" ]; then
   mkdir -p "$TRACK_BACKEND_STATE_DIR"
 fi
 
-exec docker compose --project-name track -f "$COMPOSE_FILE" "$@"
+# Rootless Podman remaps bind-mounted ownership unless we opt into `keep-id`.
+# That remapping turns the SQLite state directory read-only inside the backend
+# container even when the host files belong to the caller.
+CONTAINER_CLI="$(detect_container_cli)"
+if container_cli_reports_podman "$CONTAINER_CLI"; then
+  PODMAN_OVERRIDE_FILE="$(mktemp "${TMPDIR:-/tmp}/track-backend-podman.XXXXXX.yaml")"
+  trap 'rm -f "$PODMAN_OVERRIDE_FILE"' EXIT INT TERM
+  cat >"$PODMAN_OVERRIDE_FILE" <<'EOF'
+services:
+  track-web:
+    userns_mode: keep-id
+EOF
+  "$CONTAINER_CLI" compose --project-name track -f "$COMPOSE_FILE" -f "$PODMAN_OVERRIDE_FILE" "$@"
+  exit $?
+fi
+
+exec "$CONTAINER_CLI" compose --project-name track -f "$COMPOSE_FILE" "$@"
