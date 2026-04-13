@@ -17,6 +17,7 @@ from track_remote_helper.common import (
     STATUS_FILE_NAME,
     STDERR_FILE_NAME,
     CommandError,
+    advisory_lock,
     check_command,
     command_succeeds,
     ensure_parent,
@@ -32,6 +33,10 @@ from track_remote_helper.common import (
 )
 
 TASK_WORKTREE_DIRECTORY_NAME = "worktrees"
+
+
+def checkout_lock_name(checkout_path: Path) -> str:
+    return f"checkout:{checkout_path}"
 
 
 def handle_command(command_name: str, request: dict[str, object], helper_path: Path) -> dict[str, object]:
@@ -113,50 +118,57 @@ def ensure_checkout(request: dict[str, object]) -> dict[str, object]:
     checkout_path = expand_remote_path(str(request["checkoutPath"]))
     github_login_name = str(request["githubLogin"])
 
-    checkout_path.parent.mkdir(parents=True, exist_ok=True)
+    # This checkout is shared by every run for the project, so concurrent
+    # launches must serialize the refresh and remote/worktree metadata updates.
+    with advisory_lock(checkout_lock_name(checkout_path)):
+        checkout_path.parent.mkdir(parents=True, exist_ok=True)
 
-    git_env = os.environ.copy()
-    remote_ssh_dir = expand_remote_path("~/.ssh")
-    remote_known_hosts_path = remote_ssh_dir / "known_hosts"
-    remote_ssh_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(remote_ssh_dir, 0o700)
-    remote_known_hosts_path.touch(exist_ok=True)
-    os.chmod(remote_known_hosts_path, 0o600)
-    git_env["GIT_SSH_COMMAND"] = (
-        "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={remote_known_hosts_path}"
-    )
-
-    fork_git_url = resolve_fork_git_url(github_login_name, repository_name)
-    if not fork_git_url:
-        check_command([resolve_binary("gh"), "repo", "fork", repo_url])
-        fork_git_url = resolve_fork_git_url(github_login_name, repository_name)
-
-    if not fork_git_url:
-        raise CommandError(
-            f"could not determine the fork SSH URL for {github_login_name}/{repository_name}"
+        git_env = os.environ.copy()
+        remote_ssh_dir = expand_remote_path("~/.ssh")
+        remote_known_hosts_path = remote_ssh_dir / "known_hosts"
+        remote_ssh_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(remote_ssh_dir, 0o700)
+        remote_known_hosts_path.touch(exist_ok=True)
+        os.chmod(remote_known_hosts_path, 0o600)
+        git_env["GIT_SSH_COMMAND"] = (
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+            f"-o UserKnownHostsFile={remote_known_hosts_path}"
         )
 
-    if not (checkout_path / ".git").is_dir():
-        check_command(["git", "clone", fork_git_url, str(checkout_path)], env=git_env)
+        fork_git_url = resolve_fork_git_url(github_login_name, repository_name)
+        if not fork_git_url:
+            check_command([resolve_binary("gh"), "repo", "fork", repo_url])
+            fork_git_url = resolve_fork_git_url(github_login_name, repository_name)
 
-    configure_remote(checkout_path, "origin", fork_git_url)
-    configure_remote(checkout_path, "upstream", git_url)
+        if not fork_git_url:
+            raise CommandError(
+                f"could not determine the fork SSH URL for {github_login_name}/{repository_name}"
+            )
 
-    check_command(["git", "fetch", "origin", "--prune"], cwd=checkout_path, env=git_env)
-    check_command(["git", "fetch", "upstream", "--prune"], cwd=checkout_path, env=git_env)
+        if not (checkout_path / ".git").is_dir():
+            check_command(["git", "clone", fork_git_url, str(checkout_path)], env=git_env)
 
-    if git_ref_exists(checkout_path, f"refs/heads/{base_branch}"):
-        check_command(["git", "checkout", base_branch], cwd=checkout_path, env=git_env)
-    else:
+        configure_remote(checkout_path, "origin", fork_git_url)
+        configure_remote(checkout_path, "upstream", git_url)
+
+        check_command(["git", "fetch", "origin", "--prune"], cwd=checkout_path, env=git_env)
+        check_command(["git", "fetch", "upstream", "--prune"], cwd=checkout_path, env=git_env)
+
+        if git_ref_exists(checkout_path, f"refs/heads/{base_branch}"):
+            check_command(["git", "checkout", base_branch], cwd=checkout_path, env=git_env)
+        else:
+            check_command(
+                ["git", "checkout", "-B", base_branch, f"upstream/{base_branch}"],
+                cwd=checkout_path,
+                env=git_env,
+            )
+
         check_command(
-            ["git", "checkout", "-B", base_branch, f"upstream/{base_branch}"],
+            ["git", "reset", "--hard", f"upstream/{base_branch}"],
             cwd=checkout_path,
             env=git_env,
         )
-
-    check_command(["git", "reset", "--hard", f"upstream/{base_branch}"], cwd=checkout_path, env=git_env)
-    check_command(["git", "clean", "-fd"], cwd=checkout_path, env=git_env)
+        check_command(["git", "clean", "-fd"], cwd=checkout_path, env=git_env)
 
     return {"forkGitUrl": fork_git_url}
 
@@ -167,106 +179,12 @@ def create_worktree(request: dict[str, object]) -> dict[str, object]:
     branch_name = str(request["branchName"])
     worktree_path = expand_remote_path(str(request["worktreePath"]))
 
-    prepare_fresh_worktree_path(
-        checkout_path,
-        worktree_path,
-        "Refusing to overwrite unexpected existing path while preparing a fresh dispatch worktree.",
-    )
-    check_command(
-        ["git", "-C", str(checkout_path), "worktree", "add", "-B", branch_name, str(worktree_path), f"upstream/{base_branch}"]
-    )
-    return {}
-
-
-def create_review_worktree(request: dict[str, object]) -> dict[str, object]:
-    checkout_path = expand_remote_path(str(request["checkoutPath"]))
-    pull_request_number = int(request["pullRequestNumber"])
-    branch_name = str(request["branchName"])
-    worktree_path = expand_remote_path(str(request["worktreePath"]))
-    target_head_oid = str(request.get("targetHeadOid") or "").strip()
-
-    prepare_fresh_worktree_path(
-        checkout_path,
-        worktree_path,
-        "Refusing to overwrite unexpected existing path while preparing a review worktree.",
-    )
-    check_command(
-        [
-            "git",
-            "-C",
-            str(checkout_path),
-            "fetch",
-            "upstream",
-            f"pull/{pull_request_number}/head:{branch_name}",
-        ]
-    )
-
-    target_ref = branch_name
-    if target_head_oid:
-        if not git_object_exists(checkout_path, target_head_oid):
-            subprocess.run(
-                ["git", "-C", str(checkout_path), "fetch", "upstream", target_head_oid],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-
-        if git_object_exists(checkout_path, target_head_oid):
-            target_ref = target_head_oid
-        else:
-            completed = check_command(
-                ["git", "-C", str(checkout_path), "rev-parse", f"{branch_name}^{{commit}}"],
-                capture_output=True,
-            )
-            fetched_head_oid = completed.stdout.strip()
-            raise CommandError(
-                f"requested review commit {target_head_oid} is not available locally; "
-                f"the fetched PR head is {fetched_head_oid}"
-            )
-
-    check_command(["git", "-C", str(checkout_path), "branch", "-f", branch_name, target_ref])
-    check_command(
-        [
-            "git",
-            "-C",
-            str(checkout_path),
-            "worktree",
-            "add",
-            "-B",
-            branch_name,
-            str(worktree_path),
-            target_ref,
-        ]
-    )
-    return {}
-
-
-def ensure_follow_up_worktree(request: dict[str, object]) -> dict[str, object]:
-    checkout_path = expand_remote_path(str(request["checkoutPath"]))
-    branch_name = str(request["branchName"])
-    worktree_path = expand_remote_path(str(request["worktreePath"]))
-
-    worktree_path.parent.mkdir(parents=True, exist_ok=True)
-    fetch_ignore_failure(["git", "-C", str(checkout_path), "fetch", "origin", "--prune"])
-    fetch_ignore_failure(["git", "-C", str(checkout_path), "fetch", "upstream", "--prune"])
-
-    if (worktree_path / ".git").exists():
-        if not command_succeeds(["git", "-C", str(worktree_path), "rev-parse", "--show-toplevel"]):
-            raise CommandError(f"existing follow-up worktree path {worktree_path} is not a valid Git worktree")
-        check_command(["git", "-C", str(worktree_path), "checkout", branch_name])
-        return {}
-
-    if worktree_path.exists():
-        raise CommandError(f"follow-up worktree path {worktree_path} already exists but is not a Git worktree")
-
-    check_command(["git", "-C", str(checkout_path), "worktree", "prune"])
-
-    if git_ref_exists(checkout_path, f"refs/heads/{branch_name}"):
-        check_command(["git", "-C", str(checkout_path), "worktree", "add", str(worktree_path), branch_name])
-        return {}
-
-    if git_ref_exists(checkout_path, f"refs/remotes/origin/{branch_name}"):
+    with advisory_lock(checkout_lock_name(checkout_path)):
+        prepare_fresh_worktree_path(
+            checkout_path,
+            worktree_path,
+            "Refusing to overwrite unexpected existing path while preparing a fresh dispatch worktree.",
+        )
         check_command(
             [
                 "git",
@@ -277,12 +195,127 @@ def ensure_follow_up_worktree(request: dict[str, object]) -> dict[str, object]:
                 "-B",
                 branch_name,
                 str(worktree_path),
-                f"origin/{branch_name}",
+                f"upstream/{base_branch}",
             ]
         )
-        return {}
+    return {}
 
-    raise CommandError(f"could not restore the follow-up worktree for branch {branch_name}")
+
+def create_review_worktree(request: dict[str, object]) -> dict[str, object]:
+    checkout_path = expand_remote_path(str(request["checkoutPath"]))
+    pull_request_number = int(request["pullRequestNumber"])
+    branch_name = str(request["branchName"])
+    worktree_path = expand_remote_path(str(request["worktreePath"]))
+    target_head_oid = str(request.get("targetHeadOid") or "").strip()
+
+    with advisory_lock(checkout_lock_name(checkout_path)):
+        prepare_fresh_worktree_path(
+            checkout_path,
+            worktree_path,
+            "Refusing to overwrite unexpected existing path while preparing a review worktree.",
+        )
+        check_command(
+            [
+                "git",
+                "-C",
+                str(checkout_path),
+                "fetch",
+                "upstream",
+                f"pull/{pull_request_number}/head:{branch_name}",
+            ]
+        )
+
+        target_ref = branch_name
+        if target_head_oid:
+            if not git_object_exists(checkout_path, target_head_oid):
+                subprocess.run(
+                    ["git", "-C", str(checkout_path), "fetch", "upstream", target_head_oid],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+
+            if git_object_exists(checkout_path, target_head_oid):
+                target_ref = target_head_oid
+            else:
+                completed = check_command(
+                    ["git", "-C", str(checkout_path), "rev-parse", f"{branch_name}^{{commit}}"],
+                    capture_output=True,
+                )
+                fetched_head_oid = completed.stdout.strip()
+                raise CommandError(
+                    f"requested review commit {target_head_oid} is not available locally; "
+                    f"the fetched PR head is {fetched_head_oid}"
+                )
+
+        check_command(["git", "-C", str(checkout_path), "branch", "-f", branch_name, target_ref])
+        check_command(
+            [
+                "git",
+                "-C",
+                str(checkout_path),
+                "worktree",
+                "add",
+                "-B",
+                branch_name,
+                str(worktree_path),
+                target_ref,
+            ]
+        )
+    return {}
+
+
+def ensure_follow_up_worktree(request: dict[str, object]) -> dict[str, object]:
+    checkout_path = expand_remote_path(str(request["checkoutPath"]))
+    branch_name = str(request["branchName"])
+    worktree_path = expand_remote_path(str(request["worktreePath"]))
+
+    with advisory_lock(checkout_lock_name(checkout_path)):
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+        fetch_ignore_failure(["git", "-C", str(checkout_path), "fetch", "origin", "--prune"])
+        fetch_ignore_failure(["git", "-C", str(checkout_path), "fetch", "upstream", "--prune"])
+
+        if (worktree_path / ".git").exists():
+            if not command_succeeds(
+                ["git", "-C", str(worktree_path), "rev-parse", "--show-toplevel"]
+            ):
+                raise CommandError(
+                    f"existing follow-up worktree path {worktree_path} is not a valid Git worktree"
+                )
+            check_command(["git", "-C", str(worktree_path), "checkout", branch_name])
+            return {}
+
+        if worktree_path.exists():
+            raise CommandError(
+                f"follow-up worktree path {worktree_path} already exists but is not a Git worktree"
+            )
+
+        check_command(["git", "-C", str(checkout_path), "worktree", "prune"])
+
+        if git_ref_exists(checkout_path, f"refs/heads/{branch_name}"):
+            check_command(
+                ["git", "-C", str(checkout_path), "worktree", "add", str(worktree_path), branch_name]
+            )
+            return {}
+
+        if git_ref_exists(checkout_path, f"refs/remotes/origin/{branch_name}"):
+            check_command(
+                [
+                    "git",
+                    "-C",
+                    str(checkout_path),
+                    "worktree",
+                    "add",
+                    "-B",
+                    branch_name,
+                    str(worktree_path),
+                    f"origin/{branch_name}",
+                ]
+            )
+            return {}
+
+        raise CommandError(f"could not restore the follow-up worktree for branch {branch_name}")
 
 
 def launch_run(request: dict[str, object], helper_path: Path) -> dict[str, object]:

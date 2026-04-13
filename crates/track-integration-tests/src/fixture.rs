@@ -15,6 +15,7 @@ const FIXTURE_WORKSPACE_ROOT: &str = "/home/track/workspace";
 const FIXTURE_PROJECTS_REGISTRY_PATH: &str = "/srv/track-testing/state/track-projects.json";
 const FIXTURE_SHELL_PRELUDE: &str =
     "export PATH=\"/opt/track-testing/bin:$PATH\"\nexport TRACK_TESTING_RUNTIME_DIR=\"/srv/track-testing\"";
+const FIXTURE_START_ATTEMPTS: usize = 5;
 
 // =============================================================================
 // SSH Fixture Lifecycle
@@ -47,8 +48,6 @@ impl RemoteFixture {
                 .expect("system time should be after the Unix epoch")
                 .as_nanos()
         );
-        let port = reserve_local_port();
-
         run_fixturectl(workspace_root, ["build-image", "--image", FIXTURE_IMAGE]);
         run_fixturectl(
             workspace_root,
@@ -58,48 +57,81 @@ impl RemoteFixture {
                 key_dir.path().join("id_ed25519").to_string_lossy().as_ref(),
             ],
         );
-        run_fixturectl(
-            workspace_root,
-            [
-                "run",
-                "--image",
-                FIXTURE_IMAGE,
-                "--name",
-                &container_name,
-                "--port",
-                &port.to_string(),
-                "--runtime-dir",
-                runtime_dir.path().to_string_lossy().as_ref(),
-                "--authorized-key",
-                key_dir
-                    .path()
-                    .join("id_ed25519.pub")
-                    .to_string_lossy()
-                    .as_ref(),
-            ],
-        );
-        run_fixturectl(
-            workspace_root,
-            [
-                "wait-for-ssh",
-                "--host",
-                FIXTURE_HOST,
-                "--user",
-                FIXTURE_USER,
-                "--port",
-                &port.to_string(),
-                "--private-key",
-                key_dir.path().join("id_ed25519").to_string_lossy().as_ref(),
-                "--known-hosts",
-                runtime_dir
-                    .path()
-                    .join("known_hosts")
-                    .to_string_lossy()
-                    .as_ref(),
-                "--timeout-seconds",
-                "20",
-            ],
-        );
+        let mut port = None;
+        let mut last_fixture_output = None;
+        for _attempt in 0..FIXTURE_START_ATTEMPTS {
+            let candidate_port = reserve_local_port();
+            let run_output = run_fixturectl_maybe(
+                workspace_root,
+                [
+                    "run",
+                    "--image",
+                    FIXTURE_IMAGE,
+                    "--name",
+                    &container_name,
+                    "--port",
+                    &candidate_port.to_string(),
+                    "--runtime-dir",
+                    runtime_dir.path().to_string_lossy().as_ref(),
+                    "--authorized-key",
+                    key_dir
+                        .path()
+                        .join("id_ed25519.pub")
+                        .to_string_lossy()
+                        .as_ref(),
+                ],
+            )
+            .expect("fixturectl run command should start successfully");
+            if !run_output.status.success() {
+                if fixture_port_bind_failed(&run_output) {
+                    last_fixture_output = Some(run_output);
+                    continue;
+                }
+                assert_command_success("fixturectl", &run_output);
+            }
+
+            let wait_output = run_fixturectl_maybe(
+                workspace_root,
+                [
+                    "wait-for-ssh",
+                    "--host",
+                    FIXTURE_HOST,
+                    "--user",
+                    FIXTURE_USER,
+                    "--port",
+                    &candidate_port.to_string(),
+                    "--private-key",
+                    key_dir.path().join("id_ed25519").to_string_lossy().as_ref(),
+                    "--known-hosts",
+                    runtime_dir
+                        .path()
+                        .join("known_hosts")
+                        .to_string_lossy()
+                        .as_ref(),
+                    "--timeout-seconds",
+                    "20",
+                ],
+            )
+            .expect("fixturectl wait-for-ssh command should start successfully");
+            if wait_output.status.success() {
+                port = Some(candidate_port);
+                break;
+            }
+
+            let _ = run_fixturectl_maybe(workspace_root, ["stop", "--name", &container_name]);
+            last_fixture_output = Some(wait_output);
+        }
+        let port = match port {
+            Some(port) => port,
+            None => {
+                if let Some(output) = last_fixture_output.as_ref() {
+                    assert_command_success("fixturectl", output);
+                }
+                panic!(
+                    "fixturectl did not start the SSH fixture after {FIXTURE_START_ATTEMPTS} attempts"
+                );
+            }
+        };
 
         Self {
             container_name,
@@ -301,4 +333,8 @@ fn assert_command_success(label: &str, output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn fixture_port_bind_failed(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stderr).contains("failed to bind host port")
 }

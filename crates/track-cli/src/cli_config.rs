@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use track_config::config::{
-    LlamaCppConfigFile, DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
+    LlamaCppConfigFile, DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE,
+    DEFAULT_LLAMACPP_MODEL_HF_REPO,
 };
 use track_config::paths::{collapse_home_path, get_cli_config_path, resolve_path_from_config_file};
 use track_config::runtime::{
@@ -107,7 +108,10 @@ impl CliConfigService {
         })
     }
 
-    fn load_from_cli_config(&self, created_default_config: bool) -> Result<LoadedCliConfig, TrackError> {
+    fn load_from_cli_config(
+        &self,
+        created_default_config: bool,
+    ) -> Result<LoadedCliConfig, TrackError> {
         let file = self.load_config_file()?;
 
         Ok(LoadedCliConfig {
@@ -310,7 +314,8 @@ mod tests {
     fn configure_preserves_existing_model_settings_when_only_backend_changes() {
         let directory = TempDir::new().expect("tempdir should be created");
         let cli_config_path = directory.path().join("cli.json");
-        let service = CliConfigService::new(Some(cli_config_path)).expect("cli config service should resolve");
+        let service = CliConfigService::new(Some(cli_config_path))
+            .expect("cli config service should resolve");
         service
             .configure(ConfigureOptions {
                 model_hf_repo: Some("repo/example".to_owned()),

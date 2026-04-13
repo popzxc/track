@@ -2,14 +2,13 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use track_config::paths::{collapse_home_path, path_to_string};
 use track_config::runtime::RemoteAgentRuntimeConfig;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::time_utils::now_utc;
 
 use crate::scripts::{remote_path_helpers_shell, render_remote_script_with_shell_prelude};
 
@@ -23,7 +22,6 @@ const REMOTE_HELPER_VERSION_FILE_NAME: &str = "version.txt";
 pub(crate) struct SshClient {
     helper_directory: String,
     helper_path: String,
-    helper_uploaded: Mutex<bool>,
     host: String,
     key_path: PathBuf,
     known_hosts_path: PathBuf,
@@ -83,7 +81,6 @@ impl SshClient {
         Ok(Self {
             helper_path: format!("{helper_directory}/{REMOTE_HELPER_FILE_NAME}"),
             helper_directory,
-            helper_uploaded: Mutex::new(false),
             host: config.host.clone(),
             key_path: config.managed_key_path.clone(),
             known_hosts_path: config.managed_known_hosts_path.clone(),
@@ -174,11 +171,17 @@ impl SshClient {
         }
 
         serde_json::from_slice::<Response>(&output.stdout).map_err(|error| {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let stderr_suffix = if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(" Stderr: {stderr}")
+            };
             TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
                 format!(
-                    "Remote helper command returned invalid JSON: {error}. Raw output: {}",
-                    String::from_utf8_lossy(&output.stdout).trim()
+                    "Remote helper command `{command_name}` returned invalid JSON: {error}. Raw stdout: {stdout}.{stderr_suffix}"
                 ),
             )
         })
@@ -299,8 +302,7 @@ impl SshClient {
     }
 
     fn ensure_remote_helper_uploaded(&self) -> Result<(), TrackError> {
-        let mut helper_uploaded = self
-            .helper_uploaded
+        let mut helper_uploaded = helper_upload_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if *helper_uploaded {
@@ -352,10 +354,8 @@ printf 'stale\n'
     }
 
     fn upload_remote_helper(&self) -> Result<(), TrackError> {
-        let local_temp_file = std::env::temp_dir().join(format!(
-            "track-remote-helper-{}.pyz",
-            now_utc().unix_timestamp_nanos()
-        ));
+        let local_temp_file =
+            std::env::temp_dir().join(format!("track-remote-helper-{}.pyz", std::process::id()));
         fs::write(&local_temp_file, REMOTE_HELPER_BYTES).map_err(|error| {
             TrackError::new(
                 ErrorCode::DispatchWriteFailed,
@@ -473,6 +473,16 @@ exec python3 -B "$HELPER_PATH" {command_name}
         ));
         command
     }
+}
+
+fn helper_upload_state() -> &'static Mutex<bool> {
+    static HELPER_UPLOADED: OnceLock<Mutex<bool>> = OnceLock::new();
+    HELPER_UPLOADED.get_or_init(|| Mutex::new(false))
+}
+
+pub fn invalidate_helper_upload() {
+    let mut helper_uploaded = helper_upload_state().lock().unwrap();
+    *helper_uploaded = false;
 }
 
 fn shell_single_quote(value: &str) -> String {

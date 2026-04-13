@@ -1,7 +1,11 @@
+import hashlib
 import os
+import fcntl
 import shutil
 import signal
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -23,10 +27,30 @@ TOOL_OVERRIDE_ENV_VARS = {
     "codex": "TRACK_REMOTE_HELPER_CODEX",
     "claude": "TRACK_REMOTE_HELPER_CLAUDE",
 }
+LOCK_ROOT = Path(
+    os.environ.get("TRACK_REMOTE_HELPER_LOCK_ROOT", tempfile.gettempdir())
+) / "track-remote-helper-locks"
 
 
 class CommandError(RuntimeError):
     pass
+
+
+def lock_path(name: str) -> Path:
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    return LOCK_ROOT / f"{digest}.lock"
+
+
+@contextmanager
+def advisory_lock(name: str):
+    path = lock_path(name)
+    ensure_parent(path)
+    with path.open("w", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def expand_remote_path(raw_path: str) -> Path:
