@@ -114,6 +114,11 @@ export function useAppDataLoader(options: UseAppDataLoaderOptions) {
         }),
       ])
 
+      // The local-first shell data above is enough to render the queue. We
+      // intentionally keep the slower dispatch/run enrichment on the same
+      // refresh cycle, but the initial screen no longer waits for it.
+      options.loading.value = false
+
       await Promise.all([
         options.loadLatestDispatchesForVisibleTasks(),
         options.loadRuns(),

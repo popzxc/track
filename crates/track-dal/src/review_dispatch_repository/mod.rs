@@ -1,5 +1,8 @@
 mod records;
 
+use std::collections::BTreeMap;
+
+use sqlx::{QueryBuilder, Sqlite};
 use track_types::errors::TrackError;
 use track_types::ids::{DispatchId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
@@ -171,6 +174,103 @@ impl<'a> ReviewDispatchRepository<'a> {
             .await?
             .into_iter()
             .next())
+    }
+
+    pub async fn latest_dispatches_for_reviews(
+        &self,
+        review_ids: &[ReviewId],
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        if review_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut query_builder = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT
+                dispatch_id,
+                review_id,
+                pull_request_url,
+                repository_full_name,
+                workspace_key,
+                preferred_tool,
+                status,
+                created_at,
+                updated_at,
+                finished_at,
+                remote_host,
+                branch_name,
+                worktree_path,
+                follow_up_request,
+                target_head_oid,
+                summary,
+                review_submitted,
+                github_review_id,
+                github_review_url,
+                notes,
+                error_message
+            FROM (
+                SELECT
+                    dispatch_id,
+                    review_id,
+                    pull_request_url,
+                    repository_full_name,
+                    workspace_key,
+                    preferred_tool,
+                    status,
+                    created_at,
+                    updated_at,
+                    finished_at,
+                    remote_host,
+                    branch_name,
+                    worktree_path,
+                    follow_up_request,
+                    target_head_oid,
+                    summary,
+                    review_submitted,
+                    github_review_id,
+                    github_review_url,
+                    notes,
+                    error_message,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY review_id
+                        ORDER BY created_at DESC, dispatch_id DESC
+                    ) AS row_number
+                FROM review_runs
+                WHERE review_id IN (
+            "#,
+        );
+        {
+            let mut review_id_bindings = query_builder.separated(", ");
+            for review_id in review_ids {
+                review_id_bindings.push_bind(review_id.as_str());
+            }
+        }
+        query_builder.push(
+            r#"
+                )
+            )
+            WHERE row_number = 1
+            "#,
+        );
+
+        let mut connection = self.database.connect().await?;
+        let rows = query_builder
+            .build_query_as::<records::ReviewRunRow>()
+            .fetch_all(&mut *connection)
+            .await
+            .database_error_with("Could not load latest review runs from SQLite")?;
+        let latest_by_review_id = rows
+            .into_iter()
+            .map(ReviewRunRecord::try_from)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|record| (record.review_id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+
+        Ok(review_ids
+            .iter()
+            .filter_map(|review_id| latest_by_review_id.get(review_id).cloned())
+            .collect())
     }
 
     pub async fn dispatches_for_review(
@@ -385,7 +485,7 @@ impl<'a> ReviewDispatchRepository<'a> {
 
 #[cfg(test)]
 mod tests {
-    use track_types::ids::DispatchId;
+    use track_types::ids::{DispatchId, ReviewId};
     use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
     use track_types::time_utils::now_utc;
     use track_types::types::{DispatchStatus, RemoteAgentPreferredTool};
@@ -672,6 +772,88 @@ mod tests {
                 .map(|record| record.dispatch_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dispatch-3", "dispatch-2"],
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_dispatches_for_reviews_returns_one_latest_record_per_review() {
+        let (_directory, database_path) = temporary_database_path();
+        let database = DatabaseContext::initialized(Some(database_path))
+            .await
+            .expect("database should open");
+        let repository = database.review_dispatch_repository();
+        let review_repository = database.review_repository();
+
+        let review_a = sample_review(
+            "review-a",
+            41,
+            RemoteAgentPreferredTool::Codex,
+            "2026-04-05T08:00:00.000Z",
+            "2026-04-05T08:00:00.000Z",
+        );
+        let review_b = sample_review(
+            "review-b",
+            42,
+            RemoteAgentPreferredTool::Claude,
+            "2026-04-05T09:00:00.000Z",
+            "2026-04-05T09:00:00.000Z",
+        );
+        for review in [&review_a, &review_b] {
+            review_repository
+                .save_review(review)
+                .await
+                .expect("review should save");
+        }
+
+        repository
+            .save_dispatch(&sample_review_run(
+                "dispatch-a1",
+                &review_a,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Failed,
+                "2026-04-05T09:00:00.000Z",
+                "2026-04-05T09:05:00.000Z",
+            ))
+            .await
+            .expect("older review a run should save");
+        repository
+            .save_dispatch(&sample_review_run(
+                "dispatch-a2",
+                &review_a,
+                RemoteAgentPreferredTool::Claude,
+                DispatchStatus::Succeeded,
+                "2026-04-05T10:00:00.000Z",
+                "2026-04-05T10:05:00.000Z",
+            ))
+            .await
+            .expect("newer review a run should save");
+        repository
+            .save_dispatch(&sample_review_run(
+                "dispatch-b1",
+                &review_b,
+                RemoteAgentPreferredTool::Codex,
+                DispatchStatus::Running,
+                "2026-04-05T11:00:00.000Z",
+                "2026-04-05T11:05:00.000Z",
+            ))
+            .await
+            .expect("review b run should save");
+
+        let latest = repository
+            .latest_dispatches_for_reviews(&[
+                review_b.id.clone(),
+                ReviewId::new("missing-review").unwrap(),
+                review_a.id.clone(),
+            ])
+            .await
+            .expect("latest review runs should load");
+
+        assert_eq!(
+            latest
+                .iter()
+                .map(|record| record.dispatch_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dispatch-b1", "dispatch-a2"],
         );
     }
 

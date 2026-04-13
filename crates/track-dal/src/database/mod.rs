@@ -19,6 +19,7 @@ use crate::settings_repository::SettingsRepository;
 use crate::task_repository::FileTaskRepository;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+const SQLITE_POOL_MAX_CONNECTIONS: u32 = 8;
 
 #[derive(Debug, Clone)]
 pub struct DatabaseContext {
@@ -30,7 +31,12 @@ impl DatabaseContext {
         let database_path = resolve_database_path(database_path)?;
         let connect_options = connect_options(&database_path)?;
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
+            // The frontend bootstraps several independent read endpoints in
+            // parallel, while background reconciliation can be active at the
+            // same time. With WAL enabled, SQLite can serve those concurrent
+            // readers safely, so a single pooled connection is needlessly
+            // restrictive and turns unrelated requests into one queue.
+            .max_connections(SQLITE_POOL_MAX_CONNECTIONS)
             .connect_with(connect_options)
             .await
             .database_error_with(format!(

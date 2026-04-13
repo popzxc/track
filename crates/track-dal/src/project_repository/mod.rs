@@ -1,5 +1,7 @@
 mod records;
 
+use std::collections::BTreeMap;
+
 use track_projects::project_metadata::{ProjectMetadata, ProjectRecord, ProjectUpsertInput};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::git_remote::GitRemote;
@@ -36,12 +38,37 @@ impl<'a> ProjectRepository<'a> {
         .fetch_all(&mut *connection)
         .await
         .database_error_with("Could not load projects from SQLite")?;
+        let alias_rows = sqlx::query_as::<_, records::ProjectAliasListingRow>(
+            r#"
+            SELECT
+                canonical_name,
+                alias
+            FROM project_aliases
+            ORDER BY canonical_name ASC, alias ASC
+            "#,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .database_error_with("Could not load project aliases from SQLite")?;
+        let aliases_by_project = alias_rows.into_iter().fold(
+            BTreeMap::<String, Vec<ProjectId>>::new(),
+            |mut aliases_by_project, alias_row| {
+                aliases_by_project
+                    .entry(alias_row.canonical_name)
+                    .or_default()
+                    .push(ProjectId::from_db(alias_row.alias));
+                aliases_by_project
+            },
+        );
 
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
             let canonical_name = ProjectId::from_db(row.canonical_name);
             records.push(ProjectRecord {
-                aliases: load_aliases(&mut connection, &canonical_name).await?,
+                aliases: aliases_by_project
+                    .get(canonical_name.as_str())
+                    .cloned()
+                    .unwrap_or_default(),
                 metadata: ProjectMetadata {
                     repo_url: parse_persisted_url(
                         row.repo_url,

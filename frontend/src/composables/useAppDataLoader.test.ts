@@ -179,4 +179,33 @@ describe('useAppDataLoader', () => {
     expect(harness.loading.value).toBe(false)
     expect(harness.refreshing.value).toBe(false)
   })
+
+  it('clears the initial loading gate before the slow second-wave refresh finishes', async () => {
+    const harness = createLoaderHarness()
+    let resolveRuns: (() => void) | null = null
+
+    vi.spyOn(apiClient, 'fetchProjects').mockResolvedValue([buildProject()])
+    vi.spyOn(apiClient, 'fetchTasks').mockResolvedValue([buildTask()])
+    vi.spyOn(apiClient, 'fetchRemoteAgentSettings').mockResolvedValue(buildRemoteAgentSettings())
+    harness.loadRuns.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveRuns = () => resolve(undefined)
+        }),
+    )
+
+    const refreshPromise = harness.loader.refreshAll()
+    await vi.waitFor(() => {
+      expect(harness.loadRuns).toHaveBeenCalledTimes(1)
+    })
+
+    expect(harness.loading.value).toBe(false)
+    expect(harness.refreshing.value).toBe(true)
+
+    expect(resolveRuns).not.toBeNull()
+    resolveRuns!()
+    await refreshPromise
+
+    expect(harness.refreshing.value).toBe(false)
+  })
 })
