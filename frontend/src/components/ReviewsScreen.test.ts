@@ -16,6 +16,7 @@ function createContext() {
   const creatingReview = ref(false)
   const followingUpReview = ref<ReturnType<typeof buildReview> | null>(null)
   const reviewPendingDeletion = ref<ReturnType<typeof buildReview> | null>(null)
+  const selectedReviewId = ref<string | null>(review.id)
 
   return {
     active: true,
@@ -41,6 +42,7 @@ function createContext() {
       selectedReview: computed(() => review),
       selectedReviewCanCancel: computed(() => true),
       selectedReviewCanReReview: computed(() => true),
+      selectedReviewId,
       selectedReviewLatestRun: computed(() => latestRun),
       selectedReviewRuns: ref([latestRun]),
       selectReview: vi.fn(),

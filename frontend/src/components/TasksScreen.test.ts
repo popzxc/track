@@ -45,6 +45,7 @@ function createContext() {
       loadRemoteAgentSettings: vi.fn().mockResolvedValue(undefined),
       loadRuns: vi.fn().mockResolvedValue(undefined),
       openSelectedTaskProjectDetails: vi.fn(),
+      openTaskFromRun: vi.fn(),
       pendingSelectedTaskId: ref<string | null>(null),
       refreshAll: vi.fn().mockResolvedValue(undefined),
       remoteAgentSettings,

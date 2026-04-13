@@ -123,7 +123,9 @@ function setFriendlyError(error: unknown) {
     error instanceof Error ? error.message : 'Something went wrong while talking to the API.'
 }
 
-let syncTaskChangeVersion = async () => undefined
+// The loader starts before background polling is wired, so this placeholder
+// keeps the bootstrap contract stable until useBackgroundSync is connected.
+let syncTaskChangeVersion: () => Promise<void> = async () => {}
 
 const {
   loadRemoteAgentSettings,
