@@ -91,7 +91,7 @@ impl<'a> ProjectRepository<'a> {
         })?;
 
         Ok(ProjectRecord {
-            aliases: load_aliases(&mut connection, &canonical_name).await?,
+            aliases: load_aliases(&mut connection, canonical_name).await?,
             metadata: ProjectMetadata {
                 repo_url: parse_persisted_url(
                     row.repo_url,
@@ -137,7 +137,7 @@ impl<'a> ProjectRepository<'a> {
         // Project registration is intentionally additive by default so a
         // routine re-registration cannot silently discard aliases that were
         // migrated from legacy state or added earlier.
-        let mut merged_aliases = load_aliases(&mut *transaction, &canonical_name).await?;
+        let mut merged_aliases = load_aliases(&mut transaction, &canonical_name).await?;
         merged_aliases.extend(aliases);
         merged_aliases.retain(|alias| alias != &canonical_name);
         merged_aliases.sort();
@@ -147,7 +147,7 @@ impl<'a> ProjectRepository<'a> {
         // metadata update. We therefore reject conflicts before mutating
         // anything so callers never observe a half-applied registration when
         // another project already owns an alias.
-        ensure_aliases_are_available(&mut *transaction, &canonical_name, &merged_aliases).await?;
+        ensure_aliases_are_available(&mut transaction, &canonical_name, &merged_aliases).await?;
         let canonical_name_ref = canonical_name.as_str();
         let repo_url = metadata.repo_url.as_str();
         let git_url = metadata.git_url.clone().into_remote_string();

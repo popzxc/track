@@ -44,9 +44,7 @@ impl GitRemote {
             return None;
         }
 
-        if url.host.is_none() {
-            return None;
-        }
+        url.host.as_ref()?;
 
         if !matches!(url.scheme, gix_url::Scheme::Http | gix_url::Scheme::Https) {
             url.scheme = gix_url::Scheme::Https;

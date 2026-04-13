@@ -23,16 +23,16 @@ pub(crate) fn unique_review_run_directories(
 ) -> Vec<DispatchRunDirectory> {
     dispatch_history
         .iter()
-        .filter_map(|record| {
+        .map(|record| {
             if let Some(worktree_path) = record.worktree_path.as_ref() {
-                return Some(worktree_path.run_directory());
+                return worktree_path.run_directory();
             }
 
-            Some(DispatchRunDirectory::for_review(
+            DispatchRunDirectory::for_review(
                 &remote_agent.workspace_root,
                 &record.workspace_key,
                 &record.dispatch_id,
-            ))
+            )
         })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()

@@ -542,7 +542,7 @@ impl ApiHarness {
         timeout: Duration,
     ) -> serde_json::Value {
         let task_id = TaskId::new(task_id).expect("task ids should be valid");
-        self.poll_dispatches_until_all_terminal(&[task_id.clone()], timeout)
+        self.poll_dispatches_until_all_terminal(std::slice::from_ref(&task_id), timeout)
             .await
             .remove(&task_id)
             .expect("task should have a terminal dispatch")

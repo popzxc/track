@@ -78,9 +78,9 @@ impl<'de> Deserialize<'de> for DispatchRunDirectory {
 
 impl_string_value!(DispatchRunDirectory);
 
-fn parse_dispatch_run_directory<'a>(
-    value: &'a str,
-) -> Result<(DispatchLayoutKind, &'a str, &'a str), TrackError> {
+fn parse_dispatch_run_directory(
+    value: &str,
+) -> Result<(DispatchLayoutKind, &str, &str), TrackError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(invalid_remote_layout(

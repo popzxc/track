@@ -598,7 +598,7 @@ impl<'a> RemoteAgentServices<'a> {
 }
 
 pub(super) enum RefreshRemoteWorkspace {
-    Available(RemoteWorkspace),
+    Available(Box<RemoteWorkspace>),
     UnavailableLocally { error_message: String },
 }
 
@@ -630,8 +630,7 @@ pub(super) async fn load_refresh_remote_workspace(
         });
     }
 
-    Ok(RefreshRemoteWorkspace::Available(RemoteWorkspace::new(
-        remote_agent,
-        database.clone(),
-    )?))
+    Ok(RefreshRemoteWorkspace::Available(Box::new(
+        RemoteWorkspace::new(remote_agent, database.clone())?,
+    )))
 }

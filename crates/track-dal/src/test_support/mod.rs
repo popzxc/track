@@ -36,6 +36,10 @@ pub(crate) fn project_metadata(name: &str) -> ProjectMetadata {
     }
 }
 
+// This fixture intentionally keeps each persisted field explicit at the call
+// site so repository tests can read like stable data tables instead of hidden
+// builder mutation chains.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_task(
     id: &str,
     project: &str,

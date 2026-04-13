@@ -117,7 +117,7 @@ mod tests {
     }
 
     // TODO: Tests that depend on this are questionable, do we want them?
-    fn ensure_no_terminal<F: FnOnce() -> ()>(test: F) {
+    fn ensure_no_terminal<F: FnOnce()>(test: F) {
         static GUARD: std::sync::LazyLock<std::sync::Mutex<()>> =
             std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
         let _lock = GUARD.lock().unwrap();

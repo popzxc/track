@@ -68,6 +68,9 @@ struct TestContext {
 }
 
 impl TestContext {
+    // These tests intentionally serialize access to TRACK_STATE_DIR so each
+    // async fixture setup can mutate process-global environment without races.
+    #[allow(clippy::await_holding_lock)]
     async fn new(config: TrackConfigFile) -> Self {
         let directory = TempDir::new().expect("tempdir should be created");
         let env_lock_guard = track_data_env_lock()

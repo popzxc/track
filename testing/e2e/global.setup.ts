@@ -110,17 +110,6 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await writeFile(path.join(remoteAgentRoot, 'known_hosts'), '', 'utf-8')
   await writeConfigFile(configPath, fixturePort, apiPort)
 
-  // Seed the orphan dispatch record into SQLite before the API starts so there
-  // is no write-lock contention with the running API process.  The remote SSH
-  // artifacts (worktree and run directory) are created here too since the
-  // fixture container is already up at this point.
-  await seedOrphanedCleanupArtifacts({
-    fixturePort,
-    keyPath: keyPrefix,
-    runtimeRoot,
-    stateDir: localTrackRoot,
-  })
-
   const apiLogPath = path.join(tempRoot, 'track-api.log')
   const apiLog = fs.createWriteStream(apiLogPath, { flags: 'a' })
   const apiProcess = spawn('cargo', ['run', '-p', 'track-api'], {
@@ -141,6 +130,15 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   apiProcess.unref()
 
   await waitForHealth(`${apiBaseUrl}/health`, apiLogPath)
+  // Let the real backend initialize and migrate SQLite through the same
+  // embedded Rust path it uses in normal execution. We then seed the orphan
+  // dispatch directly before the browser tests start driving any API traffic.
+  await seedOrphanedCleanupArtifacts({
+    fixturePort,
+    keyPath: keyPrefix,
+    runtimeRoot,
+    stateDir: localTrackRoot,
+  })
   await configureRemoteAgent(apiBaseUrl, fixturePort, keyPrefix, runtimeRoot)
   await seedApplicationData(apiBaseUrl)
 
@@ -226,16 +224,6 @@ function runCommand(
     completed.stdout?.trim() ? `stdout:\n${completed.stdout.trim()}` : '',
     completed.stderr?.trim() ? `stderr:\n${completed.stderr.trim()}` : '',
   ].filter(Boolean).join('\n\n'))
-}
-
-function runSqlxCommand(args: string[], databaseUrl: string): void {
-  runCommand('cargo', ['sqlx', '--no-dotenv', ...args], {
-    cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      DATABASE_URL: databaseUrl,
-    },
-  })
 }
 
 async function reserveLocalPort(): Promise<number> {
@@ -398,18 +386,11 @@ async function seedOrphanedCleanupArtifacts(options: {
   const orphanRunDirectory =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
-  // Seed the orphan dispatch record directly in SQLite before the API starts.
-  // The browser fixture should follow the same migration path as local
-  // development, so we create and migrate the database through SQLx CLI rather
-  // than reimplementing migration execution in TypeScript. The task_dispatches
-  // table intentionally has no FK constraint on task_id, so we can still seed
-  // an orphan dispatch row without creating a matching task.
+  // The real API has already initialized the SQLite schema by the time this
+  // helper runs. We only seed the orphan dispatch row here so the cleanup
+  // flow can observe dispatch history that no longer has a matching task.
   const dbPath = path.join(options.stateDir, 'track.sqlite')
   await mkdir(path.dirname(dbPath), { recursive: true })
-  const databaseUrl = `sqlite://${dbPath}`
-
-  runSqlxCommand(['database', 'create'], databaseUrl)
-  runSqlxCommand(['migrate', 'run', '--source', 'crates/track-dal/migrations'], databaseUrl)
 
   const db = new Database(dbPath)
   try {

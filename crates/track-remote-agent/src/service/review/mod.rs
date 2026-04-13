@@ -102,12 +102,11 @@ impl<'a> RemoteReviewService<'a> {
             loop {
                 let candidate = ReviewId::new(format!("{review_id}-{suffix}"))
                     .expect("generated review ids should be valid path components");
-                // TODO: Why the hell we `unwrap_or(false)` here?
-                if !self
+                if self
                     .review_repository()
                     .get_review(&candidate)
                     .await
-                    .is_ok()
+                    .is_err()
                 {
                     review_id = candidate;
                     break;
