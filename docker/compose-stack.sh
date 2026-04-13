@@ -14,6 +14,18 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 BASE_COMPOSE_FILE="${TRACK_COMPOSE_FILE:-${REPO_ROOT}/compose.yaml}"
 
+# The release image does not copy `.git`, so the API binary cannot discover its
+# own commit hash during `cargo build` inside the container. Resolve the commit
+# from the host checkout once here and pass it through Compose as a build arg so
+# Docker and Podman both stamp the same build identity into the image.
+resolve_git_commit() {
+  if ! command -v git >/dev/null 2>&1; then
+    return 1
+  fi
+
+  git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null
+}
+
 detect_container_cli() {
   if command -v docker >/dev/null 2>&1; then
     printf 'docker\n'
@@ -43,6 +55,11 @@ is_podman_backend() {
 }
 
 CONTAINER_CLI="$(detect_container_cli)"
+
+if [ -z "${TRACK_GIT_COMMIT:-}" ]; then
+  TRACK_GIT_COMMIT="$(resolve_git_commit || printf 'unknown')"
+  export TRACK_GIT_COMMIT
+fi
 
 if is_podman_backend "$CONTAINER_CLI"; then
   # The Podman-only override is small enough to generate inline. Keeping it in

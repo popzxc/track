@@ -5,6 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        TRACK_GIT_COMMIT: "${TRACK_GIT_COMMIT:-unknown}"
         TRACK_UID: "${TRACK_UID:-1000}"
         TRACK_GID: "${TRACK_GID:-1000}"
     # The runtime image creates a real in-container user that matches the host
