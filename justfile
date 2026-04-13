@@ -50,11 +50,11 @@ db-prepare:
 
 # Install the CLI from the current checkout.
 install-cli:
-  {{cargo}} install --path crates/track-cli --force --locked
+  {{cargo}} install --path crates/track-cli --root "${TRACK_INSTALL_ROOT:-$HOME/.track}" --force --locked
 
 # Install the CLI from the current checkout (CUDA).
 install-cli-cuda:
-  {{cargo}} install --path crates/track-cli --features cuda --force --locked
+  {{cargo}} install --path crates/track-cli --features cuda --root "${TRACK_INSTALL_ROOT:-$HOME/.track}" --force --locked
 
 # Start the repository-local Docker stack.
 install-docker:
