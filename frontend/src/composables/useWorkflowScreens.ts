@@ -3,8 +3,6 @@ import { computed, type ComputedRef, type Ref } from 'vue'
 import { useAdminScreens } from './useAdminScreens'
 import { useQueueScreens } from './useQueueScreens'
 import type {
-  MigrationImportSummary,
-  MigrationStatus,
   ProjectInfo,
   RemoteAgentPreferredTool,
   RemoteAgentSettings,
@@ -21,9 +19,6 @@ interface UseWorkflowScreensOptions {
   currentPage: Ref<AppPage>
   defaultRemoteAgentPreferredTool: ComputedRef<RemoteAgentPreferredTool>
   errorMessage: Ref<string>
-  migrationImportPending: Ref<boolean>
-  migrationImportSummary: Ref<MigrationImportSummary | null>
-  migrationStatus: Ref<MigrationStatus | null>
   remoteAgentSettings: Ref<RemoteAgentSettings | null>
   reviewRequestDisabledReason: ComputedRef<string | undefined>
   runnerSetupReady: ComputedRef<boolean>
@@ -83,9 +78,6 @@ export function useWorkflowScreens(options: UseWorkflowScreensOptions) {
     closeTaskDrawer: queueScreens.tasksScreen.closeTaskDrawer,
     currentPage: options.currentPage,
     errorMessage: options.errorMessage,
-    migrationImportPending: options.migrationImportPending,
-    migrationImportSummary: options.migrationImportSummary,
-    migrationStatus: options.migrationStatus,
     remoteAgentSettings: options.remoteAgentSettings,
     refreshAll: async () => refreshAllBridge(),
     resumeQueuedTaskDispatch(task, preferredTool) {
@@ -111,7 +103,6 @@ export function useWorkflowScreens(options: UseWorkflowScreensOptions) {
     activeReviewRuns: queueScreens.activeReviewRuns,
     activeRuns: queueScreens.activeRuns,
     connectDataLoader,
-    importLegacyTrackerData: adminScreens.importLegacyTrackerData,
     loadLatestDispatchesForVisibleTasks: queueScreens.loadLatestDispatchesForVisibleTasks,
     loadReviews: queueScreens.loadReviews,
     loadRuns: queueScreens.loadRuns,

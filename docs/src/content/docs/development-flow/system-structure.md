@@ -10,7 +10,7 @@ sidebar:
 ## Top-level modules
 
 - `crates/track-core`
-  Shared types, repositories, migration logic, backend settings, and remote-agent orchestration.
+  Shared types, repositories, backend settings, and remote-agent orchestration.
 - `crates/track-capture`
   Local capture parsing and model resolution.
 - `crates/track-cli`
@@ -29,7 +29,6 @@ The current system is centered on backend state, not on hand-edited task files.
 - the CLI keeps its own config in `~/.config/track/cli.json`
 - the backend keeps live state in SQLite
 - remote-agent SSH material is managed under backend state
-- older `config.json` and `~/.track` layouts exist only as migration inputs
 
 ## Task capture flow
 

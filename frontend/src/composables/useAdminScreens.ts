@@ -6,8 +6,6 @@ import { useSettingsMutations } from './useSettingsMutations'
 import { useSettingsScreenController } from './useSettingsScreenController'
 import type { PendingRunnerSetupRequest } from './useTaskMutations'
 import type {
-  MigrationImportSummary,
-  MigrationStatus,
   ProjectInfo,
   RemoteAgentPreferredTool,
   RemoteAgentSettings,
@@ -24,9 +22,6 @@ interface UseAdminScreensOptions {
   closeTaskDrawer: () => void
   currentPage: Ref<AppPage>
   errorMessage: Ref<string>
-  migrationImportPending: Ref<boolean>
-  migrationImportSummary: Ref<MigrationImportSummary | null>
-  migrationStatus: Ref<MigrationStatus | null>
   remoteAgentSettings: Ref<RemoteAgentSettings | null>
   refreshAll: () => Promise<void>
   resumeQueuedTaskDispatch: (task: Task, preferredTool: RemoteAgentPreferredTool) => void
@@ -71,7 +66,6 @@ export function useAdminScreens(options: UseAdminScreensOptions) {
   const {
     confirmRemoteCleanup,
     confirmRemoteReset,
-    importLegacyTrackerData,
     saveProjectEdits,
     saveRemoteAgentSetup,
   } = useSettingsMutations({
@@ -81,9 +75,6 @@ export function useAdminScreens(options: UseAdminScreensOptions) {
     editingProject,
     editingRemoteAgentSetup,
     errorMessage: options.errorMessage,
-    migrationImportPending: options.migrationImportPending,
-    migrationImportSummary: options.migrationImportSummary,
-    migrationStatus: options.migrationStatus,
     refreshAll: options.refreshAll,
     remoteAgentSettings: options.remoteAgentSettings,
     resetPendingConfirmation,
@@ -142,7 +133,6 @@ export function useAdminScreens(options: UseAdminScreensOptions) {
   }
 
   return {
-    importLegacyTrackerData,
     projectsScreen,
     requestProjectDetails,
     requestRunnerSetup,

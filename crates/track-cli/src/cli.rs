@@ -126,7 +126,7 @@ pub struct RemoteAgentConfigureArgs {
 
 pub fn run_from_os_args(raw_args: Vec<OsString>) -> Result<String, TrackError> {
     let invocation = parse_invocation(raw_args)?;
-    let config_service = CliConfigService::new(None, None)?;
+    let config_service = CliConfigService::new(None)?;
 
     match invocation {
         CliInvocation::Capture(raw_text) => {
@@ -557,12 +557,7 @@ fn render_output_with_config_notes(
     main_output: String,
 ) -> Result<String, TrackError> {
     let mut notes = Vec::new();
-    if loaded_config.migrated_from_legacy {
-        notes.push(format_note(
-            "Migrated",
-            "CLI config was copied from the legacy shared config.",
-        ));
-    } else if loaded_config.created_default_config {
+    if loaded_config.created_default_config {
         notes.push(format_note(
             "Config",
             &format!(
@@ -608,10 +603,6 @@ fn project_catalog_from_backend(projects: &[ProjectRecord]) -> ProjectCatalog {
 
 fn enrich_backend_error_for_cli(error: TrackError) -> TrackError {
     match error.code {
-        ErrorCode::MigrationRequired => TrackError::new(
-            ErrorCode::MigrationRequired,
-            "Backend migration is required. Complete the legacy import in the web UI before using CLI commands.",
-        ),
         ErrorCode::ProjectNotFound => TrackError::new(
             ErrorCode::ProjectNotFound,
             "The selected project is not registered on the backend. Run `track project register` from a local checkout first.",
@@ -696,7 +687,7 @@ mod tests {
     use track_capture::{TaskParser, TaskParserFactory};
     use track_projects::project_catalog::ProjectCatalog;
     use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
-    use track_types::errors::{ErrorCode, TrackError};
+    use track_types::errors::TrackError;
     use track_types::git_remote::GitRemote;
     use track_types::ids::{ProjectId, TaskId};
     use track_types::time_utils::now_utc;
@@ -824,7 +815,7 @@ mod tests {
     }
 
     fn loaded_cli_config(directory: &tempfile::TempDir) -> LoadedCliConfig {
-        let service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
+        let service = CliConfigService::new(Some(directory.path().join("cli.json")))
             .expect("cli config service should resolve");
         service
             .load_or_initialize()
@@ -851,7 +842,7 @@ mod tests {
     #[test]
     fn capture_uses_backend_project_catalog() {
         let directory = tempfile::TempDir::new().expect("tempdir should be created");
-        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
+        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")))
             .expect("cli config service should resolve");
         let loaded = loaded_cli_config(&directory);
         let backend = FakeBackend {
@@ -894,48 +885,12 @@ mod tests {
     }
 
     #[test]
-    fn capture_surfaces_migration_required_with_cli_guidance() {
-        let directory = tempfile::TempDir::new().expect("tempdir should be created");
-        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
-            .expect("cli config service should resolve");
-        let loaded = loaded_cli_config(&directory);
-        let backend = FakeBackend {
-            fetch_projects_error: Some(TrackError::new(
-                ErrorCode::MigrationRequired,
-                "Backend requests are gated until migration is handled.",
-            )),
-            ..FakeBackend::default()
-        };
-
-        let error = run_capture_command_internal(
-            &["project-x".to_owned(), "fix".to_owned()],
-            &config_service,
-            &loaded,
-            &backend,
-            &StaticTaskParserFactory {
-                candidate: ParsedTaskCandidate {
-                    project: Some("project-x".to_owned()),
-                    priority: Priority::High,
-                    title: "Fix a bug".to_owned(),
-                    body_markdown: None,
-                    confidence: Confidence::High,
-                    reason: None,
-                },
-            },
-        )
-        .expect_err("capture should fail while migration is required");
-
-        assert_eq!(error.code, ErrorCode::MigrationRequired);
-        assert!(error.to_string().contains("web UI"));
-    }
-
-    #[test]
     fn project_register_sends_git_metadata_to_the_backend() {
         let directory = tempfile::TempDir::new().expect("tempdir should be created");
         let checkout = directory.path().join("project-x");
         create_git_checkout(&checkout, "git@github.com:acme/project-x.git");
 
-        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
+        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")))
             .expect("cli config service should resolve");
         let loaded = loaded_cli_config(&directory);
         let backend = FakeBackend::default();
@@ -1038,7 +993,7 @@ mod tests {
         )
         .expect("shell prelude file should be written");
 
-        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
+        let config_service = CliConfigService::new(Some(directory.path().join("cli.json")))
             .expect("cli config service should resolve");
         let loaded = loaded_cli_config(&directory);
         let backend = FakeBackend::default();

@@ -3,10 +3,6 @@ import type {
   CreateReviewResponse,
   DeleteTaskResponse,
   DispatchesResponse,
-  MigrationImportResponse,
-  MigrationImportSummary,
-  MigrationStatus,
-  MigrationStatusResponse,
   ProjectInfo,
   ProjectMetadataUpdateInput,
   ProjectsResponse,
@@ -63,18 +59,6 @@ async function readJson<T>(path: string, init?: RequestInit): Promise<T> {
 export async function fetchProjects(): Promise<ProjectInfo[]> {
   const response = await readJson<ProjectsResponse>('/api/projects')
   return response.projects
-}
-
-export async function fetchMigrationStatus(): Promise<MigrationStatus> {
-  const response = await readJson<MigrationStatusResponse>('/api/migration/status')
-  return response.migration
-}
-
-export async function importLegacyData(): Promise<MigrationImportSummary> {
-  const response = await readJson<MigrationImportResponse>('/api/migration/import', {
-    method: 'POST',
-  })
-  return response.summary
 }
 
 export async function fetchReviews(): Promise<ReviewSummary[]> {

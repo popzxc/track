@@ -20,9 +20,6 @@ afterEach(() => {
 function createWorkflowHarness() {
   const currentPage = ref<'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'>('tasks')
   const errorMessage = ref('')
-  const migrationImportPending = ref(false)
-  const migrationImportSummary = ref(null)
-  const migrationStatus = ref(null)
   const remoteAgentSettings = ref(buildRemoteAgentSettings())
   const saving = ref(false)
   const tasks = ref([
@@ -52,9 +49,6 @@ function createWorkflowHarness() {
       currentPage,
       defaultRemoteAgentPreferredTool: computed(() => remoteAgentSettings.value?.preferredTool ?? 'codex'),
       errorMessage,
-      migrationImportPending,
-      migrationImportSummary,
-      migrationStatus,
       remoteAgentSettings,
       reviewRequestDisabledReason: computed(() => undefined),
       runnerSetupReady: computed(() => Boolean(remoteAgentSettings.value?.shellPrelude?.trim())),

@@ -48,8 +48,6 @@ These are edited in **Settings → Runner setup** and also stored in backend sta
 | --- | --- |
 | `TRACK_CLI_CONFIG_PATH` | Overrides the location of `cli.json`. |
 | `TRACK_STATE_DIR` | Overrides the backend state directory when running the backend directly. |
-| `TRACK_LEGACY_ROOT` | Points migration code at an older `~/.track` layout. |
-| `TRACK_LEGACY_CONFIG_PATH` | Points migration code at an older `config.json`. |
 | `TRACK_WEB_BIND_HOST` | Changes which host interface `docker compose` publishes. The default is `127.0.0.1`. |
 | `TRACK_WEB_PORT` | Changes the host port published by `docker compose`. |
 | `TRACK_UID` / `TRACK_GID` | Adjust the Docker image user to match your host UID/GID. |

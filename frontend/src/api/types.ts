@@ -71,60 +71,6 @@ export interface TaskChangeVersionResponse {
   version: number
 }
 
-export type MigrationState = 'ready' | 'import_required' | 'imported'
-
-export interface LegacyScanSummary {
-  projectsFound: number
-  aliasesFound: number
-  tasksFound: number
-  taskDispatchesFound: number
-  reviewsFound: number
-  reviewRunsFound: number
-  remoteAgentConfigured: boolean
-}
-
-export interface SkippedLegacyRecord {
-  kind: string
-  path: string
-  error: string
-}
-
-export interface CleanupCandidate {
-  path: string
-  reason: string
-}
-
-export interface MigrationStatus {
-  state: MigrationState
-  requiresMigration: boolean
-  canImport: boolean
-  legacyDetected: boolean
-  summary: LegacyScanSummary
-  skippedRecords: SkippedLegacyRecord[]
-  cleanupCandidates: CleanupCandidate[]
-}
-
-export interface MigrationImportSummary {
-  importedProjects: number
-  importedAliases: number
-  importedTasks: number
-  importedTaskDispatches: number
-  importedReviews: number
-  importedReviewRuns: number
-  remoteAgentConfigImported: boolean
-  copiedSecretFiles: string[]
-  skippedRecords: SkippedLegacyRecord[]
-  cleanupCandidates: CleanupCandidate[]
-}
-
-export interface MigrationStatusResponse {
-  migration: MigrationStatus
-}
-
-export interface MigrationImportResponse {
-  summary: MigrationImportSummary
-}
-
 export interface ProjectsResponse {
   projects: ProjectInfo[]
 }

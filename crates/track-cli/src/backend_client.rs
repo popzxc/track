@@ -287,7 +287,6 @@ pub struct RemoteAgentSettingsResponse {
 
 fn map_api_error_code(code: &str) -> ErrorCode {
     match code {
-        "MIGRATION_REQUIRED" => ErrorCode::MigrationRequired,
         "PROJECT_NOT_FOUND" => ErrorCode::ProjectNotFound,
         "INVALID_PROJECT_SELECTION" => ErrorCode::InvalidProjectSelection,
         "INVALID_JSON" => ErrorCode::InvalidJson,

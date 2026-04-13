@@ -1,14 +1,7 @@
 import type { Ref } from 'vue'
 
-import {
-  ApiClientError,
-  fetchMigrationStatus,
-  fetchProjects,
-  fetchRemoteAgentSettings,
-  fetchTasks,
-} from '../api/client'
+import { fetchProjects, fetchRemoteAgentSettings, fetchTasks } from '../api/client'
 import type {
-  MigrationStatus,
   ProjectInfo,
   RemoteAgentSettings,
   ReviewRunRecord,
@@ -27,7 +20,6 @@ interface UseAppDataLoaderOptions {
   loadRuns: () => Promise<void>
   loadSelectedReviewRunHistory: () => Promise<void>
   loadSelectedTaskRunHistory: () => Promise<void>
-  migrationStatus: Ref<MigrationStatus | null>
   projects: Ref<ProjectInfo[]>
   refreshing: Ref<boolean>
   remoteAgentSettings: Ref<RemoteAgentSettings | null>
@@ -44,21 +36,16 @@ interface UseAppDataLoaderOptions {
 }
 
 /**
- * Owns the shell's refresh policy and migration-gated bootstrap.
+ * Owns the shell's refresh policy.
  *
  * The frontend does not have a single "load everything" endpoint because the
  * backend's persisted truth spans tasks, reviews, dispatch history, and runner
  * settings. This composable centralizes how those slices are refreshed
- * together, including the special case where normal API routes stay gated until
- * legacy data is imported into SQLite.
+ * together.
  */
 export function useAppDataLoader(options: UseAppDataLoaderOptions) {
   async function loadProjects() {
     options.projects.value = await fetchProjects()
-  }
-
-  async function loadMigrationGate() {
-    options.migrationStatus.value = await fetchMigrationStatus()
   }
 
   async function loadRemoteAgentSettings() {
@@ -84,18 +71,6 @@ export function useAppDataLoader(options: UseAppDataLoaderOptions) {
         description: undefined,
       },
     }))
-  }
-
-  function resetAppDataForMigration() {
-    options.tasks.value = []
-    options.reviews.value = []
-    options.projects.value = []
-    options.taskProjectOptions.value = []
-    options.runs.value = []
-    options.latestTaskDispatchesByTaskId.value = {}
-    options.selectedTaskRuns.value = []
-    options.selectedReviewRuns.value = []
-    options.remoteAgentSettings.value = null
   }
 
   async function refreshAll() {
@@ -131,18 +106,8 @@ export function useAppDataLoader(options: UseAppDataLoaderOptions) {
           // run history is temporarily unavailable.
         }),
       ])
-      options.migrationStatus.value = null
     } catch (error) {
-      if (error instanceof ApiClientError && error.code === 'MIGRATION_REQUIRED') {
-        try {
-          await loadMigrationGate()
-          resetAppDataForMigration()
-        } catch (migrationError) {
-          options.setFriendlyError(migrationError)
-        }
-      } else {
-        options.setFriendlyError(error)
-      }
+      options.setFriendlyError(error)
     } finally {
       options.loading.value = false
       options.refreshing.value = false
@@ -150,11 +115,9 @@ export function useAppDataLoader(options: UseAppDataLoaderOptions) {
   }
 
   return {
-    loadMigrationGate,
     loadProjects,
     loadRemoteAgentSettings,
     loadTasks,
     refreshAll,
-    resetAppDataForMigration,
   }
 }

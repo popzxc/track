@@ -4,12 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use track_config::config::{
-    ConfigService, LlamaCppConfigFile, DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE,
-    DEFAULT_LLAMACPP_MODEL_HF_REPO,
+    LlamaCppConfigFile, DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE, DEFAULT_LLAMACPP_MODEL_HF_REPO,
 };
-use track_config::paths::{
-    collapse_home_path, get_cli_config_path, get_legacy_config_path, resolve_path_from_config_file,
-};
+use track_config::paths::{collapse_home_path, get_cli_config_path, resolve_path_from_config_file};
 use track_config::runtime::{
     ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, TrackRuntimeConfig,
 };
@@ -37,7 +34,6 @@ pub struct CliRuntimeConfig {
 pub struct LoadedCliConfig {
     pub file: CliConfigFile,
     pub runtime: CliRuntimeConfig,
-    pub migrated_from_legacy: bool,
     pub created_default_config: bool,
 }
 
@@ -52,22 +48,14 @@ pub struct ConfigureOptions {
 #[derive(Debug, Clone)]
 pub struct CliConfigService {
     config_path: PathBuf,
-    legacy_config_path: PathBuf,
 }
 
 impl CliConfigService {
-    pub fn new(
-        config_path: Option<PathBuf>,
-        legacy_config_path: Option<PathBuf>,
-    ) -> Result<Self, TrackError> {
+    pub fn new(config_path: Option<PathBuf>) -> Result<Self, TrackError> {
         Ok(Self {
             config_path: match config_path {
                 Some(path) => path,
                 None => get_cli_config_path()?,
-            },
-            legacy_config_path: match legacy_config_path {
-                Some(path) => path,
-                None => get_legacy_config_path()?,
             },
         })
     }
@@ -78,17 +66,7 @@ impl CliConfigService {
 
     pub fn load_or_initialize(&self) -> Result<LoadedCliConfig, TrackError> {
         if self.config_path.exists() {
-            return self.load_from_cli_config(false, false);
-        }
-
-        if self.legacy_config_path.exists() {
-            let migrated = self.migrate_legacy_config()?;
-            return Ok(LoadedCliConfig {
-                runtime: runtime_config_from_file(&migrated, &self.config_path)?,
-                file: migrated,
-                migrated_from_legacy: true,
-                created_default_config: false,
-            });
+            return self.load_from_cli_config(false);
         }
 
         let created = self.save_config_file(&CliConfigFile {
@@ -99,7 +77,6 @@ impl CliConfigService {
         Ok(LoadedCliConfig {
             runtime: runtime_config_from_file(&created, &self.config_path)?,
             file: created,
-            migrated_from_legacy: false,
             created_default_config: true,
         })
     }
@@ -130,17 +107,12 @@ impl CliConfigService {
         })
     }
 
-    fn load_from_cli_config(
-        &self,
-        migrated_from_legacy: bool,
-        created_default_config: bool,
-    ) -> Result<LoadedCliConfig, TrackError> {
+    fn load_from_cli_config(&self, created_default_config: bool) -> Result<LoadedCliConfig, TrackError> {
         let file = self.load_config_file()?;
 
         Ok(LoadedCliConfig {
             runtime: runtime_config_from_file(&file, &self.config_path)?,
             file,
-            migrated_from_legacy,
             created_default_config,
         })
     }
@@ -204,15 +176,6 @@ impl CliConfigService {
         })?;
 
         Ok(canonical)
-    }
-
-    fn migrate_legacy_config(&self) -> Result<CliConfigFile, TrackError> {
-        let legacy_service = ConfigService::new(Some(self.legacy_config_path.clone()))?;
-        let legacy = legacy_service.load_config_file()?;
-        self.save_config_file(&CliConfigFile {
-            backend_base_url: format!("http://127.0.0.1:{}", legacy.api.port),
-            llama_cpp: legacy.llama_cpp,
-        })
     }
 }
 
@@ -339,55 +302,15 @@ fn llama_cpp_config_is_empty(config: &LlamaCppConfigFile) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use tempfile::TempDir;
-    use track_config::config::{ApiConfigFile, LlamaCppConfigFile, TrackConfigFile};
 
     use super::{CliConfigService, ConfigureOptions};
-
-    #[test]
-    fn migrates_legacy_config_into_cli_config() {
-        let directory = TempDir::new().expect("tempdir should be created");
-        let cli_config_path = directory.path().join("cli.json");
-        let legacy_config_path = directory.path().join("legacy.json");
-        let legacy_service =
-            track_config::config::ConfigService::new(Some(legacy_config_path.clone()))
-                .expect("legacy config service should resolve");
-        legacy_service
-            .save_config_file(&TrackConfigFile {
-                project_roots: vec!["~/workspace".to_owned()],
-                project_aliases: BTreeMap::new(),
-                api: ApiConfigFile { port: 4310 },
-                llama_cpp: LlamaCppConfigFile {
-                    model_path: Some("./models/parser.gguf".to_owned()),
-                    model_hf_repo: None,
-                    model_hf_file: None,
-                },
-                remote_agent: None,
-            })
-            .expect("legacy config should save");
-
-        let service = CliConfigService::new(Some(cli_config_path), Some(legacy_config_path))
-            .expect("cli config service should resolve");
-        let loaded = service
-            .load_or_initialize()
-            .expect("cli config should migrate from legacy");
-
-        assert!(loaded.migrated_from_legacy);
-        assert_eq!(loaded.file.backend_base_url, "http://127.0.0.1:4310");
-        assert_eq!(
-            loaded.file.llama_cpp.model_path.as_deref(),
-            Some("./models/parser.gguf")
-        );
-    }
 
     #[test]
     fn configure_preserves_existing_model_settings_when_only_backend_changes() {
         let directory = TempDir::new().expect("tempdir should be created");
         let cli_config_path = directory.path().join("cli.json");
-        let service = CliConfigService::new(Some(cli_config_path), None)
-            .expect("cli config service should resolve");
+        let service = CliConfigService::new(Some(cli_config_path)).expect("cli config service should resolve");
         service
             .configure(ConfigureOptions {
                 model_hf_repo: Some("repo/example".to_owned()),

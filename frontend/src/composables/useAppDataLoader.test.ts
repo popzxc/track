@@ -4,7 +4,6 @@ import { ref } from 'vue'
 import * as apiClient from '../api/client'
 import { buildProject, buildRemoteAgentSettings, buildTask } from '../testing/factories'
 import type {
-  MigrationStatus,
   ProjectInfo,
   RemoteAgentSettings,
   ReviewRunRecord,
@@ -23,7 +22,6 @@ function createLoaderHarness() {
   const errorMessage = ref('stale error')
   const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
   const loading = ref(true)
-  const migrationStatus = ref<MigrationStatus | null>(null)
   const projects = ref<ProjectInfo[]>([])
   const refreshing = ref(false)
   const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
@@ -53,7 +51,6 @@ function createLoaderHarness() {
     loadRuns,
     loadSelectedReviewRunHistory,
     loadSelectedTaskRunHistory,
-    migrationStatus,
     projects,
     refreshing,
     remoteAgentSettings,
@@ -74,7 +71,6 @@ function createLoaderHarness() {
       loadRuns,
       loadSelectedReviewRunHistory,
       loadSelectedTaskRunHistory,
-      migrationStatus,
       projects,
       refreshing,
       remoteAgentSettings,
@@ -124,58 +120,6 @@ describe('useAppDataLoader', () => {
     expect(harness.loadSelectedReviewRunHistory).toHaveBeenCalledTimes(1)
     expect(harness.syncTaskChangeVersion).toHaveBeenCalledTimes(1)
     expect(harness.errorMessage.value).toBe('')
-    expect(harness.loading.value).toBe(false)
-    expect(harness.refreshing.value).toBe(false)
-  })
-
-  it('loads the migration gate and clears volatile shell data when refresh is blocked', async () => {
-    const harness = createLoaderHarness()
-    harness.tasks.value = [buildTask()]
-    harness.reviews.value = [{} as ReviewSummary]
-    harness.projects.value = [buildProject()]
-    harness.runs.value = [{} as RunRecord]
-    harness.selectedTaskRuns.value = [{} as RunRecord]
-    harness.selectedReviewRuns.value = [{} as ReviewRunRecord]
-    harness.latestTaskDispatchesByTaskId.value = { existing: {} as TaskDispatch }
-    harness.remoteAgentSettings.value = buildRemoteAgentSettings()
-
-    const migrationStatus = {
-      state: 'import_required' as const,
-      requiresMigration: true,
-      canImport: true,
-      legacyDetected: true,
-      summary: {
-        projectsFound: 1,
-        aliasesFound: 0,
-        tasksFound: 1,
-        taskDispatchesFound: 0,
-        reviewsFound: 0,
-        reviewRunsFound: 0,
-        remoteAgentConfigured: false,
-      },
-      skippedRecords: [],
-      cleanupCandidates: [],
-    }
-
-    vi.spyOn(apiClient, 'fetchProjects').mockRejectedValue(
-      new apiClient.ApiClientError('MIGRATION_REQUIRED', 'Import required.'),
-    )
-    vi.spyOn(apiClient, 'fetchTasks').mockResolvedValue([])
-    vi.spyOn(apiClient, 'fetchMigrationStatus').mockResolvedValue(migrationStatus)
-    vi.spyOn(apiClient, 'fetchRemoteAgentSettings').mockResolvedValue(buildRemoteAgentSettings())
-
-    await harness.loader.refreshAll()
-
-    expect(harness.migrationStatus.value).toEqual(migrationStatus)
-    expect(harness.tasks.value).toEqual([])
-    expect(harness.reviews.value).toEqual([])
-    expect(harness.projects.value).toEqual([])
-    expect(harness.runs.value).toEqual([])
-    expect(harness.selectedTaskRuns.value).toEqual([])
-    expect(harness.selectedReviewRuns.value).toEqual([])
-    expect(harness.latestTaskDispatchesByTaskId.value).toEqual({})
-    expect(harness.remoteAgentSettings.value).toBeNull()
-    expect(harness.setFriendlyError).not.toHaveBeenCalled()
     expect(harness.loading.value).toBe(false)
     expect(harness.refreshing.value).toBe(false)
   })

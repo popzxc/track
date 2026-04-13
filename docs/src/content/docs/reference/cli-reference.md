@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Look up the current command surface for capture, configuration, project registration, and migration.
+description: Look up the current command surface for capture, configuration, project registration, and remote setup.
 sidebar:
   order: 2
 ---
