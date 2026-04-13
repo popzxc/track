@@ -29,6 +29,7 @@ use crate::RemoteRunSnapshotView;
 use crate::RemoteTaskArtifactCleanupMode;
 use crate::RemoteWorkspace;
 
+use super::log_remote_failure_output;
 use super::remote_agent_services::{
     load_refresh_remote_workspace, RefreshRemoteWorkspace, RemoteAgentConfigProvider,
 };
@@ -65,6 +66,7 @@ impl<'a> RemoteDispatchService<'a> {
     // place: queueing, follow-up reuse, launch, refresh, and cleanup. The goal
     // is not to reduce responsibilities, but to make the current shape easy to
     // inspect while the service boundaries settle.
+    #[tracing::instrument(skip(self), fields(task_id = %task_id, preferred_tool = ?preferred_tool))]
     pub async fn queue_dispatch(
         &self,
         task_id: &TaskId,
@@ -100,6 +102,16 @@ impl<'a> RemoteDispatchService<'a> {
             )
             .await?;
 
+        tracing::info!(
+            dispatch_id = %dispatch_record.dispatch_id,
+            project = %dispatch_record.project,
+            remote_host = %dispatch_record.remote_host,
+            branch_name = ?branch_name,
+            worktree_path = ?worktree_path,
+            preferred_tool = ?dispatch_record.preferred_tool,
+            "Queued remote task dispatch"
+        );
+
         Ok(dispatch_record)
     }
 
@@ -112,6 +124,7 @@ impl<'a> RemoteDispatchService<'a> {
     // user request into the task Markdown for auditability, and store the
     // latest follow-up request directly on the dispatch record so prompt
     // generation can highlight the newest ask explicitly.
+    #[tracing::instrument(skip(self, follow_up_request), fields(task_id = %task_id))]
     pub async fn queue_follow_up_dispatch(
         &self,
         task_id: &TaskId,
@@ -175,9 +188,31 @@ impl<'a> RemoteDispatchService<'a> {
             )
             .await?;
 
+        tracing::info!(
+            dispatch_id = %dispatch_record.dispatch_id,
+            base_dispatch_id = %previous_dispatch.dispatch_id,
+            project = %dispatch_record.project,
+            remote_host = %dispatch_record.remote_host,
+            branch_name = ?branch_name,
+            worktree_path = ?worktree_path,
+            preferred_tool = ?dispatch_record.preferred_tool,
+            follow_up_lines = trimmed_follow_up_request.lines().count(),
+            "Queued remote task follow-up dispatch"
+        );
+
         Ok(dispatch_record)
     }
 
+    #[tracing::instrument(
+        skip(self, dispatch_record),
+        fields(
+            task_id = %dispatch_record.task_id,
+            dispatch_id = %dispatch_record.dispatch_id,
+            project = %dispatch_record.project,
+            remote_host = %dispatch_record.remote_host,
+            preferred_tool = ?dispatch_record.preferred_tool
+        )
+    )]
     pub async fn launch_prepared_dispatch(
         &self,
         mut dispatch_record: TaskDispatchRecord,
@@ -188,6 +223,10 @@ impl<'a> RemoteDispatchService<'a> {
             .await?
         {
             if !existing_record.status.is_active() {
+                tracing::info!(
+                    status = ?existing_record.status,
+                    "Skipped launch because dispatch is no longer active"
+                );
                 return Ok(existing_record);
             }
         }
@@ -205,11 +244,19 @@ impl<'a> RemoteDispatchService<'a> {
                 .save_preparing_phase(&mut dispatch_record, "Checking remote agent prerequisites.")
                 .await?
             {
+                tracing::info!(
+                    "Launch stopped before prerequisites because dispatch is no longer active"
+                );
                 return Ok::<(), TrackError>(());
             }
             let (remote_agent, task, project_metadata) = self
                 .load_dispatch_prerequisites(&dispatch_record.task_id)
                 .await?;
+            tracing::info!(
+                base_branch = %project_metadata.base_branch,
+                workspace_root = %remote_agent.workspace_root,
+                "Loaded task dispatch prerequisites"
+            );
             let workspace = self.remote_workspace(remote_agent)?;
             if !self
                 .save_preparing_phase(
@@ -218,16 +265,23 @@ impl<'a> RemoteDispatchService<'a> {
                 )
                 .await?
             {
+                tracing::info!(
+                    "Launch stopped while refreshing checkout because dispatch is no longer active"
+                );
                 return Ok::<(), TrackError>(());
             }
             let checkout_path = workspace
                 .projects()
                 .ensure_task_checkout(&task.project, &project_metadata)?;
+            tracing::info!(checkout_path = ?checkout_path, "Remote checkout is ready");
 
             if !self
                 .save_preparing_phase(&mut dispatch_record, "Preparing the task worktree.")
                 .await?
             {
+                tracing::info!(
+                    "Launch stopped while preparing worktree because dispatch is no longer active"
+                );
                 return Ok::<(), TrackError>(());
             }
             workspace.task_runs().prepare_worktree(
@@ -236,6 +290,7 @@ impl<'a> RemoteDispatchService<'a> {
                 &project_metadata.base_branch,
                 dispatch_record.follow_up_request.is_some(),
             )?;
+            tracing::info!("Prepared remote task worktree");
 
             let prompt = RemoteDispatchPrompt::new(
                 &task.project,
@@ -255,11 +310,15 @@ impl<'a> RemoteDispatchService<'a> {
                 )
                 .await?
             {
+                tracing::info!(
+                    "Launch stopped while uploading run files because dispatch is no longer active"
+                );
                 return Ok::<(), TrackError>(());
             }
             workspace
                 .task_runs()
                 .upload_run_files(&dispatch_record, &prompt, &schema)?;
+            tracing::info!("Uploaded remote task prompt and schema");
 
             // Cancellation can arrive while the API is still preparing the
             // remote checkout. We re-read the persisted record right before the
@@ -272,6 +331,7 @@ impl<'a> RemoteDispatchService<'a> {
                 .map(|record| record.status.is_active())
                 .unwrap_or(false);
             if !dispatch_is_still_active {
+                tracing::info!("Launch stopped because dispatch was canceled during preparation");
                 return Ok(());
             }
 
@@ -279,9 +339,13 @@ impl<'a> RemoteDispatchService<'a> {
                 .save_preparing_phase(&mut dispatch_record, "Launching the remote agent.")
                 .await?
             {
+                tracing::info!(
+                    "Launch stopped before remote agent start because dispatch is no longer active"
+                );
                 return Ok(());
             }
             workspace.task_runs().launch(&dispatch_record)?;
+            tracing::info!("Started remote task agent process");
 
             Ok(())
         }
@@ -298,6 +362,10 @@ impl<'a> RemoteDispatchService<'a> {
                         let _ = self
                             .cancel_remote_dispatch_if_possible(&existing_record)
                             .await;
+                        tracing::info!(
+                            status = ?existing_record.status,
+                            "Dispatch changed state before run promotion; returning persisted state"
+                        );
                         return Ok(existing_record);
                     }
                 }
@@ -306,9 +374,11 @@ impl<'a> RemoteDispatchService<'a> {
                 self.dispatch_repository()
                     .save_dispatch(&dispatch_record)
                     .await?;
+                tracing::info!("Marked dispatch as running");
                 Ok(dispatch_record)
             }
             Err(error) => {
+                tracing::error!(error = %error, "Remote task launch failed");
                 let dispatch_record = dispatch_record.into_failed(error.to_string());
                 self.dispatch_repository()
                     .save_dispatch(&dispatch_record)
@@ -330,6 +400,7 @@ impl<'a> RemoteDispatchService<'a> {
     //
     // We keep them separate so the UI can expose both actions without
     // overloading one button with two meanings.
+    #[tracing::instrument(skip(self), fields(task_id = %task_id))]
     pub async fn cancel_dispatch(
         &self,
         task_id: &TaskId,
@@ -359,9 +430,16 @@ impl<'a> RemoteDispatchService<'a> {
             .save_dispatch(&latest_dispatch)
             .await?;
 
+        tracing::info!(
+            dispatch_id = %latest_dispatch.dispatch_id,
+            remote_host = %latest_dispatch.remote_host,
+            "Canceled remote task dispatch"
+        );
+
         Ok(latest_dispatch)
     }
 
+    #[tracing::instrument(skip(self), fields(task_id = %task_id))]
     pub async fn discard_dispatch_history(&self, task_id: &TaskId) -> Result<(), TrackError> {
         let latest_dispatch = self
             .dispatch_repository()
@@ -389,7 +467,14 @@ impl<'a> RemoteDispatchService<'a> {
         // dispatch records automatically.
         self.dispatch_repository()
             .delete_dispatch_history_for_task(task_id)
-            .await
+            .await?;
+
+        tracing::info!(
+            latest_dispatch_id = %latest_dispatch.dispatch_id,
+            "Discarded task dispatch history"
+        );
+
+        Ok(())
     }
 
     pub async fn latest_dispatches_for_tasks(
@@ -464,6 +549,7 @@ impl<'a> RemoteDispatchService<'a> {
     // The dispatch domain owns task close/delete cleanup because those actions
     // are really about reclaiming task-specific remote worktrees while keeping
     // the local tracker usable if the remote side has already gone away.
+    #[tracing::instrument(skip(self, input), fields(task_id = %task_id))]
     pub async fn update_task(
         &self,
         task_id: &TaskId,
@@ -491,6 +577,7 @@ impl<'a> RemoteDispatchService<'a> {
                 // best-effort follow-up.
                 match cleanup_result {
                     Ok(_) => {
+                        tracing::info!("Cleaned remote task artifacts while closing task");
                         self.finalize_active_dispatches_locally(
                             &dispatch_history,
                             DispatchStatus::Canceled,
@@ -500,7 +587,7 @@ impl<'a> RemoteDispatchService<'a> {
                         .await?
                     }
                     Err(error) => {
-                        eprintln!("Skipping remote cleanup while closing task {task_id}: {error}");
+                        tracing::warn!(error = %error, "Skipping remote cleanup while closing task");
                         self.finalize_active_dispatches_locally(
                             &dispatch_history,
                             DispatchStatus::Canceled,
@@ -513,11 +600,15 @@ impl<'a> RemoteDispatchService<'a> {
             }
         }
 
-        self.task_repository()
+        let updated_task = self
+            .task_repository()
             .update_task(task_id, validated_input)
-            .await
+            .await?;
+        tracing::info!(status = ?updated_task.status, project = %updated_task.project, "Updated task");
+        Ok(updated_task)
     }
 
+    #[tracing::instrument(skip(self), fields(task_id = %task_id))]
     pub async fn delete_task(&self, task_id: &TaskId) -> Result<(), TrackError> {
         let dispatch_history = self
             .dispatch_repository()
@@ -536,7 +627,7 @@ impl<'a> RemoteDispatchService<'a> {
                 // task, stale remote artifacts must not veto that choice.
                 // TODO: We intentionally do not persist this warning locally
                 // because delete also removes the task's local dispatch history.
-                eprintln!("Skipping remote cleanup while deleting task {task_id}: {error}");
+                tracing::warn!(error = %error, "Skipping remote cleanup while deleting task");
             }
 
             // We intentionally remove the local dispatch history before the
@@ -548,7 +639,9 @@ impl<'a> RemoteDispatchService<'a> {
                 .await?;
         }
 
-        self.task_repository().delete_task(task_id).await
+        self.task_repository().delete_task(task_id).await?;
+        tracing::info!("Deleted task and any local dispatch history");
+        Ok(())
     }
 
     async fn refresh_active_dispatch_records(
@@ -598,6 +691,11 @@ impl<'a> RemoteDispatchService<'a> {
                     .mark_abandoned_if_preparing_stale(now_utc(), PREPARING_STALE_AFTER)
                 {
                     self.dispatch_repository().save_dispatch(&updated).await?;
+                    tracing::info!(
+                        dispatch_id = %updated.dispatch_id,
+                        status = ?updated.status,
+                        "Marked stale preparing dispatch as abandoned during refresh"
+                    );
                     refreshed_records.push(updated);
                 } else {
                     let updated = self.finalize_dispatch_locally(
@@ -607,6 +705,11 @@ impl<'a> RemoteDispatchService<'a> {
                         Some("Remote dispatch snapshot is missing."),
                     )
                     .await?;
+                    tracing::warn!(
+                        dispatch_id = %updated.dispatch_id,
+                        status = ?updated.status,
+                        "Released active dispatch because its remote snapshot is missing"
+                    );
                     refreshed_records.push(updated);
                 }
                 continue;
@@ -616,10 +719,26 @@ impl<'a> RemoteDispatchService<'a> {
                 Ok(updated) => {
                     if updated != record {
                         self.dispatch_repository().save_dispatch(&updated).await?;
+                        tracing::info!(
+                            dispatch_id = %updated.dispatch_id,
+                            previous_status = ?record.status,
+                            status = ?updated.status,
+                            "Refreshed task dispatch state from remote snapshot"
+                        );
                     }
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
+                    tracing::error!(
+                        dispatch_id = %record.dispatch_id,
+                        error = %error,
+                        observed_status = ?snapshot.status,
+                        "Failed to interpret remote task snapshot"
+                    );
+                    log_remote_failure_output(
+                        snapshot.result.as_deref(),
+                        snapshot.stderr.as_deref(),
+                    );
                     if snapshot.is_finished() {
                         let refreshed_at = now_utc();
                         let finished_at = snapshot.finished_at_or(refreshed_at);
@@ -629,6 +748,11 @@ impl<'a> RemoteDispatchService<'a> {
                             error.to_string(),
                         );
                         self.dispatch_repository().save_dispatch(&updated).await?;
+                        tracing::warn!(
+                            dispatch_id = %updated.dispatch_id,
+                            status = ?updated.status,
+                            "Marked dispatch as failed after remote snapshot parse error"
+                        );
                         refreshed_records.push(updated);
                     } else {
                         let error_message = error.to_string();
@@ -639,6 +763,11 @@ impl<'a> RemoteDispatchService<'a> {
                             Some(&error_message),
                         )
                         .await?;
+                        tracing::warn!(
+                            dispatch_id = %updated.dispatch_id,
+                            status = ?updated.status,
+                            "Released active dispatch after remote reconciliation error"
+                        );
                         refreshed_records.push(updated);
                     }
                 }
@@ -698,10 +827,19 @@ impl<'a> RemoteDispatchService<'a> {
             },
         )?;
 
-        Ok(RemoteArtifactCleanupCounts {
+        let cleanup_counts = RemoteArtifactCleanupCounts {
             worktrees_removed: summary.worktrees_removed,
             run_directories_removed: summary.run_directories_removed,
-        })
+        };
+        tracing::info!(
+            task_id = %task_id,
+            cleanup_mode = ?cleanup_mode,
+            worktrees_removed = cleanup_counts.worktrees_removed,
+            run_directories_removed = cleanup_counts.run_directories_removed,
+            "Cleaned remote task artifacts"
+        );
+
+        Ok(cleanup_counts)
     }
 
     pub(super) async fn finalize_active_dispatches_locally(
@@ -737,6 +875,22 @@ impl<'a> RemoteDispatchService<'a> {
         self.dispatch_repository()
             .save_dispatch(&updated_record)
             .await?;
+        if matches!(status, DispatchStatus::Blocked | DispatchStatus::Failed) {
+            tracing::warn!(
+                dispatch_id = %updated_record.dispatch_id,
+                status = ?updated_record.status,
+                summary = %summary,
+                error_message = error_message.unwrap_or(""),
+                "Locally finalized task dispatch after remote disruption"
+            );
+        } else {
+            tracing::info!(
+                dispatch_id = %updated_record.dispatch_id,
+                status = ?updated_record.status,
+                summary = %summary,
+                "Locally finalized task dispatch"
+            );
+        }
 
         Ok(updated_record)
     }
@@ -772,7 +926,12 @@ impl<'a> RemoteDispatchService<'a> {
         };
         let workspace = self.remote_workspace(remote_agent)?;
         let _ = worktree_path;
-        workspace.task_runs().cancel(dispatch_record).map(|_| ())
+        workspace.task_runs().cancel(dispatch_record).map(|_| ())?;
+        tracing::info!(
+            dispatch_id = %dispatch_record.dispatch_id,
+            "Issued remote cancellation for task dispatch"
+        );
+        Ok(())
     }
 
     async fn save_preparing_phase(
@@ -795,6 +954,7 @@ impl<'a> RemoteDispatchService<'a> {
         self.dispatch_repository()
             .save_dispatch(dispatch_record)
             .await?;
+        tracing::info!(summary = %summary, "Updated task dispatch preparation status");
 
         Ok(true)
     }

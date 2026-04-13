@@ -90,6 +90,13 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        tracing::warn!(
+            status = %self.status,
+            error_code = %self.code,
+            error_message = %self.message,
+            "API request returned an error response"
+        );
+
         (
             self.status,
             Json(ApiErrorBody {

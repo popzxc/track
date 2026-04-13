@@ -102,6 +102,7 @@ impl<'a> RemoteAgentServices<'a> {
     // workspace. The top-level service owner handles that coordination so the
     // dispatch and review application services can stay focused on their own
     // local records and workflows.
+    #[tracing::instrument(skip(self))]
     pub async fn cleanup_unused_remote_artifacts(
         &self,
     ) -> Result<RemoteCleanupSummary, TrackError> {
@@ -244,6 +245,16 @@ impl<'a> RemoteAgentServices<'a> {
             .maintenance()
             .cleanup_reclaimable_review_workspaces(&reclaimable_review_workspace_keys)?;
 
+        tracing::info!(
+            closed_tasks_cleaned = summary.closed_tasks_cleaned,
+            missing_tasks_cleaned = summary.missing_tasks_cleaned,
+            local_dispatch_histories_removed = summary.local_dispatch_histories_removed,
+            remote_worktrees_removed = summary.remote_worktrees_removed,
+            remote_run_directories_removed = summary.remote_run_directories_removed,
+            reclaimable_review_workspaces = reclaimable_review_workspace_keys.len(),
+            "Completed remote artifact cleanup"
+        );
+
         Ok(summary)
     }
 
@@ -253,6 +264,7 @@ impl<'a> RemoteAgentServices<'a> {
     //
     // Reset is also cross-domain by definition: we need both task dispatches
     // and review runs to be idle before we drop the shared remote workspace.
+    #[tracing::instrument(skip(self))]
     pub async fn reset_remote_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
         let active_task_dispatches = self.dispatch().list_dispatches(None).await?;
         let active_review_dispatches = self.review().list_dispatches(None).await?;
@@ -269,11 +281,19 @@ impl<'a> RemoteAgentServices<'a> {
         }
 
         let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
-        self.remote_workspace(remote_agent)?
+        let summary = self
+            .remote_workspace(remote_agent)?
             .maintenance()
-            .reset_workspace()
+            .reset_workspace()?;
+        tracing::warn!(
+            workspace_entries_removed = summary.workspace_entries_removed,
+            registry_removed = summary.registry_removed,
+            "Reset remote workspace"
+        );
+        Ok(summary)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn reconcile_review_follow_up(
         &self,
     ) -> Result<RemoteReviewFollowUpReconciliation, TrackError> {
@@ -345,6 +365,14 @@ impl<'a> RemoteAgentServices<'a> {
                 Ok(pull_request_state) => pull_request_state,
                 Err(error) => {
                     reconciliation.failures += 1;
+                    tracing::warn!(
+                        task_id = %dispatch_record.task_id,
+                        dispatch_id = %dispatch_record.dispatch_id,
+                        pull_request_url = %pull_request_url,
+                        reviewer = %review_follow_up.main_user,
+                        error = %error,
+                        "Automatic PR follow-up inspection failed"
+                    );
                     reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                         "fetch_failed",
                         error.to_string(),
@@ -408,6 +436,13 @@ impl<'a> RemoteAgentServices<'a> {
                         &review_follow_up.main_user,
                         Some(&pull_request_state),
                     ));
+                    tracing::info!(
+                        task_id = %queued_dispatch.task_id,
+                        dispatch_id = %queued_dispatch.dispatch_id,
+                        reviewer = %review_follow_up.main_user,
+                        pull_request_url = %pull_request_url,
+                        "Queued automatic follow-up dispatch from PR review state"
+                    );
                     reconciliation.queued_dispatches.push(queued_dispatch);
                     continue;
                 }
@@ -457,6 +492,14 @@ impl<'a> RemoteAgentServices<'a> {
                 });
             if let Err(error) = notify_reviewer_result {
                 reconciliation.failures += 1;
+                tracing::warn!(
+                    task_id = %dispatch_record.task_id,
+                    dispatch_id = %dispatch_record.dispatch_id,
+                    reviewer = %review_follow_up.main_user,
+                    pull_request_url = %pull_request_url,
+                    error = %error,
+                    "Posting PR reviewer notification failed"
+                );
                 reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "notify_reviewer_failed",
                     error.to_string(),
@@ -480,7 +523,22 @@ impl<'a> RemoteAgentServices<'a> {
                 Some(&pull_request_state),
             ));
             reconciliation.review_notifications_updated += 1;
+            tracing::info!(
+                task_id = %dispatch_record.task_id,
+                dispatch_id = %dispatch_record.dispatch_id,
+                reviewer = %review_follow_up.main_user,
+                pull_request_url = %pull_request_url,
+                "Posted PR reviewer follow-up notification"
+            );
         }
+
+        tracing::info!(
+            review_notifications_updated = reconciliation.review_notifications_updated,
+            queued_dispatches = reconciliation.queued_dispatches.len(),
+            failures = reconciliation.failures,
+            evaluated_events = reconciliation.events.len(),
+            "Completed review follow-up reconciliation"
+        );
 
         Ok(reconciliation)
     }

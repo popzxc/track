@@ -25,10 +25,12 @@ pub(crate) async fn list_projects(
         .list_projects()
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(project_count = projects.len(), "Listed projects");
 
     Ok(Json(ProjectsResponse { projects }))
 }
 
+#[tracing::instrument(skip(state, body), fields(project_id = %canonical_name))]
 pub(crate) async fn patch_project(
     State(state): State<AppState>,
     AxumPath(canonical_name): AxumPath<ProjectId>,
@@ -46,6 +48,7 @@ pub(crate) async fn patch_project(
         )
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!("Patched project metadata");
 
     Ok(Json(project))
 }
@@ -59,6 +62,7 @@ pub(crate) struct PutProjectInput {
     metadata: ProjectMetadataUpdateInput,
 }
 
+#[tracing::instrument(skip(state, body), fields(project_id = %canonical_name))]
 pub(crate) async fn put_project(
     State(state): State<AppState>,
     AxumPath(canonical_name): AxumPath<ProjectId>,
@@ -77,6 +81,7 @@ pub(crate) async fn put_project(
         })
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!("Upserted project");
 
     Ok(Json(project))
 }

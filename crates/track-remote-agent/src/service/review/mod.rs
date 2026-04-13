@@ -25,6 +25,7 @@ use crate::RemoteWorkspace;
 pub(crate) use self::guard::ReviewDispatchStartGuard;
 
 mod guard;
+use super::log_remote_failure_output;
 
 pub struct RemoteReviewService<'a> {
     pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
@@ -51,6 +52,7 @@ impl<'a> RemoteReviewService<'a> {
     // This file mirrors `dispatch.rs` on purpose so the two domains can be
     // compared directly. Review-specific helpers stay inline here until the
     // service boundaries feel settled enough to split again with confidence.
+    #[tracing::instrument(skip(self, input), fields(preferred_tool = ?input.preferred_tool))]
     pub async fn create_review(
         &self,
         input: CreateReviewInput,
@@ -154,7 +156,16 @@ impl<'a> RemoteReviewService<'a> {
             )
             .await
         {
-            Ok(dispatch) => Ok((review, dispatch)),
+            Ok(dispatch) => {
+                tracing::info!(
+                    review_id = %review.id,
+                    dispatch_id = %dispatch.dispatch_id,
+                    remote_host = %dispatch.remote_host,
+                    preferred_tool = ?dispatch.preferred_tool,
+                    "Created PR review and queued initial remote run"
+                );
+                Ok((review, dispatch))
+            }
             Err(error) => {
                 let _ = self.review_repository().delete_review(&review.id).await;
                 Err(error)
@@ -172,6 +183,7 @@ impl<'a> RemoteReviewService<'a> {
     // fetch fresh PR metadata here so each run records which commit the agent
     // reviewed instead of assuming the PR stayed on the same head as the
     // initial request.
+    #[tracing::instrument(skip(self, follow_up_request), fields(review_id = %review_id))]
     pub async fn queue_follow_up_review_dispatch(
         &self,
         review_id: &ReviewId,
@@ -207,7 +219,16 @@ impl<'a> RemoteReviewService<'a> {
             )
             .await
         {
-            Ok(dispatch) => Ok(dispatch),
+            Ok(dispatch) => {
+                tracing::info!(
+                    dispatch_id = %dispatch.dispatch_id,
+                    remote_host = %dispatch.remote_host,
+                    preferred_tool = ?dispatch.preferred_tool,
+                    follow_up_lines = trimmed_follow_up_request.lines().count(),
+                    "Queued PR review follow-up run"
+                );
+                Ok(dispatch)
+            }
             Err(error) => {
                 review.updated_at = previous_updated_at;
                 let _ = self.review_repository().save_review(&review).await;
@@ -216,6 +237,15 @@ impl<'a> RemoteReviewService<'a> {
         }
     }
 
+    #[tracing::instrument(
+        skip(self, dispatch_record),
+        fields(
+            review_id = %dispatch_record.review_id,
+            dispatch_id = %dispatch_record.dispatch_id,
+            remote_host = %dispatch_record.remote_host,
+            preferred_tool = ?dispatch_record.preferred_tool
+        )
+    )]
     pub async fn launch_prepared_review(
         &self,
         mut dispatch_record: ReviewRunRecord,
@@ -226,6 +256,10 @@ impl<'a> RemoteReviewService<'a> {
             .await?
         {
             if !existing_record.status.is_active() {
+                tracing::info!(
+                    status = ?existing_record.status,
+                    "Skipped review launch because run is no longer active"
+                );
                 return Ok(existing_record);
             }
         }
@@ -248,11 +282,17 @@ impl<'a> RemoteReviewService<'a> {
                 )
                 .await?
             {
+                tracing::info!("Review launch stopped before prerequisites because run is no longer active");
                 return Ok::<(), TrackError>(());
             }
             let (remote_agent, review) = self
                 .load_review_dispatch_prerequisites(&dispatch_record.review_id)
                 .await?;
+            tracing::info!(
+                workspace_root = %remote_agent.workspace_root,
+                pull_request_url = %review.pull_request_url,
+                "Loaded PR review prerequisites"
+            );
             let workspace = self.remote_workspace(remote_agent)?;
 
             if !self
@@ -262,14 +302,17 @@ impl<'a> RemoteReviewService<'a> {
                 )
                 .await?
             {
+                tracing::info!("Review launch stopped while refreshing checkout because run is no longer active");
                 return Ok::<(), TrackError>(());
             }
             let checkout_path = workspace.projects().ensure_review_checkout(&review)?;
+            tracing::info!(checkout_path = ?checkout_path, "Remote review checkout is ready");
 
             if !self
                 .save_review_preparing_phase(&mut dispatch_record, "Preparing the review worktree.")
                 .await?
             {
+                tracing::info!("Review launch stopped while preparing worktree because run is no longer active");
                 return Ok::<(), TrackError>(());
             }
             workspace.review_runs().prepare_worktree(
@@ -278,6 +321,7 @@ impl<'a> RemoteReviewService<'a> {
                 review.pull_request_number,
                 dispatch_record.target_head_oid.as_deref(),
             )?;
+            tracing::info!("Prepared remote review worktree");
 
             let dispatch_history = self
                 .review_dispatch_repository()
@@ -298,11 +342,13 @@ impl<'a> RemoteReviewService<'a> {
                 )
                 .await?
             {
+                tracing::info!("Review launch stopped while uploading run files because run is no longer active");
                 return Ok::<(), TrackError>(());
             }
             workspace
                 .review_runs()
                 .upload_run_files(&dispatch_record, &prompt, &schema)?;
+            tracing::info!("Uploaded remote review prompt and schema");
 
             let dispatch_is_still_active = self
                 .review_dispatch_repository()
@@ -311,6 +357,7 @@ impl<'a> RemoteReviewService<'a> {
                 .map(|record| record.status.is_active())
                 .unwrap_or(false);
             if !dispatch_is_still_active {
+                tracing::info!("Review launch stopped because run was canceled during preparation");
                 return Ok::<(), TrackError>(());
             }
 
@@ -321,9 +368,11 @@ impl<'a> RemoteReviewService<'a> {
                 )
                 .await?
             {
+                tracing::info!("Review launch stopped before remote agent start because run is no longer active");
                 return Ok(());
             }
             workspace.review_runs().launch(&dispatch_record)?;
+            tracing::info!("Started remote review agent process");
 
             Ok(())
         }
@@ -340,6 +389,10 @@ impl<'a> RemoteReviewService<'a> {
                         let _ = self
                             .cancel_remote_review_if_possible(&existing_record)
                             .await;
+                        tracing::info!(
+                            status = ?existing_record.status,
+                            "Review run changed state before promotion; returning persisted state"
+                        );
                         return Ok(existing_record);
                     }
                 }
@@ -348,9 +401,11 @@ impl<'a> RemoteReviewService<'a> {
                 self.review_dispatch_repository()
                     .save_dispatch(&dispatch_record)
                     .await?;
+                tracing::info!("Marked review run as running");
                 Ok(dispatch_record)
             }
             Err(error) => {
+                tracing::error!(error = %error, "Remote review launch failed");
                 let dispatch_record = dispatch_record.into_failed(error.to_string());
                 self.review_dispatch_repository()
                     .save_dispatch(&dispatch_record)
@@ -445,9 +500,16 @@ impl<'a> RemoteReviewService<'a> {
             .save_dispatch(&latest_dispatch)
             .await?;
 
+        tracing::info!(
+            dispatch_id = %latest_dispatch.dispatch_id,
+            remote_host = %latest_dispatch.remote_host,
+            "Canceled PR review run"
+        );
+
         Ok(latest_dispatch)
     }
 
+    #[tracing::instrument(skip(self), fields(review_id = %review_id))]
     pub async fn delete_review(&self, review_id: &ReviewId) -> Result<(), TrackError> {
         let review = self.review_repository().get_review(review_id).await?;
         let dispatch_history = self
@@ -459,7 +521,7 @@ impl<'a> RemoteReviewService<'a> {
                 .cleanup_review_remote_artifacts(&review, &dispatch_history)
                 .await
             {
-                eprintln!("Skipping remote cleanup while deleting review {review_id}: {error}");
+                tracing::warn!(error = %error, "Skipping remote cleanup while deleting review");
             }
 
             self.review_dispatch_repository()
@@ -467,7 +529,9 @@ impl<'a> RemoteReviewService<'a> {
                 .await?;
         }
 
-        self.review_repository().delete_review(review_id).await
+        self.review_repository().delete_review(review_id).await?;
+        tracing::info!("Deleted review and any local run history");
+        Ok(())
     }
 
     async fn refresh_active_review_dispatch_records(
@@ -506,6 +570,11 @@ impl<'a> RemoteReviewService<'a> {
                     self.review_dispatch_repository()
                         .save_dispatch(&updated)
                         .await?;
+                    tracing::info!(
+                        dispatch_id = %updated.dispatch_id,
+                        status = ?updated.status,
+                        "Marked stale preparing review run as abandoned during refresh"
+                    );
                     refreshed_records.push(updated);
                 } else {
                     let updated = self.finalize_review_dispatch_locally(
@@ -515,6 +584,11 @@ impl<'a> RemoteReviewService<'a> {
                         Some("Remote review snapshot is missing."),
                     )
                     .await?;
+                    tracing::warn!(
+                        dispatch_id = %updated.dispatch_id,
+                        status = ?updated.status,
+                        "Released active review run because its remote snapshot is missing"
+                    );
                     refreshed_records.push(updated);
                 }
                 continue;
@@ -526,10 +600,26 @@ impl<'a> RemoteReviewService<'a> {
                         self.review_dispatch_repository()
                             .save_dispatch(&updated)
                             .await?;
+                        tracing::info!(
+                            dispatch_id = %updated.dispatch_id,
+                            previous_status = ?record.status,
+                            status = ?updated.status,
+                            "Refreshed review run state from remote snapshot"
+                        );
                     }
                     refreshed_records.push(updated);
                 }
                 Err(error) => {
+                    tracing::error!(
+                        dispatch_id = %record.dispatch_id,
+                        error = %error,
+                        observed_status = ?snapshot.status,
+                        "Failed to interpret remote review snapshot"
+                    );
+                    log_remote_failure_output(
+                        snapshot.result.as_deref(),
+                        snapshot.stderr.as_deref(),
+                    );
                     if snapshot.is_finished() {
                         let refreshed_at = now_utc();
                         let finished_at = snapshot.finished_at_or(refreshed_at);
@@ -541,6 +631,11 @@ impl<'a> RemoteReviewService<'a> {
                         self.review_dispatch_repository()
                             .save_dispatch(&updated)
                             .await?;
+                        tracing::warn!(
+                            dispatch_id = %updated.dispatch_id,
+                            status = ?updated.status,
+                            "Marked review run as failed after remote snapshot parse error"
+                        );
                         refreshed_records.push(updated);
                     } else {
                         let error_message = error.to_string();
@@ -551,6 +646,11 @@ impl<'a> RemoteReviewService<'a> {
                             Some(&error_message),
                         )
                         .await?;
+                        tracing::warn!(
+                            dispatch_id = %updated.dispatch_id,
+                            status = ?updated.status,
+                            "Released active review run after remote reconciliation error"
+                        );
                         refreshed_records.push(updated);
                     }
                 }
@@ -698,6 +798,18 @@ impl<'a> RemoteReviewService<'a> {
             )
             .await?;
 
+        tracing::info!(
+            review_id = %review.id,
+            dispatch_id = %dispatch_record.dispatch_id,
+            remote_host = %dispatch_record.remote_host,
+            branch_name = ?branch_name,
+            worktree_path = ?worktree_path,
+            preferred_tool = ?dispatch_record.preferred_tool,
+            has_follow_up_request = follow_up_request.is_some(),
+            has_target_head_oid = target_head_oid.is_some(),
+            "Queued remote PR review run"
+        );
+
         Ok(dispatch_record)
     }
 
@@ -721,6 +833,7 @@ impl<'a> RemoteReviewService<'a> {
         self.review_dispatch_repository()
             .save_dispatch(dispatch_record)
             .await?;
+        tracing::info!(summary = %summary, "Updated review run preparation status");
 
         Ok(true)
     }
@@ -755,7 +868,15 @@ impl<'a> RemoteReviewService<'a> {
         };
         let workspace = self.remote_workspace(remote_agent)?;
         let _ = worktree_path;
-        workspace.review_runs().cancel(dispatch_record).map(|_| ())
+        workspace
+            .review_runs()
+            .cancel(dispatch_record)
+            .map(|_| ())?;
+        tracing::info!(
+            dispatch_id = %dispatch_record.dispatch_id,
+            "Issued remote cancellation for review run"
+        );
+        Ok(())
     }
 
     async fn finalize_review_dispatch_locally(
@@ -772,6 +893,22 @@ impl<'a> RemoteReviewService<'a> {
         self.review_dispatch_repository()
             .save_dispatch(&updated_record)
             .await?;
+        if matches!(status, DispatchStatus::Blocked | DispatchStatus::Failed) {
+            tracing::warn!(
+                dispatch_id = %updated_record.dispatch_id,
+                status = ?updated_record.status,
+                summary = %summary,
+                error_message = error_message.unwrap_or(""),
+                "Locally finalized review run after remote disruption"
+            );
+        } else {
+            tracing::info!(
+                dispatch_id = %updated_record.dispatch_id,
+                status = ?updated_record.status,
+                summary = %summary,
+                "Locally finalized review run"
+            );
+        }
 
         Ok(updated_record)
     }
@@ -792,7 +929,13 @@ impl<'a> RemoteReviewService<'a> {
         workspace
             .review_runs()
             .cleanup(review, dispatch_history)
-            .map(|_| ())
+            .map(|_| ())?;
+        tracing::info!(
+            review_id = %review.id,
+            remote_runs = dispatch_history.len(),
+            "Cleaned remote PR review artifacts"
+        );
+        Ok(())
     }
 
     // =============================================================================

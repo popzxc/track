@@ -66,10 +66,12 @@ pub(crate) async fn list_reviews(
             review,
         })
         .collect::<Vec<_>>();
+    tracing::info!(review_count = reviews.len(), "Listed reviews");
 
     Ok(Json(ReviewsResponse { reviews }))
 }
 
+#[tracing::instrument(skip(state), fields(review_id = %id))]
 pub(crate) async fn list_review_runs(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
@@ -80,10 +82,12 @@ pub(crate) async fn list_review_runs(
         .dispatch_history_for_review(&id)
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(run_count = runs.len(), "Listed review run history");
 
     Ok(Json(ReviewRunsResponse { runs }))
 }
 
+#[tracing::instrument(skip(state, body))]
 pub(crate) async fn create_review(
     State(state): State<AppState>,
     body: Bytes,
@@ -100,6 +104,13 @@ pub(crate) async fn create_review(
     crate::app::bump_task_change_version(&state);
 
     spawn_review_launch(state.clone(), run.clone());
+    tracing::info!(
+        review_id = %review.id,
+        dispatch_id = %run.dispatch_id,
+        remote_host = %run.remote_host,
+        preferred_tool = ?run.preferred_tool,
+        "Created review from API"
+    );
 
     Ok(Json(CreateReviewResponse { review, run }))
 }
@@ -111,6 +122,7 @@ pub(crate) struct FollowUpRequestInput {
     request: String,
 }
 
+#[tracing::instrument(skip(state, body), fields(review_id = %id))]
 pub(crate) async fn follow_up_review(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
@@ -128,6 +140,11 @@ pub(crate) async fn follow_up_review(
     crate::app::bump_task_change_version(&state);
 
     spawn_review_launch(state.clone(), run.clone());
+    tracing::info!(
+        dispatch_id = %run.dispatch_id,
+        remote_host = %run.remote_host,
+        "Queued review follow-up from API"
+    );
 
     Ok(Json(run))
 }
@@ -138,6 +155,7 @@ pub(crate) struct DeleteReviewResponse {
     ok: bool,
 }
 
+#[tracing::instrument(skip(state), fields(review_id = %id))]
 pub(crate) async fn delete_review(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
@@ -149,10 +167,12 @@ pub(crate) async fn delete_review(
         .await
         .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
+    tracing::info!("Deleted review");
 
     Ok(Json(DeleteReviewResponse { ok: true }))
 }
 
+#[tracing::instrument(skip(state), fields(review_id = %id))]
 pub(crate) async fn cancel_review_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
@@ -163,12 +183,22 @@ pub(crate) async fn cancel_review_dispatch(
         .cancel_dispatch(&id)
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        dispatch_id = %canceled_dispatch.dispatch_id,
+        "Canceled review dispatch from API"
+    );
 
     Ok(Json(canceled_dispatch))
 }
 
 pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRecord) {
     tokio::spawn(async move {
+        tracing::info!(
+            review_id = %queued_dispatch.review_id,
+            dispatch_id = %queued_dispatch.dispatch_id,
+            remote_host = %queued_dispatch.remote_host,
+            "Starting background review launch"
+        );
         let launch_result = state
             .remote_agent_services()
             .review()
@@ -176,6 +206,11 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
             .await;
 
         if let Err(join_error) = launch_result {
+            tracing::error!(
+                review_id = %queued_dispatch.review_id,
+                dispatch_id = %queued_dispatch.dispatch_id,
+                "Background review launch failed"
+            );
             if let Some(mut saved_dispatch) = state
                 .database
                 .review_dispatch_repository()
@@ -198,6 +233,12 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
                         .await;
                 }
             }
+        } else {
+            tracing::info!(
+                review_id = %queued_dispatch.review_id,
+                dispatch_id = %queued_dispatch.dispatch_id,
+                "Background review launch finished"
+            );
         }
     });
 }

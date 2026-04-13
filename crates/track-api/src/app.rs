@@ -1,9 +1,13 @@
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
+use axum::body::Body;
+use axum::extract::MatchedPath;
+use axum::http::Request;
 use axum::routing::{get, patch, post, put};
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
 
 use track_types::time_utils::now_utc;
 
@@ -198,6 +202,64 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             .handle_error(|error| async move {
                 ApiError::internal(format!("Static assets are not available yet: {error}"))
             }),
+        )
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<Body>| {
+                    let matched_path = request
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(MatchedPath::as_str)
+                        .unwrap_or(request.uri().path());
+                    tracing::span!(
+                        tracing::Level::INFO,
+                        "http_request",
+                        method = %request.method(),
+                        matched_path = %matched_path,
+                        uri = %request.uri(),
+                        version = ?request.version(),
+                    )
+                })
+                .on_request(|_request: &Request<Body>, _span: &tracing::Span| {
+                    tracing::info!("API request started");
+                })
+                .on_response(
+                    |response: &axum::http::Response<Body>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        let status = response.status();
+                        if status.is_server_error() {
+                            tracing::error!(
+                                status = %status,
+                                latency_ms = latency.as_millis(),
+                                "API request failed"
+                            );
+                        } else if status.is_client_error() {
+                            tracing::warn!(
+                                status = %status,
+                                latency_ms = latency.as_millis(),
+                                "API request completed with client error"
+                            );
+                        } else {
+                            tracing::info!(
+                                status = %status,
+                                latency_ms = latency.as_millis(),
+                                "API request completed"
+                            );
+                        }
+                    },
+                )
+                .on_failure(
+                    |error: tower_http::classify::ServerErrorsFailureClass,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::error!(
+                            classification = ?error,
+                            latency_ms = latency.as_millis(),
+                            "API request encountered an internal failure"
+                        );
+                    },
+                ),
         )
         .with_state(state)
 }

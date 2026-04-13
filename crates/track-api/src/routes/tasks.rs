@@ -58,12 +58,19 @@ pub(crate) async fn list_tasks(
         )
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        include_closed = query.include_closed.unwrap_or(false),
+        project = ?query.project,
+        task_count = tasks.len(),
+        "Listed tasks"
+    );
 
     Ok(Json(TasksResponse {
         tasks: sort_tasks(&tasks),
     }))
 }
 
+#[tracing::instrument(skip(state), fields(task_id = %id))]
 pub(crate) async fn list_task_runs(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -87,10 +94,12 @@ pub(crate) async fn list_task_runs(
             dispatch,
         })
         .collect::<Vec<_>>();
+    tracing::info!(run_count = runs.len(), "Listed task run history");
 
     Ok(Json(super::runs::RunsResponse { runs }))
 }
 
+#[tracing::instrument(skip(state, body))]
 pub(crate) async fn create_task(
     State(state): State<AppState>,
     body: Bytes,
@@ -119,10 +128,17 @@ pub(crate) async fn create_task(
         .await
         .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
+    tracing::info!(
+        task_id = %created_task.task.id,
+        project = %created_task.task.project,
+        source = ?created_task.task.source,
+        "Created task"
+    );
 
     Ok(Json(created_task.task))
 }
 
+#[tracing::instrument(skip(state, body), fields(task_id = %id))]
 pub(crate) async fn patch_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -139,10 +155,12 @@ pub(crate) async fn patch_task(
         .await
         .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
+    tracing::info!(status = ?updated_task.status, project = %updated_task.project, "Patched task");
 
     Ok(Json(updated_task))
 }
 
+#[tracing::instrument(skip(state), fields(task_id = %id))]
 pub(crate) async fn delete_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -154,10 +172,12 @@ pub(crate) async fn delete_task(
         .await
         .map_err(ApiError::from_track_error)?;
     crate::app::bump_task_change_version(&state);
+    tracing::info!("Deleted task");
 
     Ok(Json(DeleteTaskResponse { ok: true }))
 }
 
+#[tracing::instrument(skip(state, body), fields(task_id = %id))]
 pub(crate) async fn dispatch_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -178,10 +198,17 @@ pub(crate) async fn dispatch_task(
         .map_err(ApiError::from_track_error)?;
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
+    tracing::info!(
+        dispatch_id = %dispatch.dispatch_id,
+        remote_host = %dispatch.remote_host,
+        preferred_tool = ?dispatch.preferred_tool,
+        "Queued task dispatch from API"
+    );
 
     Ok(Json(dispatch))
 }
 
+#[tracing::instrument(skip(state, body), fields(task_id = %id))]
 pub(crate) async fn follow_up_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -199,10 +226,16 @@ pub(crate) async fn follow_up_task(
     crate::app::bump_task_change_version(&state);
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
+    tracing::info!(
+        dispatch_id = %dispatch.dispatch_id,
+        remote_host = %dispatch.remote_host,
+        "Queued task follow-up dispatch from API"
+    );
 
     Ok(Json(dispatch))
 }
 
+#[tracing::instrument(skip(state), fields(task_id = %id))]
 pub(crate) async fn cancel_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -213,10 +246,15 @@ pub(crate) async fn cancel_task_dispatch(
         .cancel_dispatch(&id)
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        dispatch_id = %canceled_dispatch.dispatch_id,
+        "Canceled task dispatch from API"
+    );
 
     Ok(Json(canceled_dispatch))
 }
 
+#[tracing::instrument(skip(state), fields(task_id = %id))]
 pub(crate) async fn discard_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
@@ -227,6 +265,7 @@ pub(crate) async fn discard_task_dispatch(
         .discard_dispatch_history(&id)
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!("Discarded task dispatch history from API");
 
     Ok(Json(DeleteTaskResponse { ok: true }))
 }
@@ -234,6 +273,12 @@ pub(crate) async fn discard_task_dispatch(
 // TODO: Used elsewhere -- is this a right location?
 pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispatchRecord) {
     tokio::spawn(async move {
+        tracing::info!(
+            task_id = %queued_dispatch.task_id,
+            dispatch_id = %queued_dispatch.dispatch_id,
+            remote_host = %queued_dispatch.remote_host,
+            "Starting background task dispatch launch"
+        );
         let launch_result = state
             .remote_agent_services()
             .dispatch()
@@ -241,6 +286,11 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
             .await;
 
         if let Err(join_error) = launch_result {
+            tracing::error!(
+                task_id = %queued_dispatch.task_id,
+                dispatch_id = %queued_dispatch.dispatch_id,
+                "Background task dispatch launch failed"
+            );
             if let Some(mut saved_dispatch) = state
                 .database
                 .dispatch_repository()
@@ -263,6 +313,12 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
                         .await;
                 }
             }
+        } else {
+            tracing::info!(
+                task_id = %queued_dispatch.task_id,
+                dispatch_id = %queued_dispatch.dispatch_id,
+                "Background task dispatch launch finished"
+            );
         }
     });
 }

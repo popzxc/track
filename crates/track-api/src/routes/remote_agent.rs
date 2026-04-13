@@ -91,6 +91,7 @@ pub(crate) struct UpdateRemoteAgentSettingsInput {
     review_follow_up: Option<RemoteAgentReviewFollowUpSettingsResponse>,
 }
 
+#[tracing::instrument(skip(state))]
 pub(crate) async fn get_remote_agent_settings(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteAgentSettingsResponse>, ApiError> {
@@ -99,10 +100,15 @@ pub(crate) async fn get_remote_agent_settings(
         .load_remote_agent_config()
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        configured = remote_agent.is_some(),
+        "Loaded remote agent settings"
+    );
 
     Ok(Json(remote_agent_settings_response(remote_agent)))
 }
 
+#[tracing::instrument(skip(state, body))]
 pub(crate) async fn patch_remote_agent_settings(
     State(state): State<AppState>,
     body: Bytes,
@@ -137,10 +143,20 @@ pub(crate) async fn patch_remote_agent_settings(
         )
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        host = %remote_agent.host,
+        user = %remote_agent.user,
+        port = remote_agent.port,
+        preferred_tool = ?remote_agent.preferred_tool,
+        has_shell_prelude = remote_agent.shell_prelude.as_deref().is_some_and(|value| !value.trim().is_empty()),
+        review_follow_up_enabled = remote_agent.review_follow_up.as_ref().is_some_and(|config| config.enabled),
+        "Updated remote agent settings"
+    );
 
     Ok(Json(remote_agent_settings_response(Some(remote_agent))))
 }
 
+#[tracing::instrument(skip(state, body))]
 pub(crate) async fn put_remote_agent_settings(
     State(state): State<AppState>,
     body: Bytes,
@@ -172,6 +188,15 @@ pub(crate) async fn put_remote_agent_settings(
         )
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        host = %remote_agent.host,
+        user = %remote_agent.user,
+        port = remote_agent.port,
+        preferred_tool = ?remote_agent.preferred_tool,
+        has_shell_prelude = remote_agent.shell_prelude.as_deref().is_some_and(|value| !value.trim().is_empty()),
+        review_follow_up_enabled = remote_agent.review_follow_up.as_ref().is_some_and(|config| config.enabled),
+        "Replaced remote agent settings"
+    );
 
     Ok(Json(remote_agent_settings_response(Some(remote_agent))))
 }
@@ -216,6 +241,7 @@ fn remote_agent_settings_response(
     }
 }
 
+#[tracing::instrument(skip(state))]
 pub(crate) async fn cleanup_remote_agent_artifacts(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteCleanupResponse>, ApiError> {
@@ -224,10 +250,19 @@ pub(crate) async fn cleanup_remote_agent_artifacts(
         .cleanup_unused_remote_artifacts()
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        closed_tasks_cleaned = summary.closed_tasks_cleaned,
+        missing_tasks_cleaned = summary.missing_tasks_cleaned,
+        local_dispatch_histories_removed = summary.local_dispatch_histories_removed,
+        remote_worktrees_removed = summary.remote_worktrees_removed,
+        remote_run_directories_removed = summary.remote_run_directories_removed,
+        "Triggered remote agent cleanup from API"
+    );
 
     Ok(Json(RemoteCleanupResponse { summary }))
 }
 
+#[tracing::instrument(skip(state))]
 pub(crate) async fn reset_remote_agent_workspace(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteResetResponse>, ApiError> {
@@ -236,6 +271,11 @@ pub(crate) async fn reset_remote_agent_workspace(
         .reset_remote_workspace()
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::warn!(
+        workspace_entries_removed = summary.workspace_entries_removed,
+        registry_removed = summary.registry_removed,
+        "Triggered remote workspace reset from API"
+    );
 
     Ok(Json(RemoteResetResponse { summary }))
 }

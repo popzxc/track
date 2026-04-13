@@ -14,6 +14,7 @@ pub(crate) struct DispatchesResponse {
     dispatches: Vec<TaskDispatchRecord>,
 }
 
+#[tracing::instrument(skip(state, uri), fields(raw_query = ?uri.query()))]
 pub(crate) async fn list_dispatches(
     State(state): State<AppState>,
     uri: Uri,
@@ -25,6 +26,11 @@ pub(crate) async fn list_dispatches(
         .latest_dispatches_for_tasks(&task_ids)
         .await
         .map_err(ApiError::from_track_error)?;
+    tracing::info!(
+        task_count = task_ids.len(),
+        dispatch_count = dispatches.len(),
+        "Listed latest dispatches"
+    );
 
     Ok(Json(DispatchesResponse { dispatches }))
 }

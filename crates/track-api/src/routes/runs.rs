@@ -56,6 +56,7 @@ pub(crate) async fn list_runs(
         };
         runs.push(RunRecordResponse { task, dispatch });
     }
+    tracing::info!(limit = ?limit, run_count = runs.len(), "Listed runs");
 
     Ok(Json(RunsResponse { runs }))
 }
