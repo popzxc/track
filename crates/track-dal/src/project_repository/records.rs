@@ -13,6 +13,12 @@ pub(super) struct ProjectAliasRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+pub(super) struct ProjectAliasListingRow {
+    pub(super) canonical_name: String,
+    pub(super) alias: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
 pub(super) struct AliasOwnerRow {
     pub(super) canonical_name: String,
 }

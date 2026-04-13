@@ -330,6 +330,18 @@ impl<'a> RemoteAgentServices<'a> {
         let latest_dispatches = dispatch_service
             .latest_dispatches_for_tasks(&task_ids)
             .await?;
+        let tasks_by_id = self
+            .task_repository()
+            .tasks_by_ids(
+                &latest_dispatches
+                    .iter()
+                    .map(|dispatch_record| dispatch_record.task_id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?
+            .into_iter()
+            .map(|task| (task.id.clone(), task))
+            .collect::<std::collections::BTreeMap<_, _>>();
         let workspace = self.remote_workspace(remote_agent)?;
         let mut reconciliation = RemoteReviewFollowUpReconciliation::default();
 
@@ -338,16 +350,12 @@ impl<'a> RemoteAgentServices<'a> {
                 continue;
             };
 
-            match self
-                .task_repository()
-                .get_task(&dispatch_record.task_id)
-                .await
-            {
-                Ok(task) if task.status == Status::Open => task,
-                Ok(_) => continue,
-                Err(error) if error.code == ErrorCode::TaskNotFound => continue,
-                Err(error) => return Err(error),
+            let Some(task) = tasks_by_id.get(&dispatch_record.task_id) else {
+                continue;
             };
+            if task.status != Status::Open {
+                continue;
+            }
 
             let pull_request_state = workspace
                 .projects()

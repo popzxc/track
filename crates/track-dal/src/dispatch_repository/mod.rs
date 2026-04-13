@@ -1,5 +1,8 @@
 mod records;
 
+use std::collections::BTreeMap;
+
+use sqlx::{QueryBuilder, Sqlite};
 use track_types::errors::TrackError;
 use track_types::ids::{DispatchId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
@@ -201,14 +204,91 @@ impl<'a> DispatchRepository<'a> {
         &self,
         task_ids: &[TaskId],
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let mut records = Vec::new();
-        for task_id in task_ids {
-            if let Some(record) = self.latest_dispatch_for_task(task_id).await? {
-                records.push(record);
-            }
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(records)
+        let mut query_builder = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT
+                dispatch_id,
+                task_id,
+                preferred_tool,
+                project,
+                status,
+                created_at,
+                updated_at,
+                finished_at,
+                remote_host,
+                branch_name,
+                worktree_path,
+                pull_request_url,
+                follow_up_request,
+                summary,
+                notes,
+                error_message,
+                review_request_head_oid,
+                review_request_user
+            FROM (
+                SELECT
+                    dispatch_id,
+                    task_id,
+                    preferred_tool,
+                    project,
+                    status,
+                    created_at,
+                    updated_at,
+                    finished_at,
+                    remote_host,
+                    branch_name,
+                    worktree_path,
+                    pull_request_url,
+                    follow_up_request,
+                    summary,
+                    notes,
+                    error_message,
+                    review_request_head_oid,
+                    review_request_user,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY task_id
+                        ORDER BY created_at DESC, dispatch_id DESC
+                    ) AS row_number
+                FROM task_dispatches
+                WHERE task_id IN (
+            "#,
+        );
+        {
+            let mut task_id_bindings = query_builder.separated(", ");
+            for task_id in task_ids {
+                task_id_bindings.push_bind(task_id.as_str());
+            }
+        }
+        query_builder.push(
+            r#"
+                )
+            )
+            WHERE row_number = 1
+            "#,
+        );
+
+        let mut connection = self.database.connect().await?;
+        let rows = query_builder
+            .build_query_as::<records::TaskDispatchRow>()
+            .fetch_all(&mut *connection)
+            .await
+            .database_error_with("Could not load latest dispatches for tasks from SQLite")?;
+        let latest_by_task_id = rows
+            .into_iter()
+            .map(TaskDispatchRecord::try_from)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|record| (record.task_id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+
+        Ok(task_ids
+            .iter()
+            .filter_map(|task_id| latest_by_task_id.get(task_id).cloned())
+            .collect())
     }
 
     pub async fn list_dispatches(

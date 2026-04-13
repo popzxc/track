@@ -418,17 +418,10 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         review_ids: &[ReviewId],
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let mut records = Vec::new();
-        for review_id in review_ids {
-            if let Some(record) = self
-                .review_dispatch_repository()
-                .latest_dispatch_for_review(review_id)
-                .await?
-            {
-                records.push(record);
-            }
-        }
-
+        let records = self
+            .review_dispatch_repository()
+            .latest_dispatches_for_reviews(review_ids)
+            .await?;
         self.refresh_active_review_dispatch_records(records).await
     }
 

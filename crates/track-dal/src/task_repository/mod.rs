@@ -1,5 +1,8 @@
 mod records;
 
+use std::collections::BTreeMap;
+
+use sqlx::{QueryBuilder, Sqlite};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{ProjectId, TaskId};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
@@ -184,6 +187,54 @@ impl<'a> FileTaskRepository<'a> {
         Ok(self.find_task_by_id(id).await?.task)
     }
 
+    pub async fn tasks_by_ids(&self, task_ids: &[TaskId]) -> Result<Vec<Task>, TrackError> {
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut query_builder = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT
+                id,
+                project,
+                priority,
+                status,
+                description,
+                created_at,
+                updated_at,
+                source
+            FROM tasks
+            WHERE id IN (
+            "#,
+        );
+        {
+            let mut task_id_bindings = query_builder.separated(", ");
+            for task_id in task_ids {
+                task_id_bindings.push_bind(task_id.as_str());
+            }
+        }
+        query_builder.push(")");
+
+        let mut connection = self.database.connect().await?;
+        let rows = query_builder
+            .build_query_as::<records::TaskRow>()
+            .fetch_all(&mut *connection)
+            .await
+            .database_error_with("Could not load tasks by id from SQLite")?;
+        let tasks_by_id = rows
+            .into_iter()
+            .map(Task::try_from)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|task| (task.id.clone(), task))
+            .collect::<BTreeMap<_, _>>();
+
+        Ok(task_ids
+            .iter()
+            .filter_map(|task_id| tasks_by_id.get(task_id).cloned())
+            .collect())
+    }
+
     pub async fn update_task(
         &self,
         id: &TaskId,
@@ -355,7 +406,7 @@ fn first_non_empty_line(value: &str) -> Option<&str> {
 mod tests {
     use tempfile::TempDir;
     use track_types::errors::ErrorCode;
-    use track_types::ids::ProjectId;
+    use track_types::ids::{ProjectId, TaskId};
     use track_types::time_utils::format_iso_8601_millis;
     use track_types::types::{Priority, Status, TaskCreateInput, TaskSource, TaskUpdateInput};
 
@@ -654,5 +705,49 @@ mod tests {
             .await
             .expect_err("deleted task should be missing");
         assert_eq!(error.code, ErrorCode::TaskNotFound);
+    }
+
+    #[tokio::test]
+    async fn tasks_by_ids_returns_existing_tasks_in_input_order() {
+        let (_directory, database) = database_with_projects(&["project-a", "project-b"]).await;
+        let repository = database.task_repository();
+
+        let task_a = repository
+            .create_task(TaskCreateInput {
+                project: ProjectId::new("project-a").unwrap(),
+                priority: Priority::High,
+                description: "Task A".to_owned(),
+                source: None,
+            })
+            .await
+            .expect("task a should save")
+            .task;
+        let task_b = repository
+            .create_task(TaskCreateInput {
+                project: ProjectId::new("project-b").unwrap(),
+                priority: Priority::Medium,
+                description: "Task B".to_owned(),
+                source: None,
+            })
+            .await
+            .expect("task b should save")
+            .task;
+
+        let tasks = repository
+            .tasks_by_ids(&[
+                task_b.id.clone(),
+                TaskId::new("missing-task").unwrap(),
+                task_a.id.clone(),
+            ])
+            .await
+            .expect("tasks should load");
+
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![task_b.id.as_str(), task_a.id.as_str()],
+        );
     }
 }
