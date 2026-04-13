@@ -2,36 +2,39 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use clap::{Args, Parser, Subcommand};
 use track_capture::{build_task_create_input_from_text, LocalTaskParserFactory, TaskParserFactory};
-use track_core::config::{
+use track_config::config::{
     DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
     DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
 };
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::migration::{MigrationImportSummary, MigrationState, MigrationStatus};
-use track_core::path_component::validate_single_normal_path_component;
-use track_core::paths::collapse_home_path;
-use track_core::project_catalog::{ProjectCatalog, ProjectInfo};
-use track_core::project_repository::{infer_project_metadata, ProjectRecord};
-use track_core::terminal_ui::{format_note, format_summary, SummaryTone, ValueTone};
-use track_core::types::{Task, TaskSource};
+use track_config::paths::collapse_home_path;
+use track_projects::project_catalog::{ProjectCatalog, ProjectInfo};
+use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::git_remote::GitRemote;
+use track_types::ids::ProjectId;
+use track_types::types::{Task, TaskSource};
+use track_types::urls::Url;
 
 use crate::backend_client::{
     ConfigureRemoteAgentRequest, ConfigureRemoteAgentReviewFollowUpRequest, HttpTrackBackend,
     TrackBackend,
 };
 use crate::cli_config::{CliConfigFile, CliConfigService, ConfigureOptions, LoadedCliConfig};
+use crate::terminal_ui::{format_note, format_summary, SummaryTone, ValueTone};
 
 #[derive(Debug)]
 enum CliInvocation {
     Capture(Vec<String>),
     Configure(ConfigureArgs),
-    Migrate(MigrateCommand),
     ProjectRegister(ProjectRegisterArgs),
     RemoteAgentConfigure(RemoteAgentConfigureArgs),
 }
+
+const DEFAULT_BASE_BRANCH: &str = "main";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -48,8 +51,6 @@ struct CommandLine {
 enum Command {
     Configure(ConfigureArgs),
     #[command(subcommand)]
-    Migrate(MigrateCommand),
-    #[command(subcommand)]
     Project(ProjectCommand),
     #[command(subcommand)]
     RemoteAgent(RemoteAgentCommand),
@@ -65,12 +66,6 @@ pub struct ConfigureArgs {
     model_hf_repo: Option<String>,
     #[arg(long = "model-hf-file", requires = "model_hf_repo")]
     model_hf_file: Option<String>,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum MigrateCommand {
-    Status,
-    Import,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -146,11 +141,6 @@ pub fn run_from_os_args(raw_args: Vec<OsString>) -> Result<String, TrackError> {
             )
         }
         CliInvocation::Configure(args) => run_configure_command(&config_service, args),
-        CliInvocation::Migrate(command) => {
-            let loaded = config_service.load_or_initialize()?;
-            let backend = HttpTrackBackend::new(&loaded.runtime.backend_base_url);
-            run_migration_command(&config_service, &loaded, &backend, command)
-        }
         CliInvocation::ProjectRegister(args) => {
             let loaded = config_service.load_or_initialize()?;
             let backend = HttpTrackBackend::new(&loaded.runtime.backend_base_url);
@@ -179,13 +169,12 @@ fn parse_invocation(raw_args: Vec<OsString>) -> Result<CliInvocation, TrackError
     }
     if matches!(
         first_argument.as_ref(),
-        "configure" | "migrate" | "project" | "remote-agent"
+        "configure" | "project" | "remote-agent"
     ) {
         let parsed = CommandLine::try_parse_from(raw_args)
             .map_err(|error| TrackError::new(ErrorCode::InvalidConfigInput, error.to_string()))?;
         return Ok(match parsed.command {
             Command::Configure(args) => CliInvocation::Configure(args),
-            Command::Migrate(command) => CliInvocation::Migrate(command),
             Command::Project(ProjectCommand::Register(args)) => {
                 CliInvocation::ProjectRegister(args)
             }
@@ -276,26 +265,6 @@ fn run_configure_command(
     ))
 }
 
-fn run_migration_command(
-    config_service: &CliConfigService,
-    loaded_config: &LoadedCliConfig,
-    backend: &dyn TrackBackend,
-    command: MigrateCommand,
-) -> Result<String, TrackError> {
-    let rendered = match command {
-        MigrateCommand::Status => {
-            let migration = backend.migration_status()?;
-            format_migration_status(&migration)
-        }
-        MigrateCommand::Import => {
-            let summary = backend.import_legacy_data()?;
-            format_migration_import_summary(&summary)
-        }
-    };
-
-    render_output_with_config_notes(config_service, loaded_config, rendered)
-}
-
 fn run_project_register_command_internal(
     config_service: &CliConfigService,
     loaded_config: &LoadedCliConfig,
@@ -313,21 +282,14 @@ fn run_project_register_command_internal(
         ));
     }
 
-    let canonical_name = validate_single_normal_path_component(
+    let canonical_name = ProjectId::new(
         checkout_path
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default(),
-        "Project canonical name",
-        ErrorCode::InvalidPathComponent,
     )?;
     let aliases = canonicalize_aliases(args.aliases, &canonical_name)?;
-    let project_info = ProjectInfo {
-        canonical_name: canonical_name.clone(),
-        path: checkout_path.clone(),
-        aliases: aliases.clone(),
-    };
-    let metadata = infer_project_metadata(&project_info);
+    let metadata = infer_project_metadata(&checkout_path);
     let project = backend
         .register_project(&canonical_name, aliases, metadata)
         .map_err(enrich_backend_error_for_cli)?;
@@ -337,6 +299,80 @@ fn run_project_register_command_internal(
         loaded_config,
         format_registered_project_output(&project, &checkout_path),
     )
+}
+
+// Project registration is the only runtime path that derives metadata from a
+// live checkout. Keeping the Git probing in the CLI prevents shared crates
+// from taking on filesystem and subprocess responsibilities they do not need.
+fn infer_project_metadata(project_path: &Path) -> ProjectMetadata {
+    let fallback_file_url =
+        Url::from_file_path(project_path).expect("discovered project paths should be absolute");
+    let fallback_git_remote = GitRemote::new(fallback_file_url.as_str())
+        .expect("absolute file URLs should always be valid git remotes");
+    let git_url = read_origin_git_url(project_path)
+        .and_then(|value| GitRemote::new(&value).ok())
+        .unwrap_or_else(|| fallback_git_remote.clone());
+    // TODO: filesystem fallback is stupid given that it's meant for remove projects,
+    // we need to kill it with fire but make sure we don't break anything
+    let repo_url = if git_url == fallback_git_remote {
+        fallback_file_url
+    } else {
+        git_url.repo_url().unwrap_or(fallback_file_url)
+    };
+    let base_branch =
+        infer_default_base_branch(project_path).unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_owned());
+
+    ProjectMetadata {
+        repo_url,
+        git_url,
+        base_branch,
+        description: None,
+    }
+}
+
+fn infer_default_base_branch(project_path: &Path) -> Option<String> {
+    read_git_output(
+        project_path,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )
+    .and_then(|value| value.strip_prefix("origin/").map(str::to_owned))
+    .or_else(|| {
+        read_git_output(
+            project_path,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )
+    })
+}
+
+fn read_origin_git_url(project_path: &Path) -> Option<String> {
+    read_git_output(project_path, &["remote", "get-url", "origin"])
+}
+
+fn read_git_output(project_path: &Path, args: &[&str]) -> Option<String> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(project_path)
+        .args(args)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(value.to_owned())
 }
 
 fn run_remote_agent_configure_command_internal(
@@ -425,10 +461,10 @@ fn format_created_task_output(task: &Task) -> String {
         "Created task",
         SummaryTone::Success,
         &[
-            ("Project", task.project.clone(), ValueTone::Plain),
+            ("Project", task.project.to_string(), ValueTone::Plain),
             ("Priority", task.priority.as_str().to_owned(), priority_tone),
             ("Status", task.status.as_str().to_owned(), status_tone),
-            ("ID", task.id.clone(), ValueTone::Path),
+            ("ID", task.id.to_string(), ValueTone::Path),
         ],
     )
 }
@@ -437,21 +473,34 @@ fn format_registered_project_output(project: &ProjectRecord, checkout_path: &Pat
     let aliases = if project.aliases.is_empty() {
         "(none)".to_owned()
     } else {
-        project.aliases.join(", ")
+        project
+            .aliases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     format_summary(
         "Registered project",
         SummaryTone::Success,
         &[
-            ("Project", project.canonical_name.clone(), ValueTone::Plain),
+            (
+                "Project",
+                project.canonical_name.to_string(),
+                ValueTone::Plain,
+            ),
             ("Aliases", aliases, ValueTone::Plain),
             (
                 "Checkout",
                 collapse_home_path(checkout_path),
                 ValueTone::Path,
             ),
-            ("Repo", project.metadata.repo_url.clone(), ValueTone::Path),
+            (
+                "Repo",
+                project.metadata.repo_url.to_string(),
+                ValueTone::Path,
+            ),
         ],
     )
 }
@@ -500,134 +549,6 @@ fn format_remote_agent_configured_output(
             ("Key", collapse_home_path(identity_file), ValueTone::Path),
         ],
     )
-}
-
-fn format_migration_status(status: &MigrationStatus) -> String {
-    let title = if status.requires_migration {
-        "Migration required"
-    } else {
-        "Migration status"
-    };
-    let tone = if status.requires_migration {
-        SummaryTone::Info
-    } else {
-        SummaryTone::Success
-    };
-    let state = match status.state {
-        MigrationState::Ready => "ready",
-        MigrationState::ImportRequired => "import_required",
-        MigrationState::Imported => "imported",
-        MigrationState::Skipped => "skipped",
-    };
-    let skipped_count = status.skipped_records.len().to_string();
-    let cleanup_count = status.cleanup_candidates.len().to_string();
-    let mut rendered = format_summary(
-        title,
-        tone,
-        &[
-            ("State", state.to_owned(), ValueTone::Plain),
-            (
-                "Projects",
-                status.summary.projects_found.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Tasks",
-                status.summary.tasks_found.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Reviews",
-                status.summary.reviews_found.to_string(),
-                ValueTone::Plain,
-            ),
-            ("Skipped", skipped_count, ValueTone::Plain),
-            ("Cleanup", cleanup_count, ValueTone::Plain),
-        ],
-    );
-
-    if status.requires_migration {
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Next",
-            "Run `track migrate import` to copy legacy data into the SQLite backend.",
-        ));
-    }
-
-    rendered
-}
-
-fn format_migration_import_summary(summary: &MigrationImportSummary) -> String {
-    let mut rendered = format_summary(
-        "Imported legacy data",
-        SummaryTone::Success,
-        &[
-            (
-                "Projects",
-                summary.imported_projects.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Aliases",
-                summary.imported_aliases.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Tasks",
-                summary.imported_tasks.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Reviews",
-                summary.imported_reviews.to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Secrets",
-                summary.copied_secret_files.len().to_string(),
-                ValueTone::Plain,
-            ),
-            (
-                "Skipped",
-                summary.skipped_records.len().to_string(),
-                ValueTone::Plain,
-            ),
-        ],
-    );
-    if !summary.cleanup_candidates.is_empty() {
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Next",
-            "Run `track configure` to materialize `~/.config/track/cli.json` before removing legacy config.",
-        ));
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Install",
-            "From your `airbender-platform` checkout, run `cargo install --path crates/cargo-airbender --force`.",
-        ));
-        rendered.push('\n');
-        rendered.push_str(&format_note(
-            "Keep",
-            "Preserve `~/.track/models` if you use local capture.",
-        ));
-        for candidate in &summary.cleanup_candidates {
-            rendered.push('\n');
-            rendered.push_str(&format_note(
-                "Remove",
-                &migration_cleanup_command(&candidate.path),
-            ));
-        }
-    }
-
-    rendered
-}
-
-fn migration_cleanup_command(path: &str) -> String {
-    if path.ends_with(".json") {
-        format!("rm -f {path}")
-    } else {
-        format!("rm -rf {path}")
-    }
 }
 
 fn render_output_with_config_notes(
@@ -689,7 +610,7 @@ fn enrich_backend_error_for_cli(error: TrackError) -> TrackError {
     match error.code {
         ErrorCode::MigrationRequired => TrackError::new(
             ErrorCode::MigrationRequired,
-            "Backend migration is required. Run `track migrate status` to inspect it, then `track migrate import` before using capture commands.",
+            "Backend migration is required. Complete the legacy import in the web UI before using CLI commands.",
         ),
         ErrorCode::ProjectNotFound => TrackError::new(
             ErrorCode::ProjectNotFound,
@@ -755,17 +676,11 @@ fn read_optional_text_file(path: &Path, label: &str) -> Result<String, TrackErro
 
 fn canonicalize_aliases(
     aliases: Vec<String>,
-    canonical_name: &str,
-) -> Result<Vec<String>, TrackError> {
+    canonical_name: &ProjectId,
+) -> Result<Vec<ProjectId>, TrackError> {
     let mut aliases = aliases
         .into_iter()
-        .map(|alias| {
-            validate_single_normal_path_component(
-                &alias,
-                "Project alias",
-                ErrorCode::InvalidPathComponent,
-            )
-        })
+        .map(|alias| ProjectId::new(&alias))
         .collect::<Result<Vec<_>, _>>()?;
     aliases.retain(|alias| alias != canonical_name);
     aliases.sort();
@@ -779,23 +694,27 @@ mod tests {
     use std::sync::Mutex;
 
     use track_capture::{TaskParser, TaskParserFactory};
-    use track_core::errors::{ErrorCode, TrackError};
-    use track_core::migration::{MigrationImportSummary, MigrationStatus};
-    use track_core::project_catalog::ProjectCatalog;
-    use track_core::project_repository::{ProjectMetadata, ProjectRecord};
-    use track_core::time_utils::now_utc;
-    use track_core::types::{
+    use track_projects::project_catalog::ProjectCatalog;
+    use track_projects::project_metadata::{ProjectMetadata, ProjectRecord};
+    use track_types::errors::{ErrorCode, TrackError};
+    use track_types::git_remote::GitRemote;
+    use track_types::ids::{ProjectId, TaskId};
+    use track_types::time_utils::now_utc;
+    use track_types::types::{
         Confidence, ParsedTaskCandidate, Priority, Status, Task, TaskCreateInput, TaskSource,
     };
+    use track_types::urls::Url;
 
     use super::{
-        canonicalize_aliases, format_created_task_output, run_capture_command_internal,
-        run_project_register_command_internal, run_remote_agent_configure_command_internal,
-        CliConfigService, LoadedCliConfig, ProjectRegisterArgs, RemoteAgentConfigureArgs,
+        canonicalize_aliases, format_created_task_output, infer_project_metadata,
+        run_capture_command_internal, run_project_register_command_internal,
+        run_remote_agent_configure_command_internal, CliConfigService, LoadedCliConfig,
+        ProjectRegisterArgs, RemoteAgentConfigureArgs,
     };
     use crate::backend_client::{
         ConfigureRemoteAgentRequest, RemoteAgentSettingsResponse, TrackBackend,
     };
+    use crate::test_support::{create_git_checkout, run_git};
 
     #[derive(Debug)]
     struct StaticTaskParser {
@@ -819,7 +738,7 @@ mod tests {
     impl TaskParserFactory for StaticTaskParserFactory {
         fn create_parser(
             &self,
-            _config: &track_core::types::TrackRuntimeConfig,
+            _config: &track_config::runtime::TrackRuntimeConfig,
         ) -> Result<Box<dyn TaskParser + 'static>, TrackError> {
             Ok(Box::new(StaticTaskParser {
                 candidate: self.candidate.clone(),
@@ -832,7 +751,7 @@ mod tests {
         projects: Vec<ProjectRecord>,
         created_tasks: Mutex<Vec<TaskCreateInput>>,
         configured_remote_agents: Mutex<Vec<ConfigureRemoteAgentRequest>>,
-        registered_projects: Mutex<Vec<(String, Vec<String>, ProjectMetadata)>>,
+        registered_projects: Mutex<Vec<(ProjectId, Vec<ProjectId>, ProjectMetadata)>>,
         fetch_projects_error: Option<TrackError>,
         create_task_error: Option<TrackError>,
     }
@@ -856,7 +775,8 @@ mod tests {
                 .push(input.clone());
 
             Ok(Task {
-                id: "20260330-project-x-fix-a-bug".to_owned(),
+                id: TaskId::new("20260330-project-x-fix-a-bug")
+                    .expect("fixture task ids should validate"),
                 project: input.project.clone(),
                 priority: input.priority,
                 status: Status::Open,
@@ -865,14 +785,6 @@ mod tests {
                 updated_at: now_utc(),
                 source: input.source,
             })
-        }
-
-        fn migration_status(&self) -> Result<MigrationStatus, TrackError> {
-            unimplemented!("migration_status is not used in these tests");
-        }
-
-        fn import_legacy_data(&self) -> Result<MigrationImportSummary, TrackError> {
-            unimplemented!("import_legacy_data is not used in these tests");
         }
 
         fn configure_remote_agent(
@@ -894,8 +806,8 @@ mod tests {
 
         fn register_project(
             &self,
-            canonical_name: &str,
-            aliases: Vec<String>,
+            canonical_name: &ProjectId,
+            aliases: Vec<ProjectId>,
             metadata: ProjectMetadata,
         ) -> Result<ProjectRecord, TrackError> {
             self.registered_projects
@@ -904,7 +816,7 @@ mod tests {
                 .push((canonical_name.to_owned(), aliases.clone(), metadata.clone()));
 
             Ok(ProjectRecord {
-                canonical_name: canonical_name.to_owned(),
+                canonical_name: canonical_name.clone(),
                 aliases,
                 metadata,
             })
@@ -921,11 +833,15 @@ mod tests {
 
     fn project_record(canonical_name: &str, aliases: Vec<&str>) -> ProjectRecord {
         ProjectRecord {
-            canonical_name: canonical_name.to_owned(),
-            aliases: aliases.into_iter().map(str::to_owned).collect(),
+            canonical_name: ProjectId::new(canonical_name)
+                .expect("fixture project ids should validate"),
+            aliases: aliases
+                .into_iter()
+                .map(|alias| ProjectId::new(alias).expect("fixture project ids should validate"))
+                .collect(),
             metadata: ProjectMetadata {
-                repo_url: format!("https://example.com/{canonical_name}"),
-                git_url: format!("git@example.com:{canonical_name}.git"),
+                repo_url: Url::parse(&format!("https://example.com/{canonical_name}")).unwrap(),
+                git_url: GitRemote::new(&format!("git@example.com:{canonical_name}.git")).unwrap(),
                 base_branch: "main".to_owned(),
                 description: None,
             },
@@ -1010,19 +926,14 @@ mod tests {
         .expect_err("capture should fail while migration is required");
 
         assert_eq!(error.code, ErrorCode::MigrationRequired);
-        assert!(error.to_string().contains("track migrate status"));
+        assert!(error.to_string().contains("web UI"));
     }
 
     #[test]
     fn project_register_sends_git_metadata_to_the_backend() {
         let directory = tempfile::TempDir::new().expect("tempdir should be created");
         let checkout = directory.path().join("project-x");
-        fs::create_dir_all(checkout.join(".git")).expect("git directory should exist");
-        fs::write(
-            checkout.join(".git/config"),
-            "[remote \"origin\"]\n\turl = git@github.com:acme/project-x.git\n",
-        )
-        .expect("git config should be written");
+        create_git_checkout(&checkout, "git@github.com:acme/project-x.git");
 
         let config_service = CliConfigService::new(Some(directory.path().join("cli.json")), None)
             .expect("cli config service should resolve");
@@ -1049,10 +960,66 @@ mod tests {
         assert_eq!(registered[0].0, "project-x");
         assert_eq!(registered[0].1, vec!["proj-x".to_owned()]);
         assert_eq!(
-            registered[0].2.repo_url,
+            registered[0].2.repo_url.as_str(),
             "https://github.com/acme/project-x"
         );
-        assert_eq!(registered[0].2.git_url, "git@github.com:acme/project-x.git");
+        assert_eq!(
+            registered[0].2.git_url.clone().into_remote_string(),
+            "git@github.com:acme/project-x.git"
+        );
+    }
+
+    #[test]
+    fn infer_project_metadata_falls_back_to_a_file_url_when_git_metadata_is_missing() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir should be created");
+        let checkout = tempdir.path().join("project-x");
+        fs::create_dir_all(&checkout).expect("checkout path should exist");
+        fs::create_dir_all(checkout.join(".git")).expect("git marker should exist");
+
+        let metadata = infer_project_metadata(&checkout);
+
+        assert_eq!(
+            metadata.repo_url,
+            Url::from_file_path(checkout.clone()).expect("fixture path should become a file url")
+        );
+        assert_eq!(
+            metadata.git_url.into_remote_string(),
+            Url::from_file_path(checkout)
+                .expect("fixture path should become a file url")
+                .as_str()
+        );
+        assert_eq!(metadata.base_branch, "main");
+        assert_eq!(metadata.description, None);
+    }
+
+    #[test]
+    fn infer_project_metadata_reads_origin_from_a_linked_worktree_checkout() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir should be created");
+        let main_checkout = tempdir.path().join("project-a");
+        let worktree_checkout = tempdir.path().join("project-a-worktree");
+        create_git_checkout(&main_checkout, "git@github.com:acme/project-a.git");
+        run_git(
+            &main_checkout,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree_checkout
+                    .to_str()
+                    .expect("fixture worktree path should be utf-8"),
+            ],
+        );
+
+        let metadata = infer_project_metadata(&worktree_checkout);
+
+        assert_eq!(
+            metadata.git_url.clone().into_remote_string(),
+            "git@github.com:acme/project-a.git"
+        );
+        assert_eq!(
+            metadata.repo_url.as_str(),
+            "https://github.com/acme/project-a"
+        );
     }
 
     #[test]
@@ -1128,7 +1095,7 @@ mod tests {
                 "proj-x".to_owned(),
                 "project-x".to_owned(),
             ],
-            "project-x",
+            &ProjectId::new("project-x").expect("fixture project ids should validate"),
         )
         .expect("aliases should validate");
 
@@ -1138,8 +1105,9 @@ mod tests {
     #[test]
     fn renders_created_task_output_without_a_file_path() {
         let rendered = format_created_task_output(&Task {
-            id: "20260330-project-x-fix-a-bug".to_owned(),
-            project: "project-x".to_owned(),
+            id: TaskId::new("20260330-project-x-fix-a-bug")
+                .expect("fixture task ids should validate"),
+            project: ProjectId::new("project-x").expect("fixture project ids should validate"),
             priority: Priority::High,
             status: Status::Open,
             description: "Fix a bug".to_owned(),

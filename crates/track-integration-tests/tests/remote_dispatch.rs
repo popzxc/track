@@ -3,12 +3,14 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
-use track_core::project_repository::ProjectMetadata;
 use track_integration_tests::api_harness::ApiHarness;
 use track_integration_tests::fixture::RemoteFixture;
 use track_integration_tests::{
     live_integration_tests_enabled, print_live_test_skip_message, workspace_root,
 };
+use track_projects::project_metadata::ProjectMetadata;
+use track_types::git_remote::GitRemote;
+use track_types::urls::Url;
 
 // =============================================================================
 // First Live Remote-Dispatch Test
@@ -39,12 +41,14 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
         "Mock Codex completed the task and opened a PR.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Prepare the remote-agent integration harness",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Prepare the remote-agent integration harness",
+        )
+        .await;
 
     let dispatch_response = harness.dispatch_task(&task.id).await;
     let dispatch_id = dispatch_response["dispatchId"]
@@ -56,11 +60,23 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
     let terminal_dispatch = harness
         .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
         .await;
+    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
+    let remote_status = fixture
+        .remote_path_exists(&format!("{remote_run_directory}/status.txt"))
+        .then(|| fixture.read_remote_file(&format!("{remote_run_directory}/status.txt")));
+    let remote_stderr = fixture
+        .remote_path_exists(&format!("{remote_run_directory}/stderr.log"))
+        .then(|| fixture.read_remote_file(&format!("{remote_run_directory}/stderr.log")));
     assert_eq!(
         terminal_dispatch["status"]
             .as_str()
             .expect("terminal status should be a string"),
-        "succeeded"
+        "succeeded",
+        "terminal dispatch: {}\nremote status: {:?}\nremote stderr: {:?}",
+        serde_json::to_string_pretty(&terminal_dispatch)
+            .expect("terminal dispatch should serialize"),
+        remote_status,
+        remote_stderr
     );
     assert_eq!(
         terminal_dispatch["pullRequestUrl"]
@@ -79,12 +95,7 @@ async fn dispatch_task_reaches_succeeded_over_real_ssh() {
         .expect("terminal dispatch should include worktreePath")
         .ends_with(&format!("/project-a/worktrees/{dispatch_id}")));
 
-    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
-    let registry_contents =
-        fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
-    assert!(registry_contents.contains("\"project-a\""));
-
-    let remote_status = fixture.read_remote_file(&format!("{remote_run_directory}/status.txt"));
+    let remote_status = remote_status.expect("remote status should exist after completion");
     assert_eq!(remote_status.trim(), "completed");
 
     let remote_result = fixture.read_remote_file(&format!("{remote_run_directory}/result.json"));
@@ -112,7 +123,7 @@ async fn dispatch_task_uses_claude_when_runner_prefers_claude() {
         "Mock Claude completed the task and opened a PR.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
+    let harness = ApiHarness::new(&fixture).await;
     let updated_settings = harness
         .update_remote_agent_settings(json!({
             "preferredTool": "claude",
@@ -126,11 +137,13 @@ async fn dispatch_task_uses_claude_when_runner_prefers_claude() {
         .await;
     assert_eq!(updated_settings["preferredTool"], "claude");
 
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Prepare the remote-agent integration harness with Claude",
-    );
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Prepare the remote-agent integration harness with Claude",
+        )
+        .await;
 
     let dispatch_response = harness.dispatch_task(&task.id).await;
     let dispatch_id = dispatch_response["dispatchId"]
@@ -201,12 +214,14 @@ async fn dispatch_task_can_override_runner_tool_per_request() {
         "Mock Claude completed the task through a per-request override.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Prepare the remote-agent integration harness with a per-request Claude override",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Prepare the remote-agent integration harness with a per-request Claude override",
+        )
+        .await;
 
     let dispatch_response = harness
         .dispatch_task_with_tool(&task.id, Some("claude"))
@@ -256,12 +271,14 @@ async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
         "Mock Codex completed the task and opened a PR.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Prepare the remote-agent integration harness",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Prepare the remote-agent integration harness",
+        )
+        .await;
 
     let first_dispatch = harness.dispatch_task(&task.id).await;
     let first_dispatch_id = first_dispatch["dispatchId"]
@@ -323,7 +340,7 @@ async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
     assert!(remote_prompt.contains("## Current follow-up request"));
     assert!(remote_prompt.contains(follow_up_request));
 
-    let updated_task = harness.load_task(&task.id);
+    let updated_task = harness.load_task(&task.id).await;
     assert!(updated_task.description.contains("## Follow-up requests"));
     assert!(updated_task.description.contains(follow_up_request));
 
@@ -351,12 +368,14 @@ async fn requesting_a_pr_review_posts_the_review_and_cleans_up_artifacts() {
         "@octocat requested me to review this PR.\n\nI did not find blocking issues in the fixture diff.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let _metadata_seed_task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Seed project metadata for manual review requests",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let _metadata_seed_task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Seed project metadata for manual review requests",
+        )
+        .await;
     let review_response = harness
         .create_review(
             "https://github.com/acme/project-a/pull/42",
@@ -421,15 +440,15 @@ async fn requesting_a_pr_review_posts_the_review_and_cleans_up_artifacts() {
         "https://github.com/acme/project-a/pull/42#pullrequestreview-42001"
     );
 
-    assert!(harness.review_record_exists(&review_id));
-    assert!(harness.review_history_exists(&review_id));
+    assert!(harness.review_record_exists(&review_id).await);
+    assert!(harness.review_history_exists(&review_id).await);
     assert!(fixture.remote_path_exists(&review_worktree_path));
     assert!(fixture.remote_path_exists(&review_run_directory));
 
     harness.delete_review(&review_id).await;
 
-    assert!(!harness.review_record_exists(&review_id));
-    assert!(!harness.review_history_exists(&review_id));
+    assert!(!harness.review_record_exists(&review_id).await);
+    assert!(!harness.review_history_exists(&review_id).await);
     assert!(!fixture.remote_path_exists(&review_worktree_path));
     assert!(!fixture.remote_path_exists(&review_run_directory));
 }
@@ -454,12 +473,14 @@ async fn requesting_a_rereview_reuses_the_saved_review_and_records_new_run_conte
         "@octocat requested me to review this PR.\n\nI found one issue in the fixture diff.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let _metadata_seed_task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Seed project metadata for manual review requests",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let _metadata_seed_task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Seed project metadata for manual review requests",
+        )
+        .await;
     let review_response = harness
         .create_review(
             "https://github.com/acme/project-a/pull/42",
@@ -556,8 +577,8 @@ async fn requesting_a_rereview_reuses_the_saved_review_and_records_new_run_conte
 
     harness.delete_review(&review_id).await;
 
-    assert!(!harness.review_record_exists(&review_id));
-    assert!(!harness.review_history_exists(&review_id));
+    assert!(!harness.review_record_exists(&review_id).await);
+    assert!(!harness.review_history_exists(&review_id).await);
     assert!(!fixture.remote_path_exists(&follow_up_worktree_path));
     assert!(!fixture.remote_path_exists(&follow_up_run_directory));
 }
@@ -582,12 +603,14 @@ async fn requesting_a_pr_review_can_override_runner_tool_and_rereview_keeps_it()
         "@octocat requested me to review this PR.\n\nI found one issue in the fixture diff.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let _metadata_seed_task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Seed project metadata for per-review runner overrides",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let _metadata_seed_task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Seed project metadata for per-review runner overrides",
+        )
+        .await;
     let review_response = harness
         .create_review_with_tool(
             "https://github.com/acme/project-a/pull/42",
@@ -669,12 +692,14 @@ async fn deleting_a_task_removes_local_and_remote_dispatch_artifacts() {
         "Mock Codex completed the task and opened a PR.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Delete the remote-agent artifacts with the task itself",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Delete the remote-agent artifacts with the task itself",
+        )
+        .await;
 
     let dispatch_response = harness.dispatch_task(&task.id).await;
     let dispatch_id = dispatch_response["dispatchId"]
@@ -693,12 +718,12 @@ async fn deleting_a_task_removes_local_and_remote_dispatch_artifacts() {
     let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
     assert!(fixture.remote_path_exists(&worktree_path));
     assert!(fixture.remote_path_exists(&remote_run_directory));
-    assert!(harness.dispatch_history_exists(&task.id));
+    assert!(harness.dispatch_history_exists(&task.id).await);
 
     harness.delete_task(&task.id).await;
 
-    assert!(!harness.task_exists(&task.id));
-    assert!(!harness.dispatch_history_exists(&task.id));
+    assert!(!harness.task_exists(&task.id).await);
+    assert!(!harness.dispatch_history_exists(&task.id).await);
     assert!(!fixture.remote_path_exists(&worktree_path));
     assert!(!fixture.remote_path_exists(&remote_run_directory));
 }
@@ -724,12 +749,14 @@ async fn closing_a_task_releases_the_worktree_but_keeps_history_for_reopen() {
         "Mock Codex completed the task and opened a PR.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Close the task, then recreate the worktree on reopen",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Close the task, then recreate the worktree on reopen",
+        )
+        .await;
 
     let first_dispatch = harness.dispatch_task(&task.id).await;
     let first_dispatch_id = first_dispatch["dispatchId"]
@@ -749,13 +776,13 @@ async fn closing_a_task_releases_the_worktree_but_keeps_history_for_reopen() {
         format!("/home/track/workspace/project-a/dispatches/{first_dispatch_id}");
     assert!(fixture.remote_path_exists(&original_worktree_path));
     assert!(fixture.remote_path_exists(&original_remote_run_directory));
-    assert!(harness.dispatch_history_exists(&task.id));
+    assert!(harness.dispatch_history_exists(&task.id).await);
 
     let closed_task = harness.update_task_status(&task.id, "closed").await;
     assert_eq!(closed_task["status"], "closed");
     assert!(!fixture.remote_path_exists(&original_worktree_path));
     assert!(fixture.remote_path_exists(&original_remote_run_directory));
-    assert!(harness.dispatch_history_exists(&task.id));
+    assert!(harness.dispatch_history_exists(&task.id).await);
 
     let reopened_task = harness.update_task_status(&task.id, "open").await;
     assert_eq!(reopened_task["status"], "open");
@@ -823,17 +850,21 @@ async fn manual_cleanup_reconciles_closed_and_missing_task_artifacts() {
         "Mock Codex completed the cleanup scenario.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let closed_task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Close this task later and keep only its metadata",
-    );
-    let missing_task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Delete this task file and let manual cleanup remove everything",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let closed_task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Close this task later and keep only its metadata",
+        )
+        .await;
+    let missing_task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Delete this task file and let manual cleanup remove everything",
+        )
+        .await;
 
     let closed_dispatch = harness.dispatch_task(&closed_task.id).await;
     let closed_dispatch_id = closed_dispatch["dispatchId"]
@@ -868,15 +899,19 @@ async fn manual_cleanup_reconciles_closed_and_missing_task_artifacts() {
     let missing_run_directory =
         format!("/home/track/workspace/project-a/dispatches/{missing_dispatch_id}");
 
-    harness.close_task_without_remote_cleanup(&closed_task.id);
-    harness.delete_task_file_without_remote_cleanup(&missing_task.id);
+    harness
+        .close_task_without_remote_cleanup(&closed_task.id)
+        .await;
+    harness
+        .delete_task_file_without_remote_cleanup(&missing_task.id)
+        .await;
 
     assert!(fixture.remote_path_exists(&closed_worktree_path));
     assert!(fixture.remote_path_exists(&closed_run_directory));
-    assert!(harness.dispatch_history_exists(&closed_task.id));
+    assert!(harness.dispatch_history_exists(&closed_task.id).await);
     assert!(fixture.remote_path_exists(&missing_worktree_path));
     assert!(fixture.remote_path_exists(&missing_run_directory));
-    assert!(harness.dispatch_history_exists(&missing_task.id));
+    assert!(harness.dispatch_history_exists(&missing_task.id).await);
 
     let cleanup_response = harness.cleanup_remote_agent_artifacts().await;
     let summary = &cleanup_response["summary"];
@@ -886,15 +921,15 @@ async fn manual_cleanup_reconciles_closed_and_missing_task_artifacts() {
     assert_eq!(summary["remoteWorktreesRemoved"], 2);
     assert_eq!(summary["remoteRunDirectoriesRemoved"], 1);
 
-    assert!(harness.task_exists(&closed_task.id));
+    assert!(harness.task_exists(&closed_task.id).await);
     assert!(!fixture.remote_path_exists(&closed_worktree_path));
     assert!(fixture.remote_path_exists(&closed_run_directory));
-    assert!(harness.dispatch_history_exists(&closed_task.id));
+    assert!(harness.dispatch_history_exists(&closed_task.id).await);
 
-    assert!(!harness.task_exists(&missing_task.id));
+    assert!(!harness.task_exists(&missing_task.id).await);
     assert!(!fixture.remote_path_exists(&missing_worktree_path));
     assert!(!fixture.remote_path_exists(&missing_run_directory));
-    assert!(!harness.dispatch_history_exists(&missing_task.id));
+    assert!(!harness.dispatch_history_exists(&missing_task.id).await);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -918,12 +953,14 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
         "Mock Codex completed the initial reset scenario.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Rebuild the remote workspace after a manual reset",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Rebuild the remote workspace after a manual reset",
+        )
+        .await;
 
     let first_dispatch = harness.dispatch_task(&task.id).await;
     let first_dispatch_id = first_dispatch["dispatchId"]
@@ -944,9 +981,8 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
     assert!(fixture.remote_path_exists("/home/track/workspace/project-a"));
     assert!(fixture.remote_path_exists(&original_worktree_path));
     assert!(fixture.remote_path_exists(&original_run_directory));
-    assert!(fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
-    assert!(harness.task_exists(&task.id));
-    assert!(harness.dispatch_history_exists(&task.id));
+    assert!(harness.task_exists(&task.id).await);
+    assert!(harness.dispatch_history_exists(&task.id).await);
 
     let reset_response = harness.reset_remote_agent_workspace().await;
     let reset_summary = &reset_response["summary"];
@@ -956,14 +992,11 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
             .expect("reset summary should include workspaceEntriesRemoved")
             >= 1
     );
-    assert_eq!(reset_summary["registryRemoved"], true);
-
     assert!(!fixture.remote_path_exists("/home/track/workspace/project-a"));
     assert!(!fixture.remote_path_exists(&original_worktree_path));
     assert!(!fixture.remote_path_exists(&original_run_directory));
-    assert!(!fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
-    assert!(harness.task_exists(&task.id));
-    assert!(harness.dispatch_history_exists(&task.id));
+    assert!(harness.task_exists(&task.id).await);
+    assert!(harness.dispatch_history_exists(&task.id).await);
 
     fixture.write_codex_state(&success_codex_state(
         0,
@@ -991,7 +1024,6 @@ async fn resetting_remote_workspace_rebuilds_cleanly_from_local_tracker_state() 
     assert!(fixture.remote_path_exists("/home/track/workspace/project-a"));
     assert!(fixture.remote_path_exists(&second_worktree_path));
     assert!(fixture.remote_path_exists(&second_run_directory));
-    assert!(fixture.remote_path_exists("/srv/track-testing/state/track-projects.json"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1015,12 +1047,14 @@ async fn resetting_remote_workspace_refuses_while_a_dispatch_is_active() {
         "Mock Codex is still running while reset is attempted.",
     ));
 
-    let harness = ApiHarness::new(&fixture);
-    let task = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Refuse remote reset while a dispatch is still running",
-    );
+    let harness = ApiHarness::new(&fixture).await;
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Refuse remote reset while a dispatch is still running",
+        )
+        .await;
 
     let _first_dispatch = harness.dispatch_task(&task.id).await;
 
@@ -1065,7 +1099,7 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         "fixture-user",
     );
 
-    let harness = ApiHarness::new(&fixture);
+    let harness = ApiHarness::new(&fixture).await;
 
     fixture.write_codex_state(&success_codex_state(
         0,
@@ -1073,16 +1107,20 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         false,
         "Warm-up Codex run completed successfully.",
     ));
-    let warm_project_a = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Warm the remote checkout for project-a",
-    );
-    let warm_project_b = harness.create_task_with_project(
-        "project-b",
-        project_metadata("project-b"),
-        "Warm the remote checkout for project-b",
-    );
+    let warm_project_a = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Warm the remote checkout for project-a",
+        )
+        .await;
+    let warm_project_b = harness
+        .create_task_with_project(
+            "project-b",
+            project_metadata("project-b"),
+            "Warm the remote checkout for project-b",
+        )
+        .await;
     let _ = harness.dispatch_task(&warm_project_a.id).await;
     let _ = harness
         .poll_dispatch_until_terminal(&warm_project_a.id, Duration::from_secs(20))
@@ -1100,21 +1138,27 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         "Parallel mock Codex run completed successfully.",
     ));
 
-    let project_a_task_one = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Handle the first parallel task for project-a",
-    );
-    let project_a_task_two = harness.create_task_with_project(
-        "project-a",
-        project_metadata("project-a"),
-        "Handle the second parallel task for project-a",
-    );
-    let project_b_task = harness.create_task_with_project(
-        "project-b",
-        project_metadata("project-b"),
-        "Handle the parallel task for project-b",
-    );
+    let project_a_task_one = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Handle the first parallel task for project-a",
+        )
+        .await;
+    let project_a_task_two = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Handle the second parallel task for project-a",
+        )
+        .await;
+    let project_b_task = harness
+        .create_task_with_project(
+            "project-b",
+            project_metadata("project-b"),
+            "Handle the parallel task for project-b",
+        )
+        .await;
 
     let queued_project_a_task_one = harness.dispatch_task(&project_a_task_one.id).await;
     let queued_project_a_task_two = harness.dispatch_task(&project_a_task_two.id).await;
@@ -1174,11 +1218,6 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         .expect("project-b task should have a worktree path")
         .contains("/project-b/worktrees/"));
 
-    let registry_contents =
-        fixture.read_remote_file("/srv/track-testing/state/track-projects.json");
-    assert!(registry_contents.contains("\"project-a\""));
-    assert!(registry_contents.contains("\"project-b\""));
-
     assert_remote_dispatch_artifacts(
         &fixture,
         &project_a_task_one.project,
@@ -1228,8 +1267,11 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
 
 fn project_metadata(project_name: &str) -> ProjectMetadata {
     ProjectMetadata {
-        repo_url: format!("https://github.com/acme/{project_name}"),
-        git_url: format!("/srv/track-testing/git/upstream/{project_name}.git"),
+        repo_url: Url::parse(&format!("https://github.com/acme/{project_name}")).unwrap(),
+        git_url: GitRemote::new(&format!(
+            "/srv/track-testing/git/upstream/{project_name}.git"
+        ))
+        .unwrap(),
         base_branch: "main".to_owned(),
         description: Some("Fixture-backed project metadata.".to_owned()),
     }

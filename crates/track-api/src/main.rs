@@ -5,16 +5,12 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+use track_api::BackendConfigRepository;
 use track_api::{
-    build_app, spawn_remote_review_follow_up_reconciler, AppState, SERVER_VERSION_TEXT,
+    build_app, spawn_remote_review_follow_up_reconciler, AppState, RemoteAgentConfigService,
+    SERVER_VERSION_TEXT,
 };
-use track_core::backend_config::RemoteAgentConfigService;
-use track_core::dispatch_repository::DispatchRepository;
-use track_core::migration_service::MigrationService;
-use track_core::project_repository::ProjectRepository;
-use track_core::review_dispatch_repository::ReviewDispatchRepository;
-use track_core::review_repository::ReviewRepository;
-use track_core::task_repository::FileTaskRepository;
+use track_dal::database::DatabaseContext;
 
 fn static_root() -> PathBuf {
     if let Ok(path) = env::var("TRACK_STATIC_ROOT") {
@@ -34,20 +30,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_line_number(true)
         .init();
 
-    let config_service = Arc::new(RemoteAgentConfigService::new(None)?);
-    let dispatch_repository = Arc::new(DispatchRepository::new(None)?);
-    let project_repository = Arc::new(ProjectRepository::new(None)?);
-    let review_dispatch_repository = Arc::new(ReviewDispatchRepository::new(None)?);
-    let review_repository = Arc::new(ReviewRepository::new(None)?);
-    let task_repository = Arc::new(FileTaskRepository::new(None)?);
-    let migration_service = Arc::new(MigrationService::new(
-        (*config_service).clone(),
-        (*project_repository).clone(),
-        (*task_repository).clone(),
-        (*dispatch_repository).clone(),
-        (*review_repository).clone(),
-        (*review_dispatch_repository).clone(),
-    )?);
+    let database = DatabaseContext::initialized(None).await?;
+    let config_service = Arc::new(
+        RemoteAgentConfigService::new(Some(
+            BackendConfigRepository::new(Some(database.clone())).await?,
+        ))
+        .await?,
+    );
     // Docker publishes the backend behind a localhost-only port mapping by
     // default, so the binary still binds all interfaces inside the container.
     // The macOS host-mode smoke runs the binary directly, though, so it needs
@@ -59,12 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         config_service,
-        dispatch_repository,
-        migration_service,
-        project_repository,
-        review_dispatch_repository,
-        review_repository,
-        task_repository,
+        database,
         task_change_version: Arc::new(AtomicU64::new(0)),
     };
     spawn_remote_review_follow_up_reconciler(state.clone());

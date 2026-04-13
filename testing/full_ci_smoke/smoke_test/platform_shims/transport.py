@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -122,7 +123,24 @@ def parse_ssh_invocation(argv: list[str]) -> tuple[Path, int, Path, str, list[st
 
     destination = argv[index]
     remote_argv = argv[index + 1 :]
-    if remote_argv[:3] != ["bash", "-s", "--"]:
+    if len(remote_argv) == 1:
+        try:
+            remote_argv = shlex.split(remote_argv[0], posix=True)
+        except ValueError as error:
+            raise SystemExit(f"Unsupported ssh invocation: {argv}") from error
+
+    # The production transport currently uses two SSH execution shapes:
+    #
+    # 1. `bash -s -- ...` with the script body piped over stdin for larger
+    #    remote actions.
+    # 2. `bash -lc '<bootstrap command>'` for the small Python helper entry
+    #    points that read JSON from stdin but do not need a second shell
+    #    payload streamed separately.
+    #
+    # The host-mode smoke should stay strict about SSH options and target
+    # selection, but it must accept both command forms because they are both
+    # part of the real remote-agent transport contract.
+    if remote_argv[:3] != ["bash", "-s", "--"] and remote_argv[:2] != ["bash", "-lc"]:
         raise SystemExit(f"Unsupported ssh invocation: {argv}")
 
     return key_path, port, known_hosts_path, destination, remote_argv

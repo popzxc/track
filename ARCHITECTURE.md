@@ -19,3 +19,5 @@ Current live state is backend-centered:
 - backend state lives in SQLite
 - managed remote-agent SSH material lives under backend state
 - older `config.json`-based layouts are migration inputs, not the primary live contract
+
+`just` is used for task management in the repository.

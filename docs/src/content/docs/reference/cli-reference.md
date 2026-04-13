@@ -92,16 +92,6 @@ track remote-agent configure \
   --identity-file ~/.ssh/track_remote_agent
 ```
 
-## `track migrate status`
-
-Shows whether a legacy install has data that can be imported into the current SQLite backend.
-
-## `track migrate import`
-
-Imports legacy data into the current backend.
-
-Use this only when migrating an older install. New setups do not need it.
-
 ## No-argument behavior
 
 Running plain `track` with no subcommand behaves like `track configure`.

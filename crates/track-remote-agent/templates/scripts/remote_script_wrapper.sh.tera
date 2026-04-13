@@ -1,0 +1,3 @@
+set -e
+{% if shell_prelude %}{{ shell_prelude }}{% endif %}
+{{ script_body }}

@@ -1,4 +1,4 @@
-use track_core::build_info::BuildInfo;
+use track_types::build_info::BuildInfo;
 
 pub const SERVER_VERSION_TEXT: &str = concat!(
     env!("CARGO_PKG_VERSION"),

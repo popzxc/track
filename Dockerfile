@@ -13,29 +13,19 @@ WORKDIR /app
 
 ARG TRACK_GIT_COMMIT=unknown
 ENV TRACK_GIT_COMMIT=${TRACK_GIT_COMMIT}
+ENV SQLX_OFFLINE=true
+
+# `track-remote-agent` packages a Python zipapp during `cargo build`, so the
+# release builder must provide `python3` even though the final runtime image
+# only needs the compiled Rust binary.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml deny.toml ./
 COPY .config/nextest.toml .config/nextest.toml
-COPY crates/track-core/Cargo.toml crates/track-core/Cargo.toml
-COPY crates/track-capture/Cargo.toml crates/track-capture/Cargo.toml
-COPY crates/track-cli/Cargo.toml crates/track-cli/Cargo.toml
-COPY crates/track-api/Cargo.toml crates/track-api/Cargo.toml
-COPY crates/track-integration-tests/Cargo.toml crates/track-integration-tests/Cargo.toml
-COPY crates/track-cli/build.rs crates/track-cli/build.rs
-COPY crates/track-api/build.rs crates/track-api/build.rs
-COPY crates/track-core/src crates/track-core/src
-COPY crates/track-capture/src crates/track-capture/src
-COPY crates/track-cli/src crates/track-cli/src
-COPY crates/track-api/src crates/track-api/src
-COPY crates/track-integration-tests/src crates/track-integration-tests/src
-
-# Cargo resolves every workspace member's manifest even when we build only
-# `track-api`, so the image needs the lightweight workspace crate layouts to
-# keep workspace metadata valid.
-#
-# We intentionally omit workspace test directories from the production image
-# because they are not needed for `track-api`, and empty test directories do
-# not survive a fresh Git checkout.
+# We don't need _all_ the crates, but copying only what we need manually is too verbose.
+COPY crates/ crates/
 
 RUN cargo build --release -p track-api
 
@@ -48,18 +38,20 @@ ARG TRACK_GID=1000
 ENV PORT=3210
 ENV HOME=/home/track
 ENV TRACK_STATIC_ROOT=/app/frontend/dist
+ENV TRACK_UID=${TRACK_UID}
+ENV TRACK_GID=${TRACK_GID}
 
 # The shipped backend runs with the caller's host UID/GID so bind-mounted state
 # stays writable without rebuilding the release image on each machine. That
 # means the runtime must remain functional even when Docker starts it under an
-# arbitrary numeric UID that does not exist in `/etc/passwd`, which would
-# otherwise break OpenSSH-based remote dispatches.
+# arbitrary numeric UID/GID that does not exist in `/etc/passwd`, which would
+# otherwise break OpenSSH-based remote dispatches. We therefore avoid baking a
+# named user/group for the caller IDs because common host groups such as macOS
+# GID 20 already exist in Debian images under unrelated names.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends libnss-wrapper openssh-client \
-  && groupadd --gid "${TRACK_GID}" track \
-  && useradd --uid "${TRACK_UID}" --gid "${TRACK_GID}" --create-home --home-dir /home/track --shell /bin/sh track \
   && mkdir -p /home/track/backend-state /home/track/legacy-home \
-  && chown -R track:track /home/track \
+  && chown -R "${TRACK_UID}:${TRACK_GID}" /home/track \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rust-build /app/target/release/track-api /usr/local/bin/track-api
@@ -67,7 +59,7 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 COPY docker/track-api-entrypoint.sh /usr/local/bin/track-api-entrypoint
 
 RUN chmod +x /usr/local/bin/track-api-entrypoint
-USER track
+USER ${TRACK_UID}:${TRACK_GID}
 
 EXPOSE 3210
 

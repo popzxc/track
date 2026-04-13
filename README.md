@@ -21,9 +21,7 @@ Start here:
 ## Local docs development
 
 ```bash
-cd docs
-bun install
-bun run dev
+just run-docs
 ```
 
 ## Repository shape

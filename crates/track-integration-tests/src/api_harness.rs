@@ -10,15 +10,12 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use track_api::{build_app, AppState};
-use track_core::backend_config::RemoteAgentConfigService;
-use track_core::dispatch_repository::DispatchRepository;
-use track_core::migration_service::MigrationService;
-use track_core::project_repository::{ProjectMetadata, ProjectRepository};
-use track_core::review_dispatch_repository::ReviewDispatchRepository;
-use track_core::review_repository::ReviewRepository;
-use track_core::task_repository::FileTaskRepository;
-use track_core::types::{
+use track_api::BackendConfigRepository;
+use track_api::{build_app, AppState, RemoteAgentConfigService};
+use track_dal::database::DatabaseContext;
+use track_projects::project_metadata::ProjectMetadata;
+use track_types::ids::{ProjectId, ReviewId, TaskId};
+use track_types::types::{
     Priority, ReviewRunRecord, Status, Task, TaskCreateInput, TaskSource, TaskUpdateInput,
 };
 
@@ -34,20 +31,15 @@ use crate::fixture::RemoteFixture;
 // precisely while still exercising the production router and background work.
 pub struct ApiHarness {
     app: axum::Router,
-    dispatch_repository: Arc<DispatchRepository>,
-    project_repository: Arc<ProjectRepository>,
-    review_dispatch_repository: Arc<ReviewDispatchRepository>,
-    review_repository: Arc<ReviewRepository>,
-    task_repository: Arc<FileTaskRepository>,
+    config_service: Arc<RemoteAgentConfigService>,
+    database: DatabaseContext,
     _state_dir: TempDir,
     _track_data_dir_guard: ScopedEnvVar,
-    _track_legacy_config_guard: ScopedEnvVar,
-    _track_legacy_root_guard: ScopedEnvVar,
     _track_state_dir_guard: ScopedEnvVar,
 }
 
 impl ApiHarness {
-    pub fn new(fixture: &RemoteFixture) -> Self {
+    pub async fn new(fixture: &RemoteFixture) -> Self {
         let state_dir = TempDir::new().expect("local state tempdir should be created");
         let static_root = create_static_root(&state_dir);
         let track_root = state_dir.path().join("track-root");
@@ -57,22 +49,6 @@ impl ApiHarness {
             ScopedEnvVar::set("TRACK_DATA_DIR", issues_dir.to_string_lossy().into_owned());
         let track_state_dir_guard =
             ScopedEnvVar::set("TRACK_STATE_DIR", track_root.to_string_lossy().into_owned());
-        let track_legacy_root_guard = ScopedEnvVar::set(
-            "TRACK_LEGACY_ROOT",
-            state_dir
-                .path()
-                .join("legacy-root")
-                .to_string_lossy()
-                .into_owned(),
-        );
-        let track_legacy_config_guard = ScopedEnvVar::set(
-            "TRACK_LEGACY_CONFIG_PATH",
-            state_dir
-                .path()
-                .join("legacy-config/config.json")
-                .to_string_lossy()
-                .into_owned(),
-        );
         let database_path = track_root.join("track.sqlite");
 
         let managed_remote_agent_dir = issues_dir
@@ -88,52 +64,27 @@ impl ApiHarness {
         .expect("managed SSH key should copy into the local track state");
         set_private_key_permissions(&managed_remote_agent_dir.join("id_ed25519"));
 
-        let config_service =
-            Arc::new(RemoteAgentConfigService::new(None).expect("config service should resolve"));
+        let database = DatabaseContext::initialized(Some(database_path))
+            .await
+            .expect("database should resolve");
+        let config_service = Arc::new(
+            RemoteAgentConfigService::new(Some(
+                BackendConfigRepository::new(Some(database.clone()))
+                    .await
+                    .expect("backend config repository should resolve"),
+            ))
+            .await
+            .expect("config service should resolve"),
+        );
         config_service
             .save_remote_agent_config(Some(&fixture.remote_agent_config()))
+            .await
             .expect("remote-agent config should save");
-
-        let task_repository = Arc::new(
-            FileTaskRepository::new(Some(database_path.clone()))
-                .expect("task repository should resolve"),
-        );
-        let dispatch_repository = Arc::new(
-            DispatchRepository::new(Some(database_path.clone()))
-                .expect("dispatch repository should resolve"),
-        );
-        let project_repository = Arc::new(
-            ProjectRepository::new(Some(database_path.clone()))
-                .expect("project repository should resolve"),
-        );
-        let review_dispatch_repository = Arc::new(
-            ReviewDispatchRepository::new(Some(database_path.clone()))
-                .expect("review dispatch repository should resolve"),
-        );
-        let review_repository = Arc::new(
-            ReviewRepository::new(Some(database_path)).expect("review repository should resolve"),
-        );
-        let migration_service = Arc::new(
-            MigrationService::new(
-                (*config_service).clone(),
-                (*project_repository).clone(),
-                (*task_repository).clone(),
-                (*dispatch_repository).clone(),
-                (*review_repository).clone(),
-                (*review_dispatch_repository).clone(),
-            )
-            .expect("migration service should resolve"),
-        );
 
         let app = build_app(
             AppState {
-                config_service,
-                dispatch_repository: dispatch_repository.clone(),
-                migration_service,
-                project_repository: project_repository.clone(),
-                review_dispatch_repository: review_dispatch_repository.clone(),
-                review_repository: review_repository.clone(),
-                task_repository: task_repository.clone(),
+                config_service: config_service.clone(),
+                database: database.clone(),
                 task_change_version: Arc::new(AtomicU64::new(0)),
             },
             &static_root,
@@ -141,38 +92,52 @@ impl ApiHarness {
 
         Self {
             app,
-            dispatch_repository,
-            project_repository,
-            review_dispatch_repository,
-            review_repository,
-            task_repository,
+            config_service,
+            database,
             _state_dir: state_dir,
             _track_data_dir_guard: track_data_dir_guard,
-            _track_legacy_config_guard: track_legacy_config_guard,
-            _track_legacy_root_guard: track_legacy_root_guard,
             _track_state_dir_guard: track_state_dir_guard,
         }
     }
 
-    pub fn create_task_with_project(
+    pub async fn create_task_with_project(
         &self,
         project_name: &str,
         project_metadata: ProjectMetadata,
         task_description: &str,
     ) -> Task {
-        self.project_repository
-            .upsert_project_by_name(project_name, project_metadata, Vec::new())
+        let project_id = ProjectId::new(project_name).expect("project names should be valid");
+        self.database
+            .project_repository()
+            .upsert_project_by_name(&project_id, project_metadata, Vec::new())
+            .await
             .expect("project metadata should save");
 
-        self.task_repository
+        self.database
+            .task_repository()
             .create_task(TaskCreateInput {
-                project: project_name.to_owned(),
+                project: project_id,
                 priority: Priority::High,
                 description: task_description.to_owned(),
                 source: Some(TaskSource::Cli),
             })
+            .await
             .expect("task should be created")
             .task
+    }
+
+    pub fn database(&self) -> DatabaseContext {
+        self.database.clone()
+    }
+
+    pub async fn remote_agent_runtime_config(
+        &self,
+    ) -> track_config::runtime::RemoteAgentRuntimeConfig {
+        self.config_service
+            .load_remote_agent_runtime_config()
+            .await
+            .expect("remote-agent runtime config should load")
+            .expect("remote-agent runtime config should exist")
     }
 
     pub async fn dispatch_task(&self, task_id: &str) -> serde_json::Value {
@@ -254,32 +219,51 @@ impl ApiHarness {
         response_json(response).await
     }
 
-    pub fn load_task(&self, task_id: &str) -> Task {
-        self.task_repository
-            .get_task(task_id)
+    pub async fn load_task(&self, task_id: &str) -> Task {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.database
+            .task_repository()
+            .get_task(&task_id)
+            .await
             .expect("task should load from the repository")
     }
 
-    pub fn task_exists(&self, task_id: &str) -> bool {
-        self.task_repository.get_task(task_id).is_ok()
+    pub async fn task_exists(&self, task_id: &str) -> bool {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.database
+            .task_repository()
+            .get_task(&task_id)
+            .await
+            .is_ok()
     }
 
-    pub fn dispatch_history_exists(&self, task_id: &str) -> bool {
-        self.dispatch_repository
-            .latest_dispatch_for_task(task_id)
+    pub async fn dispatch_history_exists(&self, task_id: &str) -> bool {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.database
+            .dispatch_repository()
+            .latest_dispatch_for_task(&task_id)
+            .await
             .expect("dispatch history lookup should succeed")
             .is_some()
     }
 
-    pub fn review_history_exists(&self, review_id: &str) -> bool {
-        self.review_dispatch_repository
-            .latest_dispatch_for_review(review_id)
+    pub async fn review_history_exists(&self, review_id: &str) -> bool {
+        let review_id = ReviewId::new(review_id).expect("review ids should be valid");
+        self.database
+            .review_dispatch_repository()
+            .latest_dispatch_for_review(&review_id)
+            .await
             .expect("review history lookup should succeed")
             .is_some()
     }
 
-    pub fn review_record_exists(&self, review_id: &str) -> bool {
-        self.review_repository.get_review(review_id).is_ok()
+    pub async fn review_record_exists(&self, review_id: &str) -> bool {
+        let review_id = ReviewId::new(review_id).expect("review ids should be valid");
+        self.database
+            .review_repository()
+            .get_review(&review_id)
+            .await
+            .is_ok()
     }
 
     pub async fn create_review(
@@ -527,22 +511,28 @@ impl ApiHarness {
         response_json(response).await
     }
 
-    pub fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
-        self.task_repository
+    pub async fn close_task_without_remote_cleanup(&self, task_id: &str) -> Task {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.database
+            .task_repository()
             .update_task(
-                task_id,
+                &task_id,
                 TaskUpdateInput {
                     description: None,
                     priority: None,
                     status: Some(Status::Closed),
                 },
             )
+            .await
             .expect("task should close directly in the repository")
     }
 
-    pub fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
-        self.task_repository
-            .delete_task(task_id)
+    pub async fn delete_task_file_without_remote_cleanup(&self, task_id: &str) {
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.database
+            .task_repository()
+            .delete_task(&task_id)
+            .await
             .expect("task file should delete directly in the repository");
     }
 
@@ -551,17 +541,18 @@ impl ApiHarness {
         task_id: &str,
         timeout: Duration,
     ) -> serde_json::Value {
-        self.poll_dispatches_until_all_terminal(&[task_id.to_owned()], timeout)
+        let task_id = TaskId::new(task_id).expect("task ids should be valid");
+        self.poll_dispatches_until_all_terminal(std::slice::from_ref(&task_id), timeout)
             .await
-            .remove(task_id)
+            .remove(&task_id)
             .expect("task should have a terminal dispatch")
     }
 
     pub async fn poll_dispatches_until_all_terminal(
         &self,
-        task_ids: &[String],
+        task_ids: &[TaskId],
         timeout: Duration,
-    ) -> BTreeMap<String, serde_json::Value> {
+    ) -> BTreeMap<TaskId, serde_json::Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let dispatches = self.list_dispatches(task_ids).await;
@@ -586,7 +577,7 @@ impl ApiHarness {
         }
     }
 
-    async fn list_dispatches(&self, task_ids: &[String]) -> BTreeMap<String, serde_json::Value> {
+    async fn list_dispatches(&self, task_ids: &[TaskId]) -> BTreeMap<TaskId, serde_json::Value> {
         let query = task_ids
             .iter()
             .map(|task_id| format!("taskId={task_id}"))
@@ -611,10 +602,12 @@ impl ApiHarness {
             .as_array()
             .expect("dispatch list should be an array")
         {
-            let task_id = dispatch["taskId"]
-                .as_str()
-                .expect("dispatch should contain taskId")
-                .to_owned();
+            let task_id = TaskId::new(
+                dispatch["taskId"]
+                    .as_str()
+                    .expect("dispatch should contain taskId"),
+            )
+            .expect("dispatch task ids should be valid");
             by_task_id.insert(task_id, dispatch.clone());
         }
 

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT DISTINCT review_id AS \"review_id!\"\n            FROM review_runs\n            ORDER BY review_id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "review_id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e5a031e1ff1bbff8e9f7cce2a538ef6df167d4d6084975b2736dfd916dc0fd5d"
+}

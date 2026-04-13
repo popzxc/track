@@ -2,117 +2,24 @@
 
 This file gives future coding agents a quick working model for `track`.
 
-## Purpose
+## Transitional state
 
-`track` is a small local issue tracker with two user-facing workflows:
+This project was initially created by an LLM until it reached post-PoC phase.
+During this phase, LLMs made many very bad design choices, and right now
+the codebase is being refactored. There are many TODOs left by human with
+sometimes ambigious remarks -- these TODOs are meant for humans only.
 
-1. capture tasks quickly from the Rust CLI
-2. manage tasks in a local web UI
+Your purpose is not to reinforce bad design decisions. If you understand that
+something that user asked for would decrease code quality and add code smells
+or hacks, refuse doing so until you get an explicit approval to do the change
+DESPITE it would reduce the code quality.
 
-Tasks are plain Markdown files on disk. The rest of the codebase exists to help
-create, read, and mutate those files reliably.
+If you are unsure if design decision is good or bad, ask. If you need to make
+a design decision (e.g. anything that involves abstractions or interfaces),
+confirm the design with the user before implemeting it.
 
-## How The System Is Organized
-
-Think about the project as one Rust backend split into crates plus one frontend.
-
-- `crates/track-core`
-  Shared backend behavior. Start here when config loading, CLI-side project
-  discovery, project metadata persistence, task storage, sorting, or remote
-  agent behavior changes.
-- `crates/track-capture`
-  CLI capture and local-model parsing. Start here when prompt shaping,
-  model download, or `llama.cpp` binding integration changes.
-- `crates/track-cli`
-  CLI entrypoint and user-facing capture output.
-- `crates/track-api`
-  Axum routes, HTTP error mapping, and static frontend serving.
-- `crates/track-integration-tests`
-  Live SSH-backed integration tests for remote dispatch flows. Use this when
-  you need real `ssh`/`scp` coverage with mocked `gh` and `codex`.
-- `frontend/`
-  Vue/Vite UI only.
-- `testing/`
-  Shared test infrastructure, including the Docker SSH fixture and mock CLI
-  implementations used by the live integration tests.
-
-The stable shared contract is:
-
-- `~/.config/track/config.json`
-- Markdown task files under `~/.track/issues`
-- project metadata files at `~/.track/issues/<project>/PROJECT.md`
-- local dispatch records under `~/.track/issues/.dispatches`
-- the JSON API exposed by `track-api`
-
-If you change those contracts, update every layer that depends on them.
-
-## Important Runtime Invariants
-
-Keep these behaviors stable unless the change is intentional:
-
-- The filesystem is the source of truth.
-- Tasks live under the configured data directory, grouped by project and then
-  by status (`open` / `closed`).
-- A task's identity comes from its file path, not duplicated YAML fields.
-- Project metadata lives in `project/PROJECT.md` under the track data
-  directory.
-- The CLI initializes `PROJECT.md` because it can see host repositories.
-- The API and frontend list projects from the track data directory only.
-- Managed remote-agent SSH material lives under `~/.track/remote-agent`.
-- Hidden implementation directories under the track data root must not appear
-  as user projects.
-- Closing and reopening a task physically moves the file between folders.
-- The Markdown body is the preferred human-editable task description when
-  reading a task file.
-- New CLI-created task bodies separate `## Summary` from `## Original note`
-  so local and remote automation can tell normalized context apart from the
-  raw user note.
-- Malformed task files should not break the whole task list; healthy tasks
-  should still be visible.
-- AI parsing may infer, but it must not invent arbitrary projects. The chosen
-  project must come from the discovered project set.
-
-## Local Model Contract
-
-The backend supports local parsing only.
-
-- Capture uses in-process `llama.cpp` Rust bindings.
-- If `llamaCpp` is empty or missing model overrides, `track` uses the built-in
-  default Hugging Face model settings.
-- Config may provide either `llamaCpp.modelPath` or both
-  `llamaCpp.modelHfRepo` and `llamaCpp.modelHfFile`.
-- When Hugging Face config is active, the model is cached under
-  `~/.track/models`.
-- On supported Linux hosts with NVIDIA GPUs, the CUDA-enabled CLI build is the
-  recommended local parsing path because it materially improves capture
-  latency. The CPU build remains the portable fallback.
-
-Do not reintroduce hosted-model assumptions without an explicit user request.
-
-## Local API Contract
-
-- `api.port` controls where the CLI looks for the local API.
-- After CLI task creation, `track` sends a best-effort local notify call.
-- The frontend watches the API's task-change version so CLI-created tasks
-  appear automatically when the API is running.
-- The frontend also polls dispatch state for remote Codex runs.
-
-## Remote Agent Contract
-
-- `remoteAgent` in config is optional.
-- The config wizard copies the imported SSH key into a managed path under
-  `~/.track/remote-agent` instead of depending on `~/.ssh`.
-- `track-api` uses the system `ssh` and `scp` clients to communicate with the
-  remote machine.
-- `remoteAgent.shellPrelude` is a user-managed shell snippet that runs before
-  remote SSH commands so PATH/toolchain setup does not depend on interactive
-  shell startup.
-- The remote host is expected to already have `git`, `gh`, and `codex`.
-- The remote projects registry is JSON, not Markdown, because the automation
-  owns that file and benefits from deterministic parsing.
-- The remote prompt is uploaded as a file and piped into `codex exec` through
-  stdin. Do not switch back to long shell-escaped prompt arguments without a
-  strong reason.
+Your creativity is not appreciated unless explicitly requested -- your goal
+is to implement particular tasks as proposed.
 
 ## API And Frontend Relationship
 
@@ -127,32 +34,29 @@ Important implication:
 
 ## Development Commands
 
-From the repo root:
-
-- `cargo test --workspace`
-- `cargo build --release -p track-cli`
-- `cargo build --release -p track-api`
-- `cargo run -p track-api`
-- `RUN_TRACK_INTEGRATION_TESTS=true cargo test -p track-integration-tests --test remote_dispatch -- --nocapture`
-- `cd frontend && bun install`
-- `cd frontend && bun run dev`
-- `cd frontend && bun run typecheck`
-- `cd frontend && bun run build`
-
-Use Cargo for backend work. Use Bun only inside `frontend/`.
+Prefer the repository `justfile` for routine development tasks. The `just`
+recipes are the canonical shortcuts for the underlying Cargo, Bun, and Docker
+commands.
 
 ## Testing Guidance
 
 Favor small, high-signal tests.
 
+- When the user says "run all the tests", treat that as the full repository
+  test surface except `testing/full_ci_smoke/`. That CI smoke suite is
+  intentionally CI-only by design, so do not run it unless the user explicitly
+  asks for it.
+- When reporting an "all tests" run, do not call out that
+  `testing/full_ci_smoke/` was skipped unless the user explicitly asked about
+  that suite.
 - Prefer real filesystem tests over mocks for repository behavior.
 - For CLI capture tests, prefer injecting fake parser results over trying to
   emulate a real local model.
 - If you change config shape, capture behavior, or storage semantics,
   update Rust tests in `track-core` or `track-cli`.
 - Every new SQLite migration must include a dedicated migration test under
-  `crates/track-core/src/database/migration_tests/` in its own numbered file,
-  for example `id_000_<migration_name>.rs`.
+  `crates/track-core/src/database/migration_tests/` in a module with a name
+  matching one of sqlx migration.
 - Each migration test must create the database in the immediately
   pre-migration schema state, populate representative rows, run the real
   `DatabaseContext::initialize()` path, and assert that the migration keeps the
@@ -191,6 +95,22 @@ When adding comments:
 
 Concentrate comments where future readers would otherwise have to reconstruct
 intent.
+
+## Module Layout
+
+When a Rust module has child modules, the parent module should live at
+`mod.rs` inside its directory rather than as a sibling `<module>.rs` file next
+to a `<module>/` directory.
+
+Prefer:
+
+- `src/foo/mod.rs`
+- `src/foo/bar.rs`
+
+Avoid:
+
+- `src/foo.rs`
+- `src/foo/bar.rs`
 
 ## Build Artifacts And Workspace Hygiene
 

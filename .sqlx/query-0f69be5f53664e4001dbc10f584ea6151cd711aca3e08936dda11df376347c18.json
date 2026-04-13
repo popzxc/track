@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO reviews (\n                id, pull_request_url, pull_request_number, pull_request_title,\n                repository_full_name, repo_url, git_url, base_branch, workspace_key,\n                preferred_tool, project, main_user, default_review_prompt,\n                extra_instructions, created_at, updated_at\n            )\n            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)\n            ON CONFLICT(id) DO UPDATE SET\n                pull_request_url = excluded.pull_request_url,\n                pull_request_number = excluded.pull_request_number,\n                pull_request_title = excluded.pull_request_title,\n                repository_full_name = excluded.repository_full_name,\n                repo_url = excluded.repo_url,\n                git_url = excluded.git_url,\n                base_branch = excluded.base_branch,\n                workspace_key = excluded.workspace_key,\n                preferred_tool = excluded.preferred_tool,\n                project = excluded.project,\n                main_user = excluded.main_user,\n                default_review_prompt = excluded.default_review_prompt,\n                extra_instructions = excluded.extra_instructions,\n                created_at = excluded.created_at,\n                updated_at = excluded.updated_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "0f69be5f53664e4001dbc10f584ea6151cd711aca3e08936dda11df376347c18"
+}

@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tempfile::TempDir;
-use track_core::config::{RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile};
-use track_core::types::RemoteAgentPreferredTool;
+use track_config::config::{RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile};
+use track_types::types::RemoteAgentPreferredTool;
 
 const FIXTURE_IMAGE: &str = "track-testing/ssh-fixture:local";
 const FIXTURE_HOST: &str = "127.0.0.1";

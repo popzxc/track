@@ -1,0 +1,30 @@
+[package]
+name = "track-remote-agent"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Remote dispatch and review orchestration for track."
+readme = "../../README.md"
+build = "build.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+slug = { workspace = true }
+tera = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+track-config = { workspace = true }
+track-dal = { workspace = true }
+track-projects = { workspace = true }
+track-types = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

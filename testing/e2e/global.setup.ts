@@ -110,17 +110,6 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await writeFile(path.join(remoteAgentRoot, 'known_hosts'), '', 'utf-8')
   await writeConfigFile(configPath, fixturePort, apiPort)
 
-  // Seed the orphan dispatch record into SQLite before the API starts so there
-  // is no write-lock contention with the running API process.  The remote SSH
-  // artifacts (worktree and run directory) are created here too since the
-  // fixture container is already up at this point.
-  await seedOrphanedCleanupArtifacts({
-    fixturePort,
-    keyPath: keyPrefix,
-    runtimeRoot,
-    stateDir: localTrackRoot,
-  })
-
   const apiLogPath = path.join(tempRoot, 'track-api.log')
   const apiLog = fs.createWriteStream(apiLogPath, { flags: 'a' })
   const apiProcess = spawn('cargo', ['run', '-p', 'track-api'], {
@@ -141,6 +130,15 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   apiProcess.unref()
 
   await waitForHealth(`${apiBaseUrl}/health`, apiLogPath)
+  // Let the real backend initialize and migrate SQLite through the same
+  // embedded Rust path it uses in normal execution. We then seed the orphan
+  // dispatch directly before the browser tests start driving any API traffic.
+  await seedOrphanedCleanupArtifacts({
+    fixturePort,
+    keyPath: keyPrefix,
+    runtimeRoot,
+    stateDir: localTrackRoot,
+  })
   await configureRemoteAgent(apiBaseUrl, fixturePort, keyPrefix, runtimeRoot)
   await seedApplicationData(apiBaseUrl)
 
@@ -209,11 +207,12 @@ function runRemoteCommand(
 function runCommand(
   command: string,
   args: string[],
-  options: { cwd: string },
+  options: { cwd: string; env?: NodeJS.ProcessEnv },
 ): void {
   const completed = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: 'utf-8',
+    env: options.env,
   })
 
   if (completed.status === 0) {
@@ -387,38 +386,14 @@ async function seedOrphanedCleanupArtifacts(options: {
   const orphanRunDirectory =
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
-  // Seed the orphan dispatch record directly in SQLite before the API starts.
-  // The task_dispatches table has no FK constraint on task_id (the cascade was
-  // removed), so we can insert the dispatch record without a matching task row.
-  // The API will find this dispatch but no corresponding task and treat it as
-  // an orphan eligible for cleanup.  Creating the table here (idempotently) is
-  // safe because the API runs CREATE TABLE IF NOT EXISTS at startup.
+  // The real API has already initialized the SQLite schema by the time this
+  // helper runs. We only seed the orphan dispatch row here so the cleanup
+  // flow can observe dispatch history that no longer has a matching task.
   const dbPath = path.join(options.stateDir, 'track.sqlite')
   await mkdir(path.dirname(dbPath), { recursive: true })
+
   const db = new Database(dbPath)
   try {
-    db.run(`
-      CREATE TABLE IF NOT EXISTS task_dispatches (
-        dispatch_id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        finished_at TEXT,
-        remote_host TEXT NOT NULL,
-        branch_name TEXT,
-        worktree_path TEXT,
-        pull_request_url TEXT,
-        preferred_tool TEXT NOT NULL DEFAULT 'codex',
-        follow_up_request TEXT,
-        summary TEXT,
-        notes TEXT,
-        error_message TEXT,
-        review_request_head_oid TEXT,
-        review_request_user TEXT
-      )
-    `)
     db.run(
       `INSERT OR IGNORE INTO task_dispatches
          (dispatch_id, task_id, project, status, created_at, updated_at, finished_at,

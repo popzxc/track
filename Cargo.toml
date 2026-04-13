@@ -1,6 +1,10 @@
 [workspace]
 members = [
-    "crates/track-core",
+    "crates/track-config",
+    "crates/track-dal",
+    "crates/track-projects",
+    "crates/track-remote-agent",
+    "crates/track-types",
     "crates/track-capture",
     "crates/track-cli",
     "crates/track-api",
@@ -18,10 +22,14 @@ documentation = "https://popzxc.github.io/track/"
 
 [workspace.dependencies]
 assert_cmd = "2.2.0"
+async-trait = "0.1"
 axum = "0.8.6"
 clap = "4.6.0"
 dialoguer = "0.12.0"
+gix-url = "0.35.2"
+hex = "0.4.3"
 hf-hub = { version = "=0.5.0", default-features = false }
+insta = "1.43.1"
 llama-cpp-2 = "=0.1.140"
 owo-colors = "4.2.2"
 serde = "1.0.228"
@@ -29,6 +37,7 @@ serde_json = "1.0.149"
 serde_yaml = "0.9.34"
 slug = "0.1.6"
 sqlx = { version = "0.8.6", default-features = false }
+tera = "1.20.0"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 time = "0.3.47"
@@ -40,7 +49,10 @@ tracing-subscriber = "0.3.20"
 track-api = { version = "0.3.0", path = "crates/track-api" } # x-release-please-version
 track-capture = { version = "0.3.0", path = "crates/track-capture" } # x-release-please-version
 track-cli = { version = "0.3.0", path = "crates/track-cli" } # x-release-please-version
-track-core = { version = "0.3.0", path = "crates/track-core" } # x-release-please-version
+track-config = { version = "0.3.0", path = "crates/track-config" } # x-release-please-version
+track-dal = { version = "0.3.0", path = "crates/track-dal" } # x-release-please-version
+track-projects = { version = "0.3.0", path = "crates/track-projects" } # x-release-please-version
+track-remote-agent = { version = "0.3.0", path = "crates/track-remote-agent" } # x-release-please-version
+track-types = { version = "0.3.0", path = "crates/track-types" } # x-release-please-version
 ureq = "3.2.0"
 url = "2.5.4"
-walkdir = "2.5.0"

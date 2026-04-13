@@ -3,17 +3,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use track_core::config::{
+use track_config::config::{
     ConfigService, LlamaCppConfigFile, DEFAULT_API_PORT, DEFAULT_LLAMACPP_MODEL_HF_FILE,
     DEFAULT_LLAMACPP_MODEL_HF_REPO,
 };
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::paths::{
+use track_config::paths::{
     collapse_home_path, get_cli_config_path, get_legacy_config_path, resolve_path_from_config_file,
 };
-use track_core::types::{
+use track_config::runtime::{
     ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, TrackRuntimeConfig,
 };
+use track_types::errors::{ErrorCode, TrackError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliConfigFile {
@@ -342,7 +342,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use tempfile::TempDir;
-    use track_core::config::{ApiConfigFile, LlamaCppConfigFile, TrackConfigFile};
+    use track_config::config::{ApiConfigFile, LlamaCppConfigFile, TrackConfigFile};
 
     use super::{CliConfigService, ConfigureOptions};
 
@@ -352,7 +352,7 @@ mod tests {
         let cli_config_path = directory.path().join("cli.json");
         let legacy_config_path = directory.path().join("legacy.json");
         let legacy_service =
-            track_core::config::ConfigService::new(Some(legacy_config_path.clone()))
+            track_config::config::ConfigService::new(Some(legacy_config_path.clone()))
                 .expect("legacy config service should resolve");
         legacy_service
             .save_config_file(&TrackConfigFile {

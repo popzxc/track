@@ -25,6 +25,28 @@ They are not intended to replace the fast frontend unit/component suite.
 
 ## Running
 
+Before running, install the local prerequisites:
+
+- chromium for Playwright
+
+The browser fixture lets the real `track-api` process initialize and migrate
+its temporary SQLite database through the embedded Rust migration path it uses
+in normal execution, so no separate `sqlx-cli` install is required.
+
+Install chromium with:
+
+```sh
+cd frontend
+bunx playwright install chromium
+```
+
+Or (CI variant):
+
+```sh
+cd frontend
+bunx playwright install --with-deps chromium
+```
+
 From `frontend/`:
 
 - `bun run test` for the fast unit/component suite

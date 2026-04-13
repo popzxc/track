@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO review_runs (\n                dispatch_id, review_id, pull_request_url, repository_full_name,\n                workspace_key, preferred_tool, status, created_at, updated_at,\n                finished_at, remote_host, branch_name, worktree_path,\n                follow_up_request, target_head_oid, summary, review_submitted,\n                github_review_id, github_review_url, notes, error_message\n            )\n            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)\n            ON CONFLICT(dispatch_id) DO UPDATE SET\n                review_id = excluded.review_id,\n                pull_request_url = excluded.pull_request_url,\n                repository_full_name = excluded.repository_full_name,\n                workspace_key = excluded.workspace_key,\n                preferred_tool = excluded.preferred_tool,\n                status = excluded.status,\n                created_at = excluded.created_at,\n                updated_at = excluded.updated_at,\n                finished_at = excluded.finished_at,\n                remote_host = excluded.remote_host,\n                branch_name = excluded.branch_name,\n                worktree_path = excluded.worktree_path,\n                follow_up_request = excluded.follow_up_request,\n                target_head_oid = excluded.target_head_oid,\n                summary = excluded.summary,\n                review_submitted = excluded.review_submitted,\n                github_review_id = excluded.github_review_id,\n                github_review_url = excluded.github_review_url,\n                notes = excluded.notes,\n                error_message = excluded.error_message\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 21
+    },
+    "nullable": []
+  },
+  "hash": "bf2d36a96ec36cb83653414de35f09d3d4d50bae69aca9daf4bcc4539e7783b0"
+}

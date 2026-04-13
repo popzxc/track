@@ -1,0 +1,55 @@
+---
+source: crates/track-remote-agent/src/prompts/remote_dispatch.rs
+expression: prompt
+---
+# Remote task dispatch
+
+You are working in a fully autonomous mode on a prepared repository worktree.
+The repository checkout, fork, and worktree are already set up for you.
+You have full filesystem access, internet access, and `gh` is available.
+Make the decisions needed to complete the task responsibly.
+The desired outcome is a GitHub PR unless the task is blocked or cannot be solved.
+
+## Repository context
+
+- Project: project-x
+- Repo URL: https://github.com/acme/project-x
+- Git URL: git@github.com:acme/project-x.git
+- Base branch: main
+- Prepared branch: track/dispatch-1
+- Working directory: ~/workspace/project-x/worktrees/dispatch-1
+
+## Existing PR
+
+- Pull request: https://github.com/acme/project-x/pull/42
+- Continue working on this existing PR with the same prepared branch and worktree.
+- Do not open a second PR unless the current PR is unusable and you explain why.
+
+## Expectations
+
+- Pull the task through to a GitHub PR when possible.
+- Use the current worktree as the only place to make changes.
+- Use conventional commits for both commit messages and the PR title, for example `feat: Add X`, `fix: Correct Y`, or `chore: Update Z`.
+- If the follow-up mentions review comments or reviewer feedback, fetch that context with `gh` instead of guessing.
+- If the follow-up names a reviewer, only act on that reviewer's feedback unless the request explicitly says otherwise.
+- If the task is blocked, explain the blocker clearly in the final JSON.
+
+## Task title
+
+Fix a bug in module A
+
+## Summary
+
+- Inspect `module_a.rs`
+
+## Original note
+
+proj-x prio high fix a bug in module A
+
+## Current follow-up request
+
+Address review comments from the latest PR review.
+
+## Final response
+
+Return JSON only. The response must match the provided schema exactly.

@@ -5,12 +5,11 @@ use std::path::PathBuf;
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::Cache;
 use serde_json::from_str;
-use track_core::errors::{ErrorCode, TrackError};
-use track_core::paths::{collapse_home_path, get_models_dir};
-use track_core::project_catalog::ProjectCatalog;
-use track_core::types::{
-    LlamaCppModelSource, LlamaCppRuntimeConfig, ParsedTaskCandidate, TrackRuntimeConfig,
-};
+use track_config::paths::{collapse_home_path, get_models_dir};
+use track_config::runtime::{LlamaCppModelSource, LlamaCppRuntimeConfig, TrackRuntimeConfig};
+use track_projects::project_catalog::ProjectCatalog;
+use track_types::errors::{ErrorCode, TrackError};
+use track_types::types::ParsedTaskCandidate;
 
 use crate::llama_cpp_2::LlamaCpp2TaskParser;
 
@@ -163,10 +162,11 @@ mod tests {
     use std::sync::Mutex;
 
     use serde_json::json;
-    use track_core::types::{
-        ApiRuntimeConfig, Confidence, LlamaCppModelSource, LlamaCppRuntimeConfig, Priority,
-        TrackRuntimeConfig,
+    use track_config::runtime::{
+        ApiRuntimeConfig, LlamaCppModelSource, LlamaCppRuntimeConfig, TrackRuntimeConfig,
     };
+    use track_projects::project_catalog::ProjectCatalog;
+    use track_types::types::{Confidence, Priority};
 
     use super::{
         test_inference_enabled, LocalTaskParserFactory, TaskParserFactory,
@@ -208,10 +208,7 @@ mod tests {
         })
         .to_string();
         let parsed = parser
-            .parse_task(
-                &test_input,
-                &track_core::project_catalog::ProjectCatalog::new(Vec::new()),
-            )
+            .parse_task(&test_input, &ProjectCatalog::new(Vec::new()))
             .expect("test inference JSON should parse");
         assert_eq!(parsed.project.as_deref(), Some("project-a"));
         assert_eq!(parsed.priority, Priority::High);
@@ -244,7 +241,7 @@ mod tests {
         let parsed = parser
             .parse_task(
                 "project-a prio high verify the installed CLI path",
-                &track_core::project_catalog::ProjectCatalog::new(Vec::new()),
+                &ProjectCatalog::new(Vec::new()),
             )
             .expect("test inference env JSON should parse");
         assert_eq!(parsed.project.as_deref(), Some("project-a"));

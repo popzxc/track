@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE tasks\n            SET priority = ?2, status = ?3, description = ?4, updated_at = ?5, source = ?6\n            WHERE id = ?1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "4804cb896853c8297426b173988931936ab8eb4694fd2edcfb1106610027e33d"
+}

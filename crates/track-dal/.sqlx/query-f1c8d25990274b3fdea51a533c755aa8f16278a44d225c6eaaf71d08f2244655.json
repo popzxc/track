@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO backend_settings (setting_key, setting_json)\n            VALUES (?1, ?2)\n            ON CONFLICT(setting_key) DO UPDATE SET setting_json = excluded.setting_json\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f1c8d25990274b3fdea51a533c755aa8f16278a44d225c6eaaf71d08f2244655"
+}

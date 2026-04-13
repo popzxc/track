@@ -10,7 +10,11 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true }
 track-api = { workspace = true }
-track-core = { workspace = true }
+track-config = { workspace = true }
+track-dal = { workspace = true }
+track-projects = { workspace = true }
+track-remote-agent = { workspace = true }
+track-types = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
