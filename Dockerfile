@@ -15,6 +15,13 @@ ARG TRACK_GIT_COMMIT=unknown
 ENV TRACK_GIT_COMMIT=${TRACK_GIT_COMMIT}
 ENV SQLX_OFFLINE=true
 
+# `track-remote-agent` packages a Python zipapp during `cargo build`, so the
+# release builder must provide `python3` even though the final runtime image
+# only needs the compiled Rust binary.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY Cargo.toml Cargo.lock rust-toolchain.toml deny.toml ./
 COPY .config/nextest.toml .config/nextest.toml
 # We don't need _all_ the crates, but copying only what we need manually is too verbose.

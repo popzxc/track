@@ -58,7 +58,7 @@ install-cli-cuda:
 
 # Start the repository-local Docker stack.
 install-docker:
-  TRACK_UID=${TRACK_UID:-$(id -u)} TRACK_GID=${TRACK_GID:-$(id -g)} docker compose up --build -d
+  TRACK_UID=${TRACK_UID:-$(id -u)} TRACK_GID=${TRACK_GID:-$(id -g)} ./docker/compose-stack.sh up --build -d
 
 # Install the CLI and start the local Docker stack.
 install-all: install-cli install-docker

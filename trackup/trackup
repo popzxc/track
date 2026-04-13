@@ -36,6 +36,7 @@ TEMP_DIR=""
 PATH_STATUS="unchanged"
 RELOAD_COMMAND=""
 RC_FILE=""
+CONTAINER_CLI=""
 
 main() {
   parse_args "$@"
@@ -140,7 +141,7 @@ ensure_prerequisites() {
   require_command mktemp
   require_command uname
   require_command git
-  require_command docker
+  require_any_command "a container CLI" docker podman
   require_command cmake
   require_command clang
   require_any_command "a C compiler" cc gcc clang
@@ -150,9 +151,24 @@ ensure_prerequisites() {
     die "Missing a SHA-256 tool. Install either `sha256sum` or `shasum` and rerun trackup."
   fi
 
-  if ! docker compose version >/dev/null 2>&1; then
-    die "Docker Compose is required. Install a Docker build that includes `docker compose`."
+  CONTAINER_CLI="$(detect_container_cli)"
+  if ! "$CONTAINER_CLI" compose version >/dev/null 2>&1; then
+    die "A Compose-capable container CLI is required. Install Docker with `docker compose` or Podman with `podman compose`."
   fi
+}
+
+detect_container_cli() {
+  if command -v docker >/dev/null 2>&1; then
+    printf 'docker\n'
+    return 0
+  fi
+
+  if command -v podman >/dev/null 2>&1; then
+    printf 'podman\n'
+    return 0
+  fi
+
+  die "Missing a container CLI. Install either `docker` or `podman` and rerun trackup."
 }
 
 resolve_install_source() {
