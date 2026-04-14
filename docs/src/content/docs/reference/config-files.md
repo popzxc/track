@@ -55,9 +55,3 @@ With a custom local model override:
   }
 }
 ```
-
-## Older notes
-
-Older setup notes may still mention `~/.config/track/config.json` or treating `~/.track` as the primary state layout.
-
-Current installs keep live user-facing CLI settings in `~/.config/track/cli.json` and keep backend state under `~/.track/backend` unless overridden.

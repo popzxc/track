@@ -45,7 +45,6 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   const localTrackRoot = path.join(tempRoot, 'track')
   const issuesRoot = path.join(localTrackRoot, 'issues')
   const remoteAgentRoot = path.join(localTrackRoot, 'remote-agent')
-  const configPath = path.join(tempRoot, 'config', 'config.json')
   const containerName = `track-frontend-e2e-${Date.now()}`
   const fixturePort = await reserveLocalPort()
   const apiPort = await reserveLocalPort()
@@ -108,7 +107,6 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
   await copyFile(keyPrefix, path.join(remoteAgentRoot, 'id_ed25519'))
   await chmod(path.join(remoteAgentRoot, 'id_ed25519'), 0o600)
   await writeFile(path.join(remoteAgentRoot, 'known_hosts'), '', 'utf-8')
-  await writeConfigFile(configPath, fixturePort, apiPort)
 
   const apiLogPath = path.join(tempRoot, 'track-api.log')
   const apiLog = fs.createWriteStream(apiLogPath, { flags: 'a' })
@@ -118,7 +116,6 @@ export async function setupFrontendE2EEnvironment(): Promise<void> {
     env: {
       ...process.env,
       PORT: String(apiPort),
-      TRACK_CONFIG_PATH: configPath,
       TRACK_DATA_DIR: issuesRoot,
       TRACK_STATE_DIR: localTrackRoot,
       TRACK_STATIC_ROOT: path.join(REPO_ROOT, 'frontend', 'dist'),
@@ -272,38 +269,6 @@ async function writeCodexState(runtimeRoot: string): Promise<void> {
             contents: '# Mock change\n\nCreated by the browser e2e fixture.\n',
           },
         ],
-      },
-    }, null, 2)}\n`,
-    'utf-8',
-  )
-}
-
-async function writeConfigFile(
-  configPath: string,
-  fixturePort: number,
-  apiPort: number,
-): Promise<void> {
-  await mkdir(path.dirname(configPath), { recursive: true })
-  await writeFile(
-    configPath,
-    `${JSON.stringify({
-      projectRoots: [],
-      projectAliases: {},
-      api: {
-        port: apiPort,
-      },
-      remoteAgent: {
-        host: FIXTURE_HOST,
-        user: FIXTURE_USER,
-        port: fixturePort,
-        workspaceRoot: FIXTURE_WORKSPACE_ROOT,
-        projectsRegistryPath: FIXTURE_PROJECTS_REGISTRY_PATH,
-        shellPrelude: FIXTURE_SHELL_PRELUDE,
-        reviewFollowUp: {
-          enabled: false,
-          mainUser: 'octocat',
-          defaultReviewPrompt: 'Focus on regressions and missing tests.',
-        },
       },
     }, null, 2)}\n`,
     'utf-8',

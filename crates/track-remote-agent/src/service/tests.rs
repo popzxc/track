@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -9,9 +8,7 @@ use std::sync::{
 use serde_json::json;
 use tempfile::TempDir;
 use time::Duration;
-use track_config::config::{
-    ApiConfigFile, LlamaCppConfigFile, RemoteAgentConfigFile, TrackConfigFile,
-};
+use track_config::config::RemoteAgentConfigFile;
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
@@ -71,7 +68,7 @@ impl TestContext {
     // These tests intentionally serialize access to TRACK_STATE_DIR so each
     // async fixture setup can mutate process-global environment without races.
     #[allow(clippy::await_holding_lock)]
-    async fn new(config: TrackConfigFile) -> Self {
+    async fn new(remote_agent: Option<RemoteAgentConfigFile>) -> Self {
         let directory = TempDir::new().expect("tempdir should be created");
         let env_lock_guard = track_data_env_lock()
             .lock()
@@ -80,29 +77,28 @@ impl TestContext {
         let track_state_dir_guard = set_env_var("TRACK_STATE_DIR", &state_root);
         let data_dir = state_root.join("issues");
         let database_path = state_root.join("track.sqlite");
-        let config_service =
-            StaticRemoteAgentConfigService::new(config.remote_agent.map(|remote_agent| {
-                RemoteAgentRuntimeConfig {
-                    host: remote_agent.host,
-                    user: remote_agent.user,
-                    port: remote_agent.port,
-                    workspace_root: remote_agent.workspace_root,
-                    projects_registry_path: remote_agent.projects_registry_path,
-                    preferred_tool: remote_agent.preferred_tool,
-                    shell_prelude: remote_agent.shell_prelude,
-                    review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
-                        review_follow_up.main_user.map(|main_user| {
-                            RemoteAgentReviewFollowUpRuntimeConfig {
-                                enabled: review_follow_up.enabled,
-                                main_user,
-                                default_review_prompt: review_follow_up.default_review_prompt,
-                            }
-                        })
-                    }),
-                    managed_key_path: state_root.join("remote-agent").join("id_ed25519"),
-                    managed_known_hosts_path: state_root.join("remote-agent").join("known_hosts"),
-                }
-            }));
+        let config_service = StaticRemoteAgentConfigService::new(remote_agent.map(|remote_agent| {
+            RemoteAgentRuntimeConfig {
+                host: remote_agent.host,
+                user: remote_agent.user,
+                port: remote_agent.port,
+                workspace_root: remote_agent.workspace_root,
+                projects_registry_path: remote_agent.projects_registry_path,
+                preferred_tool: remote_agent.preferred_tool,
+                shell_prelude: remote_agent.shell_prelude,
+                review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
+                    review_follow_up.main_user.map(|main_user| {
+                        RemoteAgentReviewFollowUpRuntimeConfig {
+                            enabled: review_follow_up.enabled,
+                            main_user,
+                            default_review_prompt: review_follow_up.default_review_prompt,
+                        }
+                    })
+                }),
+                managed_key_path: state_root.join("remote-agent").join("id_ed25519"),
+                managed_known_hosts_path: state_root.join("remote-agent").join("known_hosts"),
+            }
+        }));
 
         Self {
             _directory: directory,
@@ -221,20 +217,6 @@ impl TestContext {
     }
 }
 
-fn base_test_config(remote_agent: Option<RemoteAgentConfigFile>) -> TrackConfigFile {
-    TrackConfigFile {
-        project_roots: Vec::new(),
-        project_aliases: BTreeMap::new(),
-        api: ApiConfigFile { port: 3210 },
-        llama_cpp: LlamaCppConfigFile {
-            model_path: Some("/tmp/parser.gguf".to_owned()),
-            model_hf_repo: None,
-            model_hf_file: None,
-        },
-        remote_agent,
-    }
-}
-
 fn install_dummy_managed_remote_agent_material(data_dir: &Path) {
     let remote_agent_dir = data_dir
         .parent()
@@ -278,7 +260,7 @@ fn sample_review_record() -> ReviewRecord {
 
 #[tokio::test]
 async fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow_up_settings() {
-    let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
+    let context = TestContext::new(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
         user: "builder".to_owned(),
         port: 2222,
@@ -287,7 +269,7 @@ async fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow
         preferred_tool: RemoteAgentPreferredTool::Codex,
         shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         review_follow_up: None,
-    })))
+    }))
     .await;
     let review = context.create_review().await;
 
@@ -378,7 +360,7 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
 
 #[tokio::test]
 async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
-    let context = TestContext::new(base_test_config(None)).await;
+    let context = TestContext::new(None).await;
     let created_at = now_utc();
     let dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
     let workspace_key = WorkspaceKey::new("project-a").unwrap();
@@ -750,7 +732,7 @@ fn selects_the_latest_previous_submitted_review_run() {
 
 #[tokio::test]
 async fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
-    let context = TestContext::new(base_test_config(None)).await;
+    let context = TestContext::new(None).await;
     let task = context
         .create_task("project-a", "Investigate a flaky remote cleanup")
         .await;
@@ -790,7 +772,7 @@ async fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
 
 #[tokio::test]
 async fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
-    let context = TestContext::new(base_test_config(None)).await;
+    let context = TestContext::new(None).await;
     let task = context
         .create_task("project-a", "Delete the task even without remote cleanup")
         .await;
@@ -820,7 +802,7 @@ async fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
 
 #[tokio::test]
 async fn refresh_releases_active_dispatches_when_remote_config_disappears() {
-    let context = TestContext::new(base_test_config(None)).await;
+    let context = TestContext::new(None).await;
     let task = context
         .create_task("project-a", "Recover from a missing remote config")
         .await;
@@ -849,7 +831,7 @@ async fn refresh_releases_active_dispatches_when_remote_config_disappears() {
 
 #[tokio::test]
 async fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails() {
-    let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
+    let context = TestContext::new(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
         user: "builder".to_owned(),
         port: 1,
@@ -858,7 +840,7 @@ async fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails
         preferred_tool: RemoteAgentPreferredTool::Codex,
         shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         review_follow_up: None,
-    })))
+    }))
     .await;
     let task = context
         .create_task("project-a", "Retry after the previous remote run got stuck")
@@ -896,7 +878,7 @@ async fn queue_dispatch_releases_stale_active_dispatch_when_remote_refresh_fails
 
 #[tokio::test]
 async fn follow_up_dispatch_keeps_the_original_runner_tool() {
-    let context = TestContext::new(base_test_config(Some(RemoteAgentConfigFile {
+    let context = TestContext::new(Some(RemoteAgentConfigFile {
         host: "127.0.0.1".to_owned(),
         user: "builder".to_owned(),
         port: 2222,
@@ -905,7 +887,7 @@ async fn follow_up_dispatch_keeps_the_original_runner_tool() {
         preferred_tool: RemoteAgentPreferredTool::Codex,
         shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
         review_follow_up: None,
-    })))
+    }))
     .await;
     let task = context
         .create_task("project-a", "Keep using the same runner on follow-up")
