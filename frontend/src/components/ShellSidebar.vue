@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 
 type AppPage = 'tasks' | 'reviews' | 'runs' | 'projects' | 'settings'
 
 const props = defineProps<{
-  activePage: AppPage
   activeRemoteWorkCount: number
   remoteAgentConfigured: boolean
   reviewCount: number
@@ -13,15 +13,13 @@ const props = defineProps<{
   visibleTaskCount: number
 }>()
 
-const emit = defineEmits<{
-  navigate: [page: AppPage]
-}>()
-
 interface NavItem {
   page: AppPage
   label: string
   value: number | string
 }
+
+const route = useRoute()
 
 // The sidebar is stable shell chrome rather than page-specific UI. Keeping it
 // separate makes App.vue read like screen composition instead of layout markup.
@@ -62,22 +60,28 @@ const navItems = computed<NavItem[]>(() => [
     </div>
 
     <nav class="mt-4 space-y-2">
-      <button
+      <RouterLink
         v-for="item in navItems"
         :key="item.page"
-        :data-testid="`shell-nav-${item.page}`"
-        type="button"
-        class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
-        :class="
-          activePage === item.page
-            ? 'border-aqua/35 bg-aqua/10 text-aqua'
-            : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
-        "
-        @click="emit('navigate', item.page)"
+        v-slot="{ href, navigate }"
+        custom
+        :to="{ name: item.page }"
       >
-        <span>{{ item.label }}</span>
-        <span class="text-xs text-fg3">{{ item.value }}</span>
-      </button>
+        <a
+          :href="href"
+          :data-testid="`shell-nav-${item.page}`"
+          class="flex w-full items-center justify-between border px-3 py-3 text-left text-sm tracking-[0.08em] transition"
+          :class="
+            route.name === item.page
+              ? 'border-aqua/35 bg-aqua/10 text-aqua'
+              : 'border-fg2/20 bg-bg0 text-fg1 hover:border-fg1/35 hover:text-fg0'
+          "
+          @click="navigate"
+        >
+          <span>{{ item.label }}</span>
+          <span class="text-xs text-fg3">{{ item.value }}</span>
+        </a>
+      </RouterLink>
     </nav>
 
     <div class="mt-6 border-t border-fg2/10 pt-4 text-sm text-fg2">

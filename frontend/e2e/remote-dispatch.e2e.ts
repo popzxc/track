@@ -41,21 +41,40 @@ afterAll(async () => {
 })
 
 async function openTaskDrawer(page: Page, taskTitle: string) {
+  const existingDrawer = page.getByTestId('task-drawer')
+  if (await existingDrawer.count()) {
+    const existingDrawerText = await existingDrawer.textContent()
+    if (existingDrawerText?.includes(taskTitle)) {
+      return
+    }
+
+    await existingDrawer.getByRole('button', { name: /^Close$/ }).click()
+    await existingDrawer.waitFor({ state: 'hidden' })
+  }
+
   const taskRow = page.getByTestId('task-row').filter({ hasText: taskTitle }).first()
   await taskRow.click()
-  await page.getByTestId('task-drawer').waitFor()
+  await existingDrawer.waitFor()
 
-  const drawerText = await page.getByTestId('task-drawer').textContent()
+  const drawerText = await existingDrawer.textContent()
   expect(drawerText).toContain(taskTitle)
 }
 
 async function openReviewDrawer(page: Page, reviewTitle: string) {
-  await page.getByRole('button', { name: 'Reviews' }).click()
+  const existingDrawer = page.getByTestId('review-drawer')
+  if (await existingDrawer.count()) {
+    const existingDrawerText = await existingDrawer.textContent()
+    if (existingDrawerText?.includes(reviewTitle)) {
+      return
+    }
+  }
+
+  await page.getByTestId('shell-nav-reviews').click()
   const reviewRow = page.getByTestId('review-row').filter({ hasText: reviewTitle }).first()
   await reviewRow.click()
-  await page.getByTestId('review-drawer').waitFor()
+  await existingDrawer.waitFor()
 
-  const drawerText = await page.getByTestId('review-drawer').textContent()
+  const drawerText = await existingDrawer.textContent()
   expect(drawerText).toContain(reviewTitle)
 }
 
@@ -208,7 +227,7 @@ describe('remote dispatch smoke flow', () => {
 
     try {
       await page.goto(apiBaseUrl)
-      await page.getByRole('button', { name: 'Reviews' }).click()
+      await page.getByTestId('shell-nav-reviews').click()
       await page.getByRole('button', { name: 'Request review' }).click()
       await page.getByTestId('review-request-modal').waitFor()
       await page.getByTestId('review-request-url').fill(E2E_PR_URL)
@@ -225,7 +244,7 @@ describe('remote dispatch smoke flow', () => {
       await page.waitForTimeout(1_000)
 
       await page.reload()
-      await page.getByRole('button', { name: 'Reviews' }).click()
+      await page.getByTestId('shell-nav-reviews').click()
       expect(await page.getByTestId('review-row').count()).toBe(0)
     } finally {
       await page.close()
@@ -309,7 +328,7 @@ describe('remote dispatch smoke flow', () => {
       expect(remotePathExists(orphanRunDirectory())).toBe(true)
 
       await page.goto(apiBaseUrl)
-      await page.getByRole('button', { name: 'Settings' }).click()
+      await page.getByTestId('shell-nav-settings').click()
       await page.getByTestId('settings-cleanup-button').click()
       await page.getByTestId('confirm-dialog').waitFor()
       await page.getByTestId('confirm-submit').click()
