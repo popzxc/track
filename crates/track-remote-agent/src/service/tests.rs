@@ -77,28 +77,29 @@ impl TestContext {
         let track_state_dir_guard = set_env_var("TRACK_STATE_DIR", &state_root);
         let data_dir = state_root.join("issues");
         let database_path = state_root.join("track.sqlite");
-        let config_service = StaticRemoteAgentConfigService::new(remote_agent.map(|remote_agent| {
-            RemoteAgentRuntimeConfig {
-                host: remote_agent.host,
-                user: remote_agent.user,
-                port: remote_agent.port,
-                workspace_root: remote_agent.workspace_root,
-                projects_registry_path: remote_agent.projects_registry_path,
-                preferred_tool: remote_agent.preferred_tool,
-                shell_prelude: remote_agent.shell_prelude,
-                review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
-                    review_follow_up.main_user.map(|main_user| {
-                        RemoteAgentReviewFollowUpRuntimeConfig {
-                            enabled: review_follow_up.enabled,
-                            main_user,
-                            default_review_prompt: review_follow_up.default_review_prompt,
-                        }
-                    })
-                }),
-                managed_key_path: state_root.join("remote-agent").join("id_ed25519"),
-                managed_known_hosts_path: state_root.join("remote-agent").join("known_hosts"),
-            }
-        }));
+        let config_service =
+            StaticRemoteAgentConfigService::new(remote_agent.map(|remote_agent| {
+                RemoteAgentRuntimeConfig {
+                    host: remote_agent.host,
+                    user: remote_agent.user,
+                    port: remote_agent.port,
+                    workspace_root: remote_agent.workspace_root,
+                    projects_registry_path: remote_agent.projects_registry_path,
+                    preferred_tool: remote_agent.preferred_tool,
+                    shell_prelude: remote_agent.shell_prelude,
+                    review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
+                        review_follow_up.main_user.map(|main_user| {
+                            RemoteAgentReviewFollowUpRuntimeConfig {
+                                enabled: review_follow_up.enabled,
+                                main_user,
+                                default_review_prompt: review_follow_up.default_review_prompt,
+                            }
+                        })
+                    }),
+                    managed_key_path: state_root.join("remote-agent").join("id_ed25519"),
+                    managed_known_hosts_path: state_root.join("remote-agent").join("known_hosts"),
+                }
+            }));
 
         Self {
             _directory: directory,

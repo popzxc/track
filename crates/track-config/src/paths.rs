@@ -189,5 +189,4 @@ mod tests {
 
         assert_eq!(rendered, "~/.track/issues");
     }
-
 }

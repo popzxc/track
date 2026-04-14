@@ -163,9 +163,8 @@ mod tests {
 
     use super::{
         canonicalize_optional_multiline_value, canonicalize_remote_agent_config,
-        RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile,
-        DEFAULT_REMOTE_AGENT_PORT, DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT,
-        DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
+        RemoteAgentConfigFile, RemoteAgentReviewFollowUpConfigFile, DEFAULT_REMOTE_AGENT_PORT,
+        DEFAULT_REMOTE_AGENT_WORKSPACE_ROOT, DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH,
     };
 
     #[test]
@@ -193,7 +192,10 @@ mod tests {
             loaded.projects_registry_path,
             DEFAULT_REMOTE_PROJECTS_REGISTRY_PATH
         );
-        assert_eq!(loaded.shell_prelude.as_deref(), Some("export PATH=\"$PATH\""));
+        assert_eq!(
+            loaded.shell_prelude.as_deref(),
+            Some("export PATH=\"$PATH\"")
+        );
         assert_eq!(
             loaded
                 .review_follow_up
