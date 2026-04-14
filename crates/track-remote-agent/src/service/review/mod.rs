@@ -9,7 +9,8 @@ use track_types::ids::{DispatchId, ReviewId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::now_utc;
 use track_types::types::{
-    CreateReviewInput, DispatchStatus, RemoteAgentReviewOutcome, ReviewRecord, ReviewRunRecord,
+    CreateReviewInput, DispatchStatus, RemoteAgentPreferredTool, RemoteAgentReviewOutcome,
+    ReviewRecord, ReviewRunRecord,
 };
 
 use super::remote_agent_services::{
@@ -18,7 +19,7 @@ use super::remote_agent_services::{
 use crate::constants::PREPARING_STALE_AFTER;
 use crate::prompts::RemoteReviewPrompt;
 use crate::schemas::RemoteReviewSchema;
-use crate::types::ClaudeStructuredOutputEnvelope;
+use crate::types::{ClaudeStructuredOutputEnvelope, OpencodeStructuredOutput};
 use crate::RemoteRunSnapshotView;
 use crate::RemoteWorkspace;
 
@@ -684,11 +685,31 @@ impl<'a> RemoteReviewService<'a> {
             let remote_result = snapshot.required_result(
                 "Remote review run completed without producing a structured result.",
             )?;
-            let outcome = ClaudeStructuredOutputEnvelope::<RemoteAgentReviewOutcome>::parse_result(
-                remote_result,
-                record.preferred_tool,
-                "Remote review result",
-            )?;
+            let outcome = match record.preferred_tool {
+                RemoteAgentPreferredTool::Opencode => {
+                    OpencodeStructuredOutput::<RemoteAgentReviewOutcome>::parse_result(
+                        remote_result,
+                        "Remote review result",
+                    )?
+                }
+                RemoteAgentPreferredTool::Claude => {
+                    ClaudeStructuredOutputEnvelope::<RemoteAgentReviewOutcome>::parse_result(
+                        remote_result,
+                        record.preferred_tool,
+                        "Remote review result",
+                    )?
+                }
+                RemoteAgentPreferredTool::Codex => {
+                    serde_json::from_str::<RemoteAgentReviewOutcome>(remote_result).map_err(
+                        |error| {
+                            TrackError::new(
+                                ErrorCode::RemoteDispatchFailed,
+                                format!("Remote review result is not valid JSON: {error}"),
+                            )
+                        },
+                    )?
+                }
+            };
             return Ok(record.apply_remote_review_outcome(outcome, refreshed_at, finished_at));
         }
 

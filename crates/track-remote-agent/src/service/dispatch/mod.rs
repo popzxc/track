@@ -22,7 +22,8 @@ use crate::constants::PREPARING_STALE_AFTER;
 use crate::prompts::RemoteDispatchPrompt;
 use crate::schemas::RemoteDispatchSchema;
 use crate::types::{
-    ClaudeStructuredOutputEnvelope, RemoteArtifactCleanupCounts, RemoteTaskCleanupMode,
+    ClaudeStructuredOutputEnvelope, OpencodeStructuredOutput, RemoteArtifactCleanupCounts,
+    RemoteTaskCleanupMode,
 };
 use crate::utils::parse_github_repository_name;
 use crate::RemoteRunSnapshotView;
@@ -1142,11 +1143,31 @@ pub(super) fn refresh_dispatch_record_from_snapshot(
     if snapshot.is_completed() {
         let remote_result = snapshot
             .required_result("Remote agent run completed without producing a structured result.")?;
-        let outcome = ClaudeStructuredOutputEnvelope::<RemoteAgentDispatchOutcome>::parse_result(
-            remote_result,
-            record.preferred_tool,
-            "Remote agent result",
-        )?;
+        let outcome = match record.preferred_tool {
+            RemoteAgentPreferredTool::Opencode => {
+                OpencodeStructuredOutput::<RemoteAgentDispatchOutcome>::parse_result(
+                    remote_result,
+                    "Remote agent result",
+                )?
+            }
+            RemoteAgentPreferredTool::Claude => {
+                ClaudeStructuredOutputEnvelope::<RemoteAgentDispatchOutcome>::parse_result(
+                    remote_result,
+                    record.preferred_tool,
+                    "Remote agent result",
+                )?
+            }
+            RemoteAgentPreferredTool::Codex => {
+                serde_json::from_str::<RemoteAgentDispatchOutcome>(remote_result).map_err(
+                    |error| {
+                        TrackError::new(
+                            ErrorCode::RemoteDispatchFailed,
+                            format!("Remote agent result is not valid JSON: {error}"),
+                        )
+                    },
+                )?
+            }
+        };
         return Ok(record.apply_remote_dispatch_outcome(outcome, refreshed_at, finished_at));
     }
 

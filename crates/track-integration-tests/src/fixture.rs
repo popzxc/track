@@ -177,6 +177,14 @@ impl RemoteFixture {
         .expect("claude state should be written");
     }
 
+    pub fn write_opencode_state(&self, state: &Value) {
+        fs::write(
+            self.runtime_dir.path().join("state/opencode.json"),
+            serde_json::to_string_pretty(state).expect("opencode state should serialize") + "\n",
+        )
+        .expect("opencode state should be written");
+    }
+
     pub fn private_key_path(&self) -> PathBuf {
         self.key_dir.path().join("id_ed25519")
     }

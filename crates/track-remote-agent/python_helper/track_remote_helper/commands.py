@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 from track_remote_helper.common import (
-    AGENT_PID_FILE_NAME,
     CODEX_EVENTS_FILE_NAME,
     FINISHED_AT_FILE_NAME,
     LAUNCHER_PID_FILE_NAME,
@@ -31,6 +30,11 @@ from track_remote_helper.common import (
     write_text,
     write_text_with_trailing_newline,
 )
+
+
+def agent_pid_file_name(preferred_tool: str) -> str:
+    """Return the PID file name for the given agent tool."""
+    return f"{preferred_tool}.pid"
 
 TASK_WORKTREE_DIRECTORY_NAME = "worktrees"
 
@@ -331,7 +335,7 @@ def launch_run(request: dict[str, object], helper_path: Path) -> dict[str, objec
         STDERR_FILE_NAME,
         FINISHED_AT_FILE_NAME,
         LAUNCHER_PID_FILE_NAME,
-        AGENT_PID_FILE_NAME,
+        agent_pid_file_name(preferred_tool),
         CODEX_EVENTS_FILE_NAME,
     ]:
         remove_path(run_directory / filename)
@@ -363,10 +367,16 @@ def launch_run(request: dict[str, object], helper_path: Path) -> dict[str, objec
 def cancel_run(request: dict[str, object]) -> dict[str, object]:
     run_directory = expand_remote_path(str(request["runDirectory"]))
     launcher_pid_file = run_directory / LAUNCHER_PID_FILE_NAME
-    agent_pid_file = run_directory / AGENT_PID_FILE_NAME
+    # For cancel, we need to check all possible agent PID files since we don't know which tool was used
+    agent_pid_files = [
+        run_directory / "codex.pid",
+        run_directory / "claude.pid",
+        run_directory / "opencode.pid",
+    ]
 
     kill_if_running(read_pid(launcher_pid_file))
-    kill_if_running(read_pid(agent_pid_file))
+    for agent_pid_file in agent_pid_files:
+        kill_if_running(read_pid(agent_pid_file))
 
     run_directory.mkdir(parents=True, exist_ok=True)
     write_text_with_trailing_newline(run_directory / STATUS_FILE_NAME, "canceled")
@@ -687,7 +697,9 @@ def fetch_ignore_failure(argv: list[str]) -> None:
 
 def kill_run_directory_processes(run_directory: Path) -> None:
     kill_if_running(read_pid(run_directory / LAUNCHER_PID_FILE_NAME))
-    kill_if_running(read_pid(run_directory / AGENT_PID_FILE_NAME))
+    # Check all possible agent PID files since we don't know which tool was used
+    for agent_pid_name in ["codex.pid", "claude.pid", "opencode.pid"]:
+        kill_if_running(read_pid(run_directory / agent_pid_name))
 
 
 def iterate_matching_paths(root: Path, pattern: str) -> list[Path]:

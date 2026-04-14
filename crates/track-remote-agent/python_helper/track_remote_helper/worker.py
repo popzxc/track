@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from track_remote_helper.common import (
-    AGENT_PID_FILE_NAME,
     CODEX_EVENTS_FILE_NAME,
     FINISHED_AT_FILE_NAME,
     LAUNCHER_PID_FILE_NAME,
@@ -35,7 +34,6 @@ def run_worker_from_config(config_path: Path) -> int:
     status_path = run_directory / STATUS_FILE_NAME
     finished_at_path = run_directory / FINISHED_AT_FILE_NAME
     launcher_pid_path = run_directory / LAUNCHER_PID_FILE_NAME
-    agent_pid_path = run_directory / AGENT_PID_FILE_NAME
     events_path = run_directory / CODEX_EVENTS_FILE_NAME
 
     write_text_with_trailing_newline(launcher_pid_path, str(os.getpid()))
@@ -72,6 +70,8 @@ def run_worker_from_config(config_path: Path) -> int:
             events_path=events_path,
             shell_prelude=shell_prelude,
         )
+        agent_pid_file_name = f"{preferred_tool}.pid"
+        agent_pid_path = run_directory / agent_pid_file_name
         write_text_with_trailing_newline(agent_pid_path, str(child.pid))
         return_code = child.wait()
 
@@ -98,7 +98,18 @@ def spawn_agent_process(
     events_path: Path,
     shell_prelude: str,
 ) -> subprocess.Popen:
-    if preferred_tool == "claude":
+    if preferred_tool == "opencode":
+        # Opencode outputs JSON event stream; we extract final text on the Rust side
+        # TODO: Consider capturing intermediate events (tool calls, thinking) for debugging
+        tool_args = [
+            resolve_binary("opencode"),
+            "run",
+            "--format", "json",
+            "--add-dir", str(worktree_path),
+        ]
+        stdout_file = result_path.open("w", encoding="utf-8")
+        cwd = worktree_path
+    elif preferred_tool == "claude":
         schema_content = schema_path.read_text(encoding="utf-8").replace("\n", "")
         tool_args = [
             resolve_binary("claude"),

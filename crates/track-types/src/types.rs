@@ -55,6 +55,7 @@ pub enum RemoteAgentPreferredTool {
     #[default]
     Codex,
     Claude,
+    Opencode,
 }
 
 impl RemoteAgentPreferredTool {
@@ -62,6 +63,7 @@ impl RemoteAgentPreferredTool {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -70,12 +72,17 @@ impl RemoteAgentPreferredTool {
         match value {
             "codex" => Some(Self::Codex),
             "claude" => Some(Self::Claude),
+            "opencode" => Some(Self::Opencode),
             _ => None,
         }
     }
 
     pub fn is_codex(&self) -> bool {
         matches!(self, Self::Codex)
+    }
+
+    pub fn is_opencode(&self) -> bool {
+        matches!(self, Self::Opencode)
     }
 }
 
