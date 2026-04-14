@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 import App from './App.vue'
+import { appRoutes } from './router'
 import {
   buildDispatch,
   buildProject,
@@ -55,14 +57,24 @@ function installFetchRoutes(routes: MockJsonRoute[]) {
   return fetchMock
 }
 
-async function mountApp() {
+async function mountApp(initialPath = '/tasks') {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: appRoutes,
+  })
+
+  await router.push(initialPath)
+
   const wrapper = mount(App, {
     global: {
+      plugins: [router],
       stubs: {
         teleport: true,
       },
     },
   })
+
+  await router.isReady()
   await flushPromises()
   await flushPromises()
   return wrapper
@@ -526,8 +538,7 @@ describe('App shell', () => {
 
     const wrapper = await mountApp()
 
-    const reviewsButton = wrapper.findAll('button').find((button) => button.text().includes('Reviews'))
-    await reviewsButton?.trigger('click')
+    await wrapper.get('[data-testid="shell-nav-reviews"]').trigger('click')
     await flushPromises()
 
     const requestReviewButton = wrapper.findAll('button').find((button) => button.text().includes('Request review'))
@@ -608,8 +619,7 @@ describe('App shell', () => {
 
     const wrapper = await mountApp()
 
-    const reviewsButton = wrapper.findAll('button').find((button) => button.text().includes('Reviews'))
-    await reviewsButton?.trigger('click')
+    await wrapper.get('[data-testid="shell-nav-reviews"]').trigger('click')
     await flushPromises()
 
     const requestReviewButton = wrapper.findAll('button').find((button) => button.text().includes('Request review'))
@@ -725,8 +735,7 @@ describe('App shell', () => {
 
     const wrapper = await mountApp()
 
-    const reviewsButton = wrapper.findAll('button').find((button) => button.text().includes('Reviews'))
-    await reviewsButton?.trigger('click')
+    await wrapper.get('[data-testid="shell-nav-reviews"]').trigger('click')
     await flushPromises()
 
     await wrapper.get('[data-testid="review-row"]').trigger('click')
@@ -799,10 +808,9 @@ describe('App shell', () => {
 
     const wrapper = await mountApp()
 
-    const runsButton = wrapper.findAll('button').find((button) => button.text().includes('Runs'))
-    expect(runsButton?.text()).toContain('1')
+    expect(wrapper.get('[data-testid="shell-nav-runs"]').text()).toContain('1')
 
-    await runsButton?.trigger('click')
+    await wrapper.get('[data-testid="shell-nav-runs"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('Active PR reviews')

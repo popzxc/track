@@ -29,7 +29,7 @@ import type {
   TasksResponse,
 } from './types'
 
-class ApiClientError extends Error {
+export class ApiClientError extends Error {
   readonly code: string
 
   constructor(code: string, message: string) {
@@ -225,5 +225,3 @@ export async function fetchTaskChangeVersion(): Promise<number> {
   const response = await readJson<TaskChangeVersionResponse>('/api/events/version')
   return response.version
 }
-
-export { ApiClientError }
