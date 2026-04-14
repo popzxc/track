@@ -452,6 +452,12 @@ impl<'a> RemoteAgentServices<'a> {
                         pull_request_url = %pull_request_url,
                         "Queued automatic follow-up dispatch from PR review state"
                     );
+                    self.mark_review_notification_for_head(
+                        &queued_dispatch,
+                        &pull_request_state.head_oid,
+                        &review_follow_up.main_user,
+                    )
+                    .await?;
                     reconciliation.queued_dispatches.push(queued_dispatch);
                     continue;
                 }
@@ -461,6 +467,24 @@ impl<'a> RemoteAgentServices<'a> {
                 reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "skip_missing_head_oid",
                     "Skipped PR reviewer notification because the PR head SHA is missing.",
+                    &dispatch_record,
+                    &review_follow_up.main_user,
+                    Some(&pull_request_state),
+                ));
+                continue;
+            }
+
+            if dispatch_record.review_request_head_oid.is_none() {
+                tracing::debug!(
+                    task_id = %dispatch_record.task_id,
+                    dispatch_id = %dispatch_record.dispatch_id,
+                    reviewer = %review_follow_up.main_user,
+                    pull_request_url = %pull_request_url,
+                    "Skipped PR reviewer notification because this is an initial dispatch without prior reviewer tracking"
+                );
+                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
+                    "skip_notification_initial_dispatch",
+                    "Skipped PR reviewer notification because this is an initial dispatch without prior reviewer tracking.",
                     &dispatch_record,
                     &review_follow_up.main_user,
                     Some(&pull_request_state),
