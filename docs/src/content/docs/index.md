@@ -33,4 +33,4 @@ The docs are organized around the order most people need:
 - **Reference** is the place to look up files, commands, and settings.
 - **Development Flow** is for contributors who need the repo shape and local workflow.
 
-If you are coming from older notes or screenshots, keep in mind that current installs store live state in the backend database and in `~/.config/track/cli.json`. Legacy `config.json` material is still covered in the reference section when you need migration details.
+If you are coming from older notes or screenshots, keep in mind that current installs store live state in the backend database and in `~/.config/track/cli.json`.

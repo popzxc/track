@@ -50,7 +50,7 @@ ENV TRACK_GID=${TRACK_GID}
 # GID 20 already exist in Debian images under unrelated names.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends libnss-wrapper openssh-client \
-  && mkdir -p /home/track/backend-state /home/track/legacy-home \
+  && mkdir -p /home/track/backend-state \
   && chown -R "${TRACK_UID}:${TRACK_GID}" /home/track \
   && rm -rf /var/lib/apt/lists/*
 

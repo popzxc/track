@@ -23,3 +23,6 @@ pub use service::{
     RemoteAgentConfigProvider, RemoteAgentServices, RemoteDispatchService, RemoteReviewService,
 };
 pub use types::{RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation};
+
+// TODO: It's a hack to expose it, we shouldn't leak implementation details
+pub use ssh::invalidate_helper_upload;

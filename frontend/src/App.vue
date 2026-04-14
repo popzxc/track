@@ -2,7 +2,6 @@
 import { computed, ref } from 'vue'
 
 import { ApiClientError } from './api/client'
-import MigrationStatePanel from './components/MigrationStatePanel.vue'
 import ProjectsScreen from './components/ProjectsScreen.vue'
 import ReviewsScreen from './components/ReviewsScreen.vue'
 import RunsScreen from './components/RunsScreen.vue'
@@ -14,8 +13,6 @@ import { useBackgroundSync } from './composables/useBackgroundSync'
 import { useWorkflowScreens } from './composables/useWorkflowScreens'
 import { mergeProjects } from './features/tasks/presentation'
 import type {
-  MigrationImportSummary,
-  MigrationStatus,
   ProjectInfo,
   RemoteAgentPreferredTool,
   RemoteAgentSettings,
@@ -47,9 +44,6 @@ const loading = ref(true)
 const refreshing = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
-const migrationStatus = ref<MigrationStatus | null>(null)
-const migrationImportSummary = ref<MigrationImportSummary | null>(null)
-const migrationImportPending = ref(false)
 
 // =============================================================================
 // Derived State
@@ -85,8 +79,6 @@ const reviewRequestDisabledReason = computed(() => {
   return undefined
 })
 const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
-const migrationRequired = computed(() => Boolean(migrationStatus.value?.requiresMigration))
-const migrationGateActive = computed(() => Boolean(migrationRequired.value && migrationStatus.value))
 const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
 // Tasks, reviews, and runs still share one legitimate integration cycle: user
@@ -94,17 +86,14 @@ const shellPreludeHelpText = 'The remote runner uses non-interactive SSH session
 // those same surfaces. Keeping that wiring behind one named composable makes
 // the shell read as composition again instead of a sequence of bridge vars.
 const workflowScreens = useWorkflowScreens({
-  availableProjects,
-  canRequestReview,
-  currentPage,
-  defaultRemoteAgentPreferredTool,
-  errorMessage,
-  migrationImportPending,
-  migrationImportSummary,
-  migrationStatus,
-  remoteAgentSettings,
-  reviewRequestDisabledReason,
-  runnerSetupReady,
+    availableProjects,
+    canRequestReview,
+    currentPage,
+    defaultRemoteAgentPreferredTool,
+    errorMessage,
+    remoteAgentSettings,
+    reviewRequestDisabledReason,
+    runnerSetupReady,
   saving,
   setFriendlyError,
   shellPreludeHelpText,
@@ -140,7 +129,6 @@ const {
   loadRuns: workflowScreens.loadRuns,
   loadSelectedReviewRunHistory: workflowScreens.loadSelectedReviewRunHistory,
   loadSelectedTaskRunHistory: workflowScreens.loadSelectedTaskRunHistory,
-  migrationStatus,
   projects,
   refreshing,
   remoteAgentSettings,
@@ -223,40 +211,27 @@ syncTaskChangeVersion = backgroundSync.syncTaskChangeVersion
           </div>
 
           <template v-else>
-            <MigrationStatePanel
-              :migration-import-pending="migrationImportPending"
-              :migration-import-summary="migrationImportSummary"
-              :migration-required="migrationRequired"
-              :migration-status="migrationStatus"
-              @request-import-legacy-data="workflowScreens.importLegacyTrackerData"
-            />
-
             <TasksScreen
-              v-if="!migrationGateActive"
               :active="currentPage === 'tasks'"
               :controller="workflowScreens.tasksScreen"
             />
 
             <ReviewsScreen
-              v-if="!migrationGateActive"
               :active="currentPage === 'reviews'"
               :controller="workflowScreens.reviewsScreen"
             />
 
             <RunsScreen
-              v-if="!migrationGateActive"
               :active="currentPage === 'runs'"
               :controller="workflowScreens.runsScreen"
             />
 
             <ProjectsScreen
-              v-if="!migrationGateActive"
               :active="currentPage === 'projects'"
               :controller="workflowScreens.projectsScreen"
             />
 
             <SettingsScreen
-              v-if="!migrationGateActive"
               :active="currentPage === 'settings'"
               :controller="workflowScreens.settingsScreen"
             />

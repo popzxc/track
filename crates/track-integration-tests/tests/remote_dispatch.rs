@@ -1188,9 +1188,20 @@ async fn dispatches_three_tasks_in_parallel_across_two_projects() {
         .get(&project_b_task.id)
         .expect("project-b task should have a dispatch");
 
-    assert_eq!(project_a_dispatch_one["status"], "succeeded");
-    assert_eq!(project_a_dispatch_two["status"], "succeeded");
-    assert_eq!(project_b_dispatch["status"], "succeeded");
+    let terminal_dispatches_json = serde_json::to_string_pretty(&terminal_dispatches)
+        .expect("terminal dispatches should serialize");
+    assert_eq!(
+        project_a_dispatch_one["status"], "succeeded",
+        "unexpected terminal dispatch set:\n{terminal_dispatches_json}"
+    );
+    assert_eq!(
+        project_a_dispatch_two["status"], "succeeded",
+        "unexpected terminal dispatch set:\n{terminal_dispatches_json}"
+    );
+    assert_eq!(
+        project_b_dispatch["status"], "succeeded",
+        "unexpected terminal dispatch set:\n{terminal_dispatches_json}"
+    );
 
     assert_ne!(
         project_a_dispatch_one["dispatchId"],

@@ -35,7 +35,6 @@ impl ApiError {
             | ErrorCode::InvalidRemoteAgentConfig
             | ErrorCode::InvalidTaskUpdate
             | ErrorCode::VersionMismatch
-            | ErrorCode::MigrationRequired
             | ErrorCode::ConfigNotFound
             | ErrorCode::InvalidConfig
             | ErrorCode::InvalidConfigInput
@@ -49,9 +48,7 @@ impl ApiError {
             | ErrorCode::RemoteAgentNotConfigured
             | ErrorCode::ProjectWriteFailed
             | ErrorCode::TaskWriteFailed => StatusCode::BAD_REQUEST,
-            ErrorCode::MigrationFailed | ErrorCode::InternalError => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            ErrorCode::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::ProjectNotFound | ErrorCode::DispatchNotFound => StatusCode::NOT_FOUND,
             ErrorCode::RemoteDispatchFailed => StatusCode::BAD_GATEWAY,
         };

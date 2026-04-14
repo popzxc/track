@@ -17,25 +17,6 @@ function createSettingsMutationHarness() {
   const editingProject = ref(null)
   const editingRemoteAgentSetup = ref(true)
   const errorMessage = ref('')
-  const migrationImportPending = ref(false)
-  const migrationImportSummary = ref(null)
-  const migrationStatus = ref({
-    state: 'import_required' as const,
-    requiresMigration: true,
-    canImport: true,
-    legacyDetected: true,
-    summary: {
-      projectsFound: 1,
-      aliasesFound: 0,
-      tasksFound: 2,
-      taskDispatchesFound: 0,
-      reviewsFound: 3,
-      reviewRunsFound: 0,
-      remoteAgentConfigured: false,
-    },
-    skippedRecords: [],
-    cleanupCandidates: [],
-  })
   const remoteAgentSettings = ref(null)
   const resetPendingConfirmation = ref(false)
   const resetSummary = ref(null)
@@ -52,9 +33,6 @@ function createSettingsMutationHarness() {
 
   return {
     editingRemoteAgentSetup,
-    migrationImportPending,
-    migrationImportSummary,
-    migrationStatus,
     refreshAll,
     remoteAgentSettings,
     resumeQueuedTaskDispatch,
@@ -66,9 +44,6 @@ function createSettingsMutationHarness() {
       editingProject,
       editingRemoteAgentSetup,
       errorMessage,
-      migrationImportPending,
-      migrationImportSummary,
-      migrationStatus,
       refreshAll,
       remoteAgentSettings,
       resetPendingConfirmation,
@@ -107,29 +82,5 @@ describe('useSettingsMutations', () => {
     expect(harness.editingRemoteAgentSetup.value).toBe(false)
     expect(harness.taskPendingRunnerSetup.value).toBeNull()
     expect(harness.resumeQueuedTaskDispatch).toHaveBeenCalledWith(queuedTask, 'claude')
-  })
-
-  it('imports legacy data and clears the migration gate after success', async () => {
-    const harness = createSettingsMutationHarness()
-    const summary = {
-      importedProjects: 2,
-      importedAliases: 0,
-      importedTasks: 5,
-      importedTaskDispatches: 0,
-      importedReviews: 1,
-      importedReviewRuns: 0,
-      remoteAgentConfigImported: false,
-      copiedSecretFiles: [],
-      skippedRecords: [],
-      cleanupCandidates: [],
-    }
-    vi.spyOn(apiClient, 'importLegacyData').mockResolvedValue(summary)
-
-    await harness.mutations.importLegacyTrackerData()
-
-    expect(harness.migrationImportSummary.value).toEqual(summary)
-    expect(harness.migrationStatus.value).toBeNull()
-    expect(harness.migrationImportPending.value).toBe(false)
-    expect(harness.refreshAll).toHaveBeenCalledTimes(1)
   })
 })

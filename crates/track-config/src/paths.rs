@@ -5,9 +5,7 @@ use track_types::errors::{ErrorCode, TrackError};
 
 pub const DEFAULT_BACKEND_STATE_DIR: &str = "~/.track/backend";
 pub const DEFAULT_CLI_CONFIG_PATH: &str = "~/.config/track/cli.json";
-pub const DEFAULT_CONFIG_PATH: &str = "~/.config/track/config.json";
 pub const DEFAULT_DATA_DIR: &str = "~/.track/issues";
-pub const DEFAULT_LEGACY_ROOT_DIR: &str = "~/.track";
 pub const REVIEW_DIRECTORY_NAME: &str = "reviews";
 pub const REMOTE_AGENT_DIRECTORY_NAME: &str = "remote-agent";
 pub const DISPATCH_DIRECTORY_NAME: &str = ".dispatches";
@@ -76,12 +74,6 @@ pub fn resolve_optional_command_path_from_config_file(
     Ok(Some(path_value.to_owned()))
 }
 
-pub fn get_config_path() -> Result<PathBuf, TrackError> {
-    resolve_path_from_invocation_dir(
-        &env::var("TRACK_CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_owned()),
-    )
-}
-
 pub fn get_cli_config_path() -> Result<PathBuf, TrackError> {
     resolve_path_from_invocation_dir(
         &env::var("TRACK_CLI_CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CLI_CONFIG_PATH.to_owned()),
@@ -114,18 +106,6 @@ pub fn get_backend_managed_remote_agent_key_path() -> Result<PathBuf, TrackError
 
 pub fn get_backend_managed_remote_agent_known_hosts_path() -> Result<PathBuf, TrackError> {
     Ok(get_backend_secrets_dir()?.join("known_hosts"))
-}
-
-pub fn get_legacy_root_dir() -> Result<PathBuf, TrackError> {
-    resolve_path_from_invocation_dir(
-        &env::var("TRACK_LEGACY_ROOT").unwrap_or_else(|_| DEFAULT_LEGACY_ROOT_DIR.to_owned()),
-    )
-}
-
-pub fn get_legacy_config_path() -> Result<PathBuf, TrackError> {
-    resolve_path_from_invocation_dir(
-        &env::var("TRACK_LEGACY_CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_owned()),
-    )
 }
 
 pub fn get_track_root_dir() -> Result<PathBuf, TrackError> {
@@ -200,7 +180,7 @@ mod tests {
     use std::env;
     use std::path::Path;
 
-    use super::{collapse_home_path, collapse_path_value};
+    use super::collapse_home_path;
 
     #[test]
     fn collapses_home_relative_paths_with_a_slash() {
@@ -208,16 +188,5 @@ mod tests {
         let rendered = collapse_home_path(Path::new(&home).join(".track/issues").as_path());
 
         assert_eq!(rendered, "~/.track/issues");
-    }
-
-    #[test]
-    fn collapses_home_prefixed_string_values() {
-        let home = env::var("HOME").expect("tests require HOME");
-        let config_path = Path::new(&home).join(".config/track/config.json");
-
-        assert_eq!(
-            collapse_path_value(&config_path.to_string_lossy()),
-            "~/.config/track/config.json"
-        );
     }
 }

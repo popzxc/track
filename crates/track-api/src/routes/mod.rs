@@ -2,7 +2,6 @@ pub(crate) mod dispatches;
 pub(crate) mod events;
 pub(crate) mod health;
 pub(crate) mod meta;
-pub(crate) mod migration;
 pub(crate) mod projects;
 pub(crate) mod remote_agent;
 pub(crate) mod reviews;

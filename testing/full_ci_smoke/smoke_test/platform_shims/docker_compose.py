@@ -105,8 +105,6 @@ def docker_compose_up(compose_path: Path) -> int:
             "PORT": str(plan["hostPort"]),
             "TRACK_BIND_HOST": plan["bindHost"],
             "TRACK_STATE_DIR": str(home_dir / ".track" / "backend"),
-            "TRACK_LEGACY_ROOT": str(home_dir / ".track"),
-            "TRACK_LEGACY_CONFIG_PATH": str(home_dir / ".config" / "track" / "config.json"),
             "TRACK_STATIC_ROOT": image["staticRoot"],
         }
     )
@@ -202,12 +200,8 @@ def compose_plan_from_file(compose_path: Path) -> dict[str, object]:
         "services:\n  track-web:",
         'PORT: "3210"',
         "TRACK_STATE_DIR: /home/track/backend-state",
-        "TRACK_LEGACY_ROOT: /home/track/legacy-home/.track",
-        "TRACK_LEGACY_CONFIG_PATH: /home/track/legacy-home/.config/track/config.json",
         "source: ${HOME}/.track/backend",
         "target: /home/track/backend-state",
-        "source: ${HOME}",
-        "target: /home/track/legacy-home",
     ]
     for snippet in required_snippets:
         if snippet not in contents:

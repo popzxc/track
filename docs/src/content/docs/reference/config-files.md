@@ -13,7 +13,7 @@ This page is for lookup, not onboarding. If you are still setting things up for 
 | --- | --- |
 | `~/.config/track/cli.json` | CLI-side settings such as the backend URL and local model override. |
 | backend state directory | Stores the live SQLite database plus managed remote-agent secrets. |
-| backend state `track.sqlite` | Registered projects, tasks, runs, reviews, settings, and migration status. |
+| backend state `track.sqlite` | Registered projects, tasks, runs, reviews, and settings. |
 | backend state `remote-agent/id_ed25519` | Managed SSH private key used by the backend for remote work. |
 | backend state `remote-agent/known_hosts` | Managed `known_hosts` file for remote SSH calls. |
 
@@ -55,9 +55,3 @@ With a custom local model override:
   }
 }
 ```
-
-## Legacy material
-
-Older versions of `track` used `~/.config/track/config.json` and a `~/.track` data layout more directly.
-
-The current code still knows how to **import** that legacy material, but it is no longer the primary live configuration surface. If you see older setup notes talking about `config.json` as the main place to edit everything, treat them as migration-era documentation.

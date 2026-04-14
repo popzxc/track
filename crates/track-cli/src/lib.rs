@@ -1,5 +1,3 @@
-// Phase 1 keeps the moved CLI support modules in `track-cli` even where the
-// current command flow still goes through older wrappers in `cli.rs`.
 #[allow(dead_code)]
 mod api_notify;
 mod backend_client;
@@ -7,15 +5,11 @@ mod build_info;
 mod cli_config;
 #[allow(dead_code)]
 mod terminal_ui;
-#[allow(dead_code)]
-mod wizard;
 
 #[cfg(test)]
 mod test_support {
     use std::path::Path;
     use std::process::Command;
-
-    pub use track_types::test_support::*;
 
     pub fn run_git(checkout_path: &Path, args: &[&str]) {
         let output = Command::new("git")

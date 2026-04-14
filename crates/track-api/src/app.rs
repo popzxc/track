@@ -117,14 +117,6 @@ pub fn build_app(state: AppState, static_root: impl AsRef<Path>) -> Router {
             "/meta/server_version",
             get(routes::meta::get_server_version),
         )
-        .route(
-            "/migration/status",
-            get(routes::migration::migration_status),
-        )
-        .route(
-            "/migration/import",
-            post(routes::migration::import_legacy_data),
-        )
         .route("/projects", get(routes::projects::list_projects))
         .route(
             "/projects/{canonical_name}",

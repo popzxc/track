@@ -2,14 +2,11 @@ import type { Ref } from 'vue'
 
 import {
   cleanupRemoteAgentArtifacts,
-  importLegacyData,
   resetRemoteAgentWorkspace,
   updateProject,
   updateRemoteAgentSettings,
 } from '../api/client'
 import type {
-  MigrationImportSummary,
-  MigrationStatus,
   ProjectInfo,
   ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
@@ -32,9 +29,6 @@ interface UseSettingsMutationsOptions {
   editingProject: Ref<ProjectInfo | null>
   editingRemoteAgentSetup: Ref<boolean>
   errorMessage: Ref<string>
-  migrationImportPending: Ref<boolean>
-  migrationImportSummary: Ref<MigrationImportSummary | null>
-  migrationStatus: Ref<MigrationStatus | null>
   refreshAll: () => Promise<void>
   remoteAgentSettings: Ref<RemoteAgentSettings | null>
   resetPendingConfirmation: Ref<boolean>
@@ -50,8 +44,7 @@ interface UseSettingsMutationsOptions {
  * Owns administrative mutations that reshape the shell's environment.
  *
  * These actions do more than update one record. Remote setup can unblock a
- * queued dispatch, cleanup/reset mutate backend-managed infrastructure, and
- * migration import transitions the whole app out of its gated bootstrap mode.
+ * queued dispatch, and cleanup/reset mutate backend-managed infrastructure.
  * Keeping them together highlights that they are "environment" changes rather
  * than everyday queue interactions.
  */
@@ -131,25 +124,9 @@ export function useSettingsMutations(options: UseSettingsMutationsOptions) {
     }
   }
 
-  async function importLegacyTrackerData() {
-    options.migrationImportPending.value = true
-    options.errorMessage.value = ''
-
-    try {
-      options.migrationImportSummary.value = await importLegacyData()
-      options.migrationStatus.value = null
-      await options.refreshAll()
-    } catch (error) {
-      options.setFriendlyError(error)
-    } finally {
-      options.migrationImportPending.value = false
-    }
-  }
-
   return {
     confirmRemoteCleanup,
     confirmRemoteReset,
-    importLegacyTrackerData,
     saveProjectEdits,
     saveRemoteAgentSetup,
   }

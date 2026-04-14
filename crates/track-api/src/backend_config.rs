@@ -9,7 +9,7 @@ use track_config::paths::{
 };
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::database::DatabaseContext;
-use track_remote_agent::RemoteAgentConfigProvider;
+use track_remote_agent::{invalidate_helper_upload, RemoteAgentConfigProvider};
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::types::RemoteAgentPreferredTool;
 
@@ -124,7 +124,9 @@ impl RemoteAgentConfigService {
         &self,
         config: Option<&RemoteAgentConfigFile>,
     ) -> Result<(), TrackError> {
-        self.repository.save_remote_agent_config(config).await
+        self.repository.save_remote_agent_config(config).await?;
+        invalidate_helper_upload();
+        Ok(())
     }
 
     pub async fn replace_remote_agent_config(
@@ -133,9 +135,12 @@ impl RemoteAgentConfigService {
         ssh_private_key: &str,
         known_hosts: Option<&str>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
-        self.repository
+        let config = self
+            .repository
             .replace_remote_agent_config(config, ssh_private_key, known_hosts)
-            .await
+            .await?;
+        invalidate_helper_upload();
+        Ok(config)
     }
 
     pub async fn save_remote_agent_settings(
@@ -144,9 +149,12 @@ impl RemoteAgentConfigService {
         shell_prelude: Option<String>,
         review_follow_up: Option<RemoteAgentReviewFollowUpConfigFile>,
     ) -> Result<RemoteAgentConfigFile, TrackError> {
-        self.repository
+        let config = self
+            .repository
             .save_remote_agent_settings(preferred_tool, shell_prelude, review_follow_up)
-            .await
+            .await?;
+        invalidate_helper_upload();
+        Ok(config)
     }
 
     pub async fn load_remote_agent_runtime_config(

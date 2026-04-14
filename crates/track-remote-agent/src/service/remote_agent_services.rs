@@ -22,7 +22,7 @@ use crate::utils::{
     build_review_follow_up_notification_comment, contextualize_track_error,
     describe_remote_reset_blockers, unique_review_run_directories, unique_review_worktree_paths,
 };
-use crate::RemoteWorkspace;
+use crate::{invalidate_helper_upload, RemoteWorkspace};
 
 use super::dispatch::{unique_run_directories, unique_worktree_paths, RemoteDispatchService};
 use super::review::RemoteReviewService;
@@ -285,6 +285,7 @@ impl<'a> RemoteAgentServices<'a> {
             .remote_workspace(remote_agent)?
             .maintenance()
             .reset_workspace()?;
+        invalidate_helper_upload();
         tracing::warn!(
             workspace_entries_removed = summary.workspace_entries_removed,
             registry_removed = summary.registry_removed,
