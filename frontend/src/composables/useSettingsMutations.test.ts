@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
+import type { RemoteAgentPreferredTool } from '../api/types'
 import * as apiClient from '../api/client'
 import { buildRemoteAgentSettings, buildTask } from '../testing/factories'
+import { TOOL_CONSTANTS } from '../testing/constants'
 import { useSettingsMutations } from './useSettingsMutations'
 
 afterEach(() => {
@@ -24,7 +26,7 @@ function createSettingsMutationHarness() {
   const saving = ref(false)
   const taskPendingRunnerSetup = ref<{
     task: ReturnType<typeof buildTask>
-    preferredTool: 'codex' | 'claude'
+    preferredTool: RemoteAgentPreferredTool
   } | null>(null)
 
   const refreshAll = vi.fn(async () => undefined)
@@ -62,18 +64,18 @@ describe('useSettingsMutations', () => {
     vi.useFakeTimers()
     const harness = createSettingsMutationHarness()
     const queuedTask = buildTask()
-    const savedSettings = buildRemoteAgentSettings({
-      preferredTool: 'claude',
-      shellPrelude: 'export PATH=/srv/tools:$PATH',
-    })
+    const savedSettings = buildRemoteAgentSettings(
+      { shellPrelude: 'export PATH=/srv/tools:$PATH' },
+      { preferredTool: TOOL_CONSTANTS.CLAUDE },
+    )
     harness.taskPendingRunnerSetup.value = {
       task: queuedTask,
-      preferredTool: 'claude',
+      preferredTool: TOOL_CONSTANTS.CLAUDE,
     }
     vi.spyOn(apiClient, 'updateRemoteAgentSettings').mockResolvedValue(savedSettings)
 
     await harness.mutations.saveRemoteAgentSetup({
-      preferredTool: 'claude',
+      preferredTool: TOOL_CONSTANTS.CLAUDE,
       shellPrelude: 'export PATH=/srv/tools:$PATH',
     })
     await vi.runAllTimersAsync()
@@ -81,6 +83,6 @@ describe('useSettingsMutations', () => {
     expect(harness.remoteAgentSettings.value).toEqual(savedSettings)
     expect(harness.editingRemoteAgentSetup.value).toBe(false)
     expect(harness.taskPendingRunnerSetup.value).toBeNull()
-    expect(harness.resumeQueuedTaskDispatch).toHaveBeenCalledWith(queuedTask, 'claude')
+    expect(harness.resumeQueuedTaskDispatch).toHaveBeenCalledWith(queuedTask, TOOL_CONSTANTS.CLAUDE)
   })
 })

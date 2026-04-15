@@ -251,6 +251,94 @@ async fn dispatch_task_can_override_runner_tool_per_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn dispatch_task_uses_opencode_when_runner_prefers_opencode() {
+    if !live_integration_tests_enabled() {
+        print_live_test_skip_message();
+        return;
+    }
+
+    let fixture = RemoteFixture::start(&workspace_root());
+    fixture.seed_repo(
+        "https://github.com/acme/project-a",
+        "main",
+        "fixture-user",
+        "fixture-user",
+    );
+    fixture.write_opencode_state(&success_opencode_state(
+        0,
+        Some("https://github.com/acme/project-a/pull/42"),
+        true,
+        "Mock opencode completed the task and opened a PR.",
+    ));
+
+    let harness = ApiHarness::new(&fixture).await;
+    let updated_settings = harness
+        .update_remote_agent_settings(json!({
+            "preferredTool": "opencode",
+            "shellPrelude": "export PATH=\"/opt/track-testing/bin:$PATH\"\nexport TRACK_TESTING_RUNTIME_DIR=\"/srv/track-testing\"",
+            "reviewFollowUp": {
+                "enabled": false,
+                "mainUser": "octocat",
+                "defaultReviewPrompt": "Focus on bugs, regressions, and missing tests.",
+            }
+        }))
+        .await;
+    assert_eq!(updated_settings["preferredTool"], "opencode");
+
+    let task = harness
+        .create_task_with_project(
+            "project-a",
+            project_metadata("project-a"),
+            "Prepare the remote-agent integration harness with opencode",
+        )
+        .await;
+
+    let dispatch_response = harness.dispatch_task(&task.id).await;
+    let dispatch_id = dispatch_response["dispatchId"]
+        .as_str()
+        .expect("dispatch response should include a dispatch id")
+        .to_owned();
+    assert_eq!(dispatch_response["status"], "preparing");
+
+    let terminal_dispatch = harness
+        .poll_dispatch_until_terminal(&task.id, Duration::from_secs(20))
+        .await;
+    assert_eq!(terminal_dispatch["status"], "succeeded");
+    assert_eq!(
+        terminal_dispatch["summary"],
+        "Mock opencode completed the task and opened a PR."
+    );
+    assert_eq!(
+        terminal_dispatch["pullRequestUrl"],
+        "https://github.com/acme/project-a/pull/42"
+    );
+
+    let opencode_log_entries = fixture.read_log_entries("opencode");
+    assert_eq!(opencode_log_entries.len(), 1);
+    assert!(opencode_log_entries[0]["argv"]
+        .as_array()
+        .is_some_and(|argv| {
+            argv.windows(2).any(|window| {
+                window[0].as_str() == Some("--format") && window[1].as_str() == Some("json")
+            })
+        }));
+    assert!(opencode_log_entries[0]["argv"]
+        .as_array()
+        .is_some_and(|argv| {
+            argv.windows(2).any(|window| {
+                window[0].as_str() == Some("--add-dir") && window[1].as_str().is_some()
+            })
+        }));
+    assert!(fixture.read_log_entries("codex").is_empty());
+    assert!(fixture.read_log_entries("claude").is_empty());
+
+    let remote_run_directory = format!("/home/track/workspace/project-a/dispatches/{dispatch_id}");
+    let remote_result = fixture.read_remote_file(&format!("{remote_run_directory}/result.json"));
+    assert!(remote_result.contains("\"type\": \"text\""));
+    assert!(remote_result.contains("Mock opencode completed the task and opened a PR."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn follow_up_reuses_branch_worktree_and_existing_pr_context() {
     if !live_integration_tests_enabled() {
         print_live_test_skip_message();
@@ -1341,6 +1429,37 @@ fn success_claude_state(
                     {
                         "path": "MOCK_CLAUDE_CHANGE.md",
                         "contents": "# Mock change\n\nThis file was created by the Claude fixture.\n"
+                    }
+                ]
+            })
+        } else {
+            Value::Null
+        }
+    })
+}
+
+fn success_opencode_state(
+    sleep_seconds: u64,
+    pull_request_url: Option<&str>,
+    create_commit: bool,
+    summary: &str,
+) -> Value {
+    json!({
+        "mode": "success",
+        "sleepSeconds": sleep_seconds,
+        "status": "succeeded",
+        "summary": summary,
+        "pullRequestUrl": pull_request_url,
+        "branchName": null,
+        "worktreePath": null,
+        "notes": "Recorded by the integration-test fixture.",
+        "createCommit": if create_commit {
+            json!({
+                "message": "fix: apply mocked opencode change",
+                "files": [
+                    {
+                        "path": "MOCK_OPENCODE_CHANGE.md",
+                        "contents": "# Mock change\n\nThis file was created by the opencode fixture.\n"
                     }
                 ]
             })

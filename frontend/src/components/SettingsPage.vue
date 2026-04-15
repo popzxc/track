@@ -21,6 +21,15 @@ const emit = defineEmits<{
   'request-open-reset': []
   'request-open-runner-setup': []
 }>()
+
+function remoteAgentToolLabel(tool: RemoteAgentSettings['preferredTool'] | undefined): string {
+  switch (tool) {
+    case 'claude': return 'Claude'
+    case 'opencode': return 'opencode'
+    case 'codex':
+    default: return 'Codex'
+  }
+}
 </script>
 
 <template>
@@ -95,7 +104,7 @@ const emit = defineEmits<{
               Preferred tool
             </dt>
             <dd class="mt-2 text-sm text-fg1">
-              {{ remoteAgentSettings?.preferredTool === 'claude' ? 'Claude' : 'Codex' }}
+              {{ remoteAgentToolLabel(remoteAgentSettings?.preferredTool) }}
             </dd>
           </div>
           <div class="border border-fg2/15 bg-bg0/60 p-4">

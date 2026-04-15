@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { computed, ref } from 'vue'
 
+import type { RemoteAgentPreferredTool } from '../api/types'
 import * as apiClient from '../api/client'
-import { buildDispatch, buildTask } from '../testing/factories'
+import { buildDispatch, buildDispatchForTool, buildTask } from '../testing/factories'
+import { TOOL_CONSTANTS } from '../testing/constants'
 import { useTaskMutations } from './useTaskMutations'
 
 afterEach(() => {
@@ -21,7 +23,7 @@ function createTaskMutationHarness() {
   const pendingSelectedTaskId = ref<string | null>(null)
   const remoteAgentSettings = ref({
     configured: true,
-    preferredTool: 'codex' as const,
+    preferredTool: TOOL_CONSTANTS.CODEX,
     host: '127.0.0.1',
     user: 'track',
     port: 22,
@@ -37,7 +39,7 @@ function createTaskMutationHarness() {
   const selectedProjectFilter = ref('')
   const selectedTaskRef = ref(task)
   const selectedTaskCanContinue = ref(false)
-  const selectedTaskDispatchTool = ref<'codex' | 'claude'>('codex')
+  const selectedTaskDispatchTool = ref<RemoteAgentPreferredTool>(TOOL_CONSTANTS.CODEX)
   const selectedTaskId = ref<string | null>(task.id)
   const selectedTaskLatestDispatch = ref<ReturnType<typeof buildDispatch> | null>(null)
   const showClosed = ref(false)
@@ -53,13 +55,13 @@ function createTaskMutationHarness() {
   const loadRuns = vi.fn(async () => undefined)
   const refreshAll = vi.fn(async () => undefined)
   const removeTaskRuns = vi.fn()
-  const requestRunnerSetup = vi.fn((queuedTask: ReturnType<typeof buildTask>, preferredTool: 'codex' | 'claude') => {
+  const requestRunnerSetup = vi.fn((queuedTask: ReturnType<typeof buildTask>, preferredTool: RemoteAgentPreferredTool) => {
     currentPage.value = 'settings'
     runnerSetupRequests.value.push({ task: queuedTask, preferredTool })
   })
   const runnerSetupRequests = ref<Array<{
     task: ReturnType<typeof buildTask>
-    preferredTool: 'codex' | 'claude'
+    preferredTool: RemoteAgentPreferredTool
   }>>([])
   const setFriendlyError = vi.fn()
   const upsertLatestTaskDispatch = vi.fn()
@@ -132,34 +134,65 @@ describe('useTaskMutations', () => {
     harness.runnerSetupReady.value = false
     const dispatchTaskSpy = vi.spyOn(apiClient, 'dispatchTask')
 
-    await harness.mutations.startRemoteRun(harness.task, 'claude')
+    await harness.mutations.startRemoteRun(harness.task, TOOL_CONSTANTS.CLAUDE)
 
     expect(harness.currentPage.value).toBe('settings')
     expect(harness.requestRunnerSetup).toHaveBeenCalledTimes(1)
     expect(harness.runnerSetupRequests.value).toEqual([{
       task: harness.task,
-      preferredTool: 'claude',
+      preferredTool: TOOL_CONSTANTS.CLAUDE,
     }])
     expect(dispatchTaskSpy).not.toHaveBeenCalled()
   })
 
   it('updates the visible run projections after a successful dispatch', async () => {
     const harness = createTaskMutationHarness()
-    const dispatch = buildDispatch({
-      dispatchId: 'dispatch-new',
-      taskId: harness.task.id,
-      project: harness.task.project,
-      preferredTool: 'claude',
-    })
+    const dispatch = buildDispatch(
+      {
+        dispatchId: 'dispatch-new',
+        taskId: harness.task.id,
+        project: harness.task.project,
+      },
+      { preferredTool: TOOL_CONSTANTS.CLAUDE },
+    )
     const dispatchTaskSpy = vi.spyOn(apiClient, 'dispatchTask').mockResolvedValue(dispatch)
 
-    await harness.mutations.startRemoteRun(harness.task, 'claude')
+    await harness.mutations.startRemoteRun(harness.task, TOOL_CONSTANTS.CLAUDE)
 
-    expect(dispatchTaskSpy).toHaveBeenCalledWith(harness.task.id, { preferredTool: 'claude' })
+    expect(dispatchTaskSpy).toHaveBeenCalledWith(harness.task.id, { preferredTool: TOOL_CONSTANTS.CLAUDE })
     expect(harness.upsertRunRecord).toHaveBeenCalledWith(harness.task, dispatch)
     expect(harness.upsertLatestTaskDispatch).toHaveBeenCalledWith(dispatch)
     expect(harness.upsertSelectedTaskRun).toHaveBeenCalledWith(harness.task, dispatch)
     expect(harness.dispatchingTaskId.value).toBeNull()
+  })
+
+  describe.each([
+    TOOL_CONSTANTS.CODEX,
+    TOOL_CONSTANTS.CLAUDE,
+    TOOL_CONSTANTS.OPENCODE,
+  ])('tool support (%s)', (tool) => {
+    it(`dispatches with ${tool}`, async () => {
+      const harness = createTaskMutationHarness()
+      const dispatch = buildDispatchForTool(tool)
+      const dispatchTaskSpy = vi.spyOn(apiClient, 'dispatchTask').mockResolvedValue(dispatch)
+
+      await harness.mutations.startRemoteRun(harness.task, tool)
+
+      expect(dispatchTaskSpy).toHaveBeenCalledWith(harness.task.id, { preferredTool: tool })
+      expect(harness.upsertRunRecord).toHaveBeenCalledWith(harness.task, dispatch)
+    })
+
+    it(`opens runner setup for ${tool} when not ready`, async () => {
+      const harness = createTaskMutationHarness()
+      harness.runnerSetupReady.value = false
+      const dispatchTaskSpy = vi.spyOn(apiClient, 'dispatchTask')
+
+      await harness.mutations.startRemoteRun(harness.task, tool)
+
+      expect(harness.currentPage.value).toBe('settings')
+      expect(harness.requestRunnerSetup).toHaveBeenCalledWith(harness.task, tool)
+      expect(dispatchTaskSpy).not.toHaveBeenCalled()
+    })
   })
 
   it('deletes the selected task and clears its local drawer state', async () => {

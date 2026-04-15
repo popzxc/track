@@ -27,6 +27,33 @@ use crate::{invalidate_helper_upload, RemoteWorkspace};
 use super::dispatch::{unique_run_directories, unique_worktree_paths, RemoteDispatchService};
 use super::review::RemoteReviewService;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewNotificationDecision {
+    SkipMissingHeadOid,
+    SkipAlreadyRecorded,
+    Post,
+}
+
+fn review_notification_decision(
+    dispatch_record: &TaskDispatchRecord,
+    head_oid: &str,
+    review_user: &str,
+) -> ReviewNotificationDecision {
+    let trimmed_head_oid = head_oid.trim();
+    if trimmed_head_oid.is_empty() {
+        return ReviewNotificationDecision::SkipMissingHeadOid;
+    }
+
+    let already_recorded_for_head = dispatch_record.review_request_head_oid.as_deref()
+        == Some(trimmed_head_oid)
+        && dispatch_record.review_request_user.as_deref() == Some(review_user);
+    if already_recorded_for_head {
+        ReviewNotificationDecision::SkipAlreadyRecorded
+    } else {
+        ReviewNotificationDecision::Post
+    }
+}
+
 #[async_trait::async_trait]
 pub trait RemoteAgentConfigProvider: Send + Sync {
     async fn load_remote_agent_runtime_config(
@@ -452,41 +479,48 @@ impl<'a> RemoteAgentServices<'a> {
                         pull_request_url = %pull_request_url,
                         "Queued automatic follow-up dispatch from PR review state"
                     );
+                    self.mark_review_notification_for_head(
+                        &queued_dispatch,
+                        &pull_request_state.head_oid,
+                        &review_follow_up.main_user,
+                    )
+                    .await?;
                     reconciliation.queued_dispatches.push(queued_dispatch);
                     continue;
                 }
             }
 
-            if pull_request_state.head_oid.is_empty() {
-                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
-                    "skip_missing_head_oid",
-                    "Skipped PR reviewer notification because the PR head SHA is missing.",
-                    &dispatch_record,
-                    &review_follow_up.main_user,
-                    Some(&pull_request_state),
-                ));
-                continue;
-            }
-
-            let already_recorded_for_head = dispatch_record.review_request_head_oid.as_deref()
-                == Some(pull_request_state.head_oid.as_str())
-                && dispatch_record.review_request_user.as_deref()
-                    == Some(review_follow_up.main_user.as_str());
-            if already_recorded_for_head {
-                reconciliation.events.push(RemoteReviewFollowUpEvent::new(
-                    "skip_notification_already_recorded",
-                    "Skipped PR reviewer notification because this PR head already recorded the same reviewer.",
-                    &dispatch_record,
-                    &review_follow_up.main_user,
-                    Some(&pull_request_state),
-                ));
-                continue;
-            }
-
-            let notification_comment = build_review_follow_up_notification_comment(
+            let head_oid = pull_request_state.head_oid.trim();
+            match review_notification_decision(
+                &dispatch_record,
+                head_oid,
                 &review_follow_up.main_user,
-                &pull_request_state.head_oid,
-            );
+            ) {
+                ReviewNotificationDecision::SkipMissingHeadOid => {
+                    reconciliation.events.push(RemoteReviewFollowUpEvent::new(
+                        "skip_missing_head_oid",
+                        "Skipped PR reviewer notification because the PR head SHA is missing.",
+                        &dispatch_record,
+                        &review_follow_up.main_user,
+                        Some(&pull_request_state),
+                    ));
+                    continue;
+                }
+                ReviewNotificationDecision::SkipAlreadyRecorded => {
+                    reconciliation.events.push(RemoteReviewFollowUpEvent::new(
+                        "skip_notification_already_recorded",
+                        "Skipped PR reviewer notification because this PR head already recorded the same reviewer.",
+                        &dispatch_record,
+                        &review_follow_up.main_user,
+                        Some(&pull_request_state),
+                    ));
+                    continue;
+                }
+                ReviewNotificationDecision::Post => {}
+            }
+
+            let notification_comment =
+                build_review_follow_up_notification_comment(&review_follow_up.main_user, head_oid);
             let notify_reviewer_result = workspace
                 .projects()
                 .post_pull_request_comment(pull_request_url, &notification_comment)
@@ -520,7 +554,7 @@ impl<'a> RemoteAgentServices<'a> {
             }
             self.mark_review_notification_for_head(
                 &dispatch_record,
-                &pull_request_state.head_oid,
+                head_oid,
                 &review_follow_up.main_user,
             )
             .await?;
@@ -642,4 +676,70 @@ pub(super) async fn load_refresh_remote_workspace(
     Ok(RefreshRemoteWorkspace::Available(Box::new(
         RemoteWorkspace::new(remote_agent, database.clone())?,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{review_notification_decision, ReviewNotificationDecision};
+    use track_types::ids::{DispatchId, ProjectId, TaskId};
+    use track_types::time_utils::now_utc;
+    use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, TaskDispatchRecord};
+
+    fn sample_dispatch_record() -> TaskDispatchRecord {
+        TaskDispatchRecord {
+            dispatch_id: DispatchId::new("dispatch-1").expect("dispatch ids should parse"),
+            task_id: TaskId::new("task-1").expect("task ids should parse"),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
+            project: ProjectId::new("project-a").expect("project ids should parse"),
+            status: DispatchStatus::Succeeded,
+            created_at: now_utc(),
+            updated_at: now_utc(),
+            finished_at: Some(now_utc()),
+            remote_host: "127.0.0.1".to_owned(),
+            branch_name: None,
+            worktree_path: None,
+            pull_request_url: None,
+            follow_up_request: None,
+            summary: None,
+            notes: None,
+            error_message: None,
+            review_request_head_oid: None,
+            review_request_user: None,
+        }
+    }
+
+    #[test]
+    fn initial_dispatch_is_notified_when_no_tracking_checkpoint_exists() {
+        let dispatch_record = sample_dispatch_record();
+
+        let decision = review_notification_decision(&dispatch_record, "abc123", "octocat");
+
+        assert_eq!(decision, ReviewNotificationDecision::Post);
+    }
+
+    #[test]
+    fn duplicate_notification_is_skipped_for_same_head_and_user() {
+        let mut dispatch_record = sample_dispatch_record();
+        dispatch_record.review_request_head_oid = Some("abc123".to_owned());
+        dispatch_record.review_request_user = Some("octocat".to_owned());
+
+        let decision = review_notification_decision(&dispatch_record, "abc123", "octocat");
+
+        assert_eq!(decision, ReviewNotificationDecision::SkipAlreadyRecorded);
+    }
+
+    #[test]
+    fn notification_posts_again_when_head_or_user_changes() {
+        let mut dispatch_record = sample_dispatch_record();
+        dispatch_record.review_request_head_oid = Some("abc123".to_owned());
+        dispatch_record.review_request_user = Some("octocat".to_owned());
+
+        let decision_for_new_head =
+            review_notification_decision(&dispatch_record, "def456", "octocat");
+        let decision_for_new_user =
+            review_notification_decision(&dispatch_record, "abc123", "hubot");
+
+        assert_eq!(decision_for_new_head, ReviewNotificationDecision::Post);
+        assert_eq!(decision_for_new_user, ReviewNotificationDecision::Post);
+    }
 }

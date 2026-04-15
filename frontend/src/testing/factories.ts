@@ -1,5 +1,6 @@
 import type {
   ProjectInfo,
+  RemoteAgentPreferredTool,
   RemoteAgentSettings,
   ReviewRecord,
   ReviewRunRecord,
@@ -8,6 +9,7 @@ import type {
   Task,
   TaskDispatch,
 } from '../api/types'
+import { TOOL_CONSTANTS } from './constants'
 
 export function buildTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -23,11 +25,14 @@ export function buildTask(overrides: Partial<Task> = {}): Task {
   }
 }
 
-export function buildDispatch(overrides: Partial<TaskDispatch> = {}): TaskDispatch {
+export function buildDispatch(
+  overrides: Partial<TaskDispatch> = {},
+  options: { preferredTool?: RemoteAgentPreferredTool } = {},
+): TaskDispatch {
   return {
     dispatchId: 'dispatch-123',
     taskId: 'project-a/open/20260323-120000-fix-queue-layout.md',
-    preferredTool: 'codex',
+    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
     project: 'project-a',
     status: 'succeeded',
     createdAt: '2026-03-23T12:05:00.000Z',
@@ -40,6 +45,10 @@ export function buildDispatch(overrides: Partial<TaskDispatch> = {}): TaskDispat
     summary: 'Completed the task successfully.',
     ...overrides,
   }
+}
+
+export function buildDispatchForTool(tool: RemoteAgentPreferredTool): TaskDispatch {
+  return buildDispatch({}, { preferredTool: tool })
 }
 
 export function buildRunRecord(
@@ -70,7 +79,10 @@ export function buildProject(overrides: Partial<ProjectInfo> = {}): ProjectInfo 
   }
 }
 
-export function buildReview(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
+export function buildReview(
+  overrides: Partial<ReviewRecord> = {},
+  options: { preferredTool?: RemoteAgentPreferredTool } = {},
+): ReviewRecord {
   return {
     id: '20260326-120000-review-pr-42',
     pullRequestUrl: 'https://github.com/acme/project-a/pull/42',
@@ -81,7 +93,7 @@ export function buildReview(overrides: Partial<ReviewRecord> = {}): ReviewRecord
     gitUrl: 'git@github.com:acme/project-a.git',
     baseBranch: 'main',
     workspaceKey: 'project-a',
-    preferredTool: 'codex',
+    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
     project: 'project-a',
     mainUser: 'octocat',
     defaultReviewPrompt: 'Focus on regressions and missing tests.',
@@ -92,14 +104,21 @@ export function buildReview(overrides: Partial<ReviewRecord> = {}): ReviewRecord
   }
 }
 
-export function buildReviewRun(overrides: Partial<ReviewRunRecord> = {}): ReviewRunRecord {
+export function buildReviewForTool(tool: RemoteAgentPreferredTool): ReviewRecord {
+  return buildReview({}, { preferredTool: tool })
+}
+
+export function buildReviewRun(
+  overrides: Partial<ReviewRunRecord> = {},
+  options: { preferredTool?: RemoteAgentPreferredTool } = {},
+): ReviewRunRecord {
   return {
     dispatchId: 'review-dispatch-123',
     reviewId: '20260326-120000-review-pr-42',
     pullRequestUrl: 'https://github.com/acme/project-a/pull/42',
     repositoryFullName: 'acme/project-a',
     workspaceKey: 'project-a',
-    preferredTool: 'codex',
+    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
     status: 'succeeded',
     createdAt: '2026-03-26T12:05:00.000Z',
     updatedAt: '2026-03-26T12:06:00.000Z',
@@ -116,6 +135,10 @@ export function buildReviewRun(overrides: Partial<ReviewRunRecord> = {}): Review
     notes: 'Generated from the frontend test fixture.',
     ...overrides,
   }
+}
+
+export function buildReviewRunForTool(tool: RemoteAgentPreferredTool): ReviewRunRecord {
+  return buildReviewRun({}, { preferredTool: tool })
 }
 
 export function buildReviewSummary(overrides: {
@@ -141,10 +164,11 @@ export function buildReviewSummary(overrides: {
 
 export function buildRemoteAgentSettings(
   overrides: Partial<RemoteAgentSettings> = {},
+  options: { preferredTool?: RemoteAgentPreferredTool } = {},
 ): RemoteAgentSettings {
   return {
     configured: true,
-    preferredTool: 'codex',
+    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
     host: '127.0.0.1',
     user: 'track',
     port: 2222,

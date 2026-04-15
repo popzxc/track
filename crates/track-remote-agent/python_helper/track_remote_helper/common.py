@@ -17,7 +17,7 @@ FINISHED_AT_FILE_NAME = "finished-at.txt"
 PROMPT_FILE_NAME = "prompt.md"
 SCHEMA_FILE_NAME = "result-schema.json"
 LAUNCHER_PID_FILE_NAME = "launcher.pid"
-AGENT_PID_FILE_NAME = "codex.pid"
+# Agent PID file names are now tool-specific and chosen at runtime.
 CODEX_EVENTS_FILE_NAME = "events.jsonl"
 REVIEW_WORKTREE_DIRECTORY_NAME = "review-worktrees"
 REVIEW_RUN_DIRECTORY_NAME = "review-runs"
@@ -26,6 +26,7 @@ TOOL_OVERRIDE_ENV_VARS = {
     "gh": "TRACK_REMOTE_HELPER_GH",
     "codex": "TRACK_REMOTE_HELPER_CODEX",
     "claude": "TRACK_REMOTE_HELPER_CLAUDE",
+    "opencode": "TRACK_REMOTE_HELPER_OPENCODE",
 }
 LOCK_ROOT = Path(
     os.environ.get("TRACK_REMOTE_HELPER_LOCK_ROOT", tempfile.gettempdir())

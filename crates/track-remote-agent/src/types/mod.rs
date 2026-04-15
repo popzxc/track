@@ -5,8 +5,8 @@ mod events;
 mod github;
 
 pub(crate) use dispatch::{
-    ClaudeStructuredOutputEnvelope, RemoteArtifactCleanupCounts, RemoteArtifactCleanupReport,
-    RemoteTaskCleanupMode, RemoteWorkspaceResetReport,
+    ClaudeStructuredOutputEnvelope, OpencodeStructuredOutput, RemoteArtifactCleanupCounts,
+    RemoteArtifactCleanupReport, RemoteTaskCleanupMode, RemoteWorkspaceResetReport,
 };
 pub use events::{RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation};
 pub(crate) use github::{

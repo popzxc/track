@@ -102,6 +102,9 @@ function submit() {
               <option value="claude">
                 Claude
               </option>
+              <option value="opencode">
+                opencode
+              </option>
             </select>
           </label>
 

@@ -72,7 +72,7 @@ test-rust:
 
 # Run frontend typechecking and unit tests.
 [working-directory: "frontend"]
-test-fe:
+test-fe: build-fe
   {{bun}} run typecheck
   {{bun}} run test
 
@@ -82,7 +82,7 @@ test-int:
 
 # Run the frontend browser end-to-end suite.
 [working-directory: "frontend"]
-test-e2e:
+test-e2e: build-fe
   {{bun}} run test:e2e
 
 # Run all local test suites.
