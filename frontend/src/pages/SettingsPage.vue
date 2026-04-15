@@ -28,9 +28,15 @@ const editingProject = ref<ProjectInfo | null>(null)
 
 const modal = computed(() => firstQueryValue(route.query.modal))
 const resumeTaskId = computed(() => firstQueryValue(route.query.resumeTask))
-const resumePreferredTool = computed<RemoteAgentPreferredTool>(() =>
-  firstQueryValue(route.query.preferredTool) === 'claude' ? 'claude' : 'codex',
-)
+const resumePreferredTool = computed<RemoteAgentPreferredTool>(() => {
+  const preferredTool = firstQueryValue(route.query.preferredTool)
+  // TODO: Move `TOOL_CONSTANTS` from tests to actual types and use it instead.
+  if (preferredTool === 'claude' || preferredTool === 'opencode' || preferredTool === 'codex') {
+    return preferredTool
+  }
+
+  return 'codex'
+})
 
 const editingRemoteAgentSetup = computed<boolean>({
   get: () => modal.value === 'runner-setup',

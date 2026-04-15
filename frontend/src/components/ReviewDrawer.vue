@@ -27,7 +27,12 @@ const emit = defineEmits<{
 }>()
 
 function remoteAgentToolLabel(tool: ReviewRecord['preferredTool'] | null | undefined): string {
-  return tool === 'claude' ? 'Claude' : 'Codex'
+  switch (tool) {
+    case 'claude': return 'Claude'
+    case 'opencode': return 'opencode'
+    case 'codex':
+    default: return 'Codex'
+  }
 }
 </script>
 

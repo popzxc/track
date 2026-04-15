@@ -201,11 +201,14 @@ where
 }
 
 fn truncate_output(output: &str, max_len: usize) -> String {
-    if output.len() <= max_len {
+    // TODO: make it a single pass
+    let output_char_count = output.chars().count();
+    if output_char_count <= max_len {
         output.to_owned()
     } else {
+        let truncated = output.chars().take(max_len).collect::<String>();
         // TODO: Consider providing a way to view the full raw output in the UI for debugging.
-        format!("{}... ({} bytes total)", &output[..max_len], output.len())
+        format!("{truncated}... ({} bytes total)", output.len())
     }
 }
 
@@ -291,5 +294,14 @@ mod tests {
         let error = result.unwrap_err();
         assert!(error.message().contains("... ("));
         assert!(error.message().contains("bytes total"));
+    }
+
+    #[test]
+    fn truncates_unicode_output_without_panicking() {
+        let long_unicode = "🙂".repeat(3000);
+        let truncated = truncate_output(&long_unicode, 2000);
+
+        assert!(truncated.starts_with(&"🙂".repeat(2000)));
+        assert!(truncated.contains("bytes total"));
     }
 }

@@ -359,6 +359,65 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
     );
 }
 
+#[test]
+fn refresh_reads_opencode_dispatch_outcome_from_text_event_stream() {
+    let created_at = now_utc();
+    let dispatch_id = DispatchId::new("dispatch-1").unwrap();
+    let project = ProjectId::new("project-a").unwrap();
+    let record = TaskDispatchRecord {
+        dispatch_id: dispatch_id.clone(),
+        task_id: TaskId::new("task-1").unwrap(),
+        preferred_tool: RemoteAgentPreferredTool::Opencode,
+        project: project.clone(),
+        status: DispatchStatus::Running,
+        created_at,
+        updated_at: created_at,
+        finished_at: None,
+        remote_host: "192.0.2.25".to_owned(),
+        branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_task(
+            "~/workspace",
+            &project,
+            &dispatch_id,
+        )),
+        pull_request_url: None,
+        follow_up_request: None,
+        summary: None,
+        notes: None,
+        error_message: None,
+        review_request_head_oid: None,
+        review_request_user: None,
+    };
+    let snapshot = RemoteRunSnapshotView::completed(
+        r#"{"type":"step_start","timestamp":123,"sessionID":"ses_1","part":{"type":"step-start"}}
+{"type":"text","timestamp":126,"sessionID":"ses_1","part":{"type":"text","text":"{\"status\":\"succeeded\",\"summary\":\"Mock opencode completed successfully.\",\"pullRequestUrl\":\"https://github.com/acme/project-a/pull/42\",\"branchName\":\"track/dispatch-1\",\"worktreePath\":\"/tmp/project-a/worktrees/dispatch-1\",\"notes\":\"Captured from the opencode mock.\"}"}}
+{"type":"step_finish","timestamp":127,"sessionID":"ses_1","part":{"type":"step-finish"}}"#
+            .to_owned(),
+        now_utc(),
+    );
+
+    let refreshed = refresh_dispatch_record_from_snapshot(record, &snapshot)
+        .expect("opencode event stream should refresh successfully");
+
+    assert_eq!(refreshed.status, DispatchStatus::Succeeded);
+    assert_eq!(
+        refreshed.summary.as_deref(),
+        Some("Mock opencode completed successfully.")
+    );
+    assert_eq!(
+        refreshed.pull_request_url.as_ref().map(Url::as_str),
+        Some("https://github.com/acme/project-a/pull/42")
+    );
+    assert_eq!(
+        refreshed.worktree_path,
+        Some(DispatchWorktreePath::new("/tmp/project-a/worktrees/dispatch-1").unwrap())
+    );
+    assert_eq!(
+        refreshed.notes.as_deref(),
+        Some("Captured from the opencode mock.")
+    );
+}
+
 #[tokio::test]
 async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
     let context = TestContext::new(None).await;
@@ -434,6 +493,75 @@ async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
     assert_eq!(
         refreshed.notes.as_deref(),
         Some("Captured from the Claude review mock.")
+    );
+}
+
+#[tokio::test]
+async fn refresh_reads_opencode_review_outcome_from_text_event_stream() {
+    let context = TestContext::new(None).await;
+    let created_at = now_utc();
+    let dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
+    let workspace_key = WorkspaceKey::new("project-a").unwrap();
+    let record = ReviewRunRecord {
+        dispatch_id: dispatch_id.clone(),
+        review_id: ReviewId::new("review-1").unwrap(),
+        pull_request_url: url("https://github.com/acme/project-a/pull/42"),
+        repository_full_name: "acme/project-a".to_owned(),
+        workspace_key: workspace_key.clone(),
+        preferred_tool: RemoteAgentPreferredTool::Opencode,
+        status: DispatchStatus::Running,
+        created_at,
+        updated_at: created_at,
+        finished_at: None,
+        remote_host: "192.0.2.25".to_owned(),
+        branch_name: Some(DispatchBranch::for_review(&dispatch_id)),
+        worktree_path: Some(DispatchWorktreePath::for_review(
+            "~/workspace",
+            &workspace_key,
+            &dispatch_id,
+        )),
+        follow_up_request: None,
+        target_head_oid: Some("abc123def456".to_owned()),
+        summary: None,
+        review_submitted: false,
+        github_review_id: None,
+        github_review_url: None,
+        notes: None,
+        error_message: None,
+    };
+    let snapshot = RemoteRunSnapshotView::completed(
+        r#"{"type":"step_start","timestamp":123,"sessionID":"ses_1","part":{"type":"step-start"}}
+{"type":"text","timestamp":126,"sessionID":"ses_1","part":{"type":"text","text":"{\"status\":\"succeeded\",\"summary\":\"Mock opencode reviewed the pull request successfully.\",\"reviewSubmitted\":true,\"githubReviewId\":\"1001\",\"githubReviewUrl\":\"https://github.com/acme/project-a/pull/42#pullrequestreview-1001\",\"worktreePath\":\"/tmp/project-a/review-worktrees/review-dispatch-1\",\"notes\":\"Captured from the opencode review mock.\"}"}}
+{"type":"step_finish","timestamp":127,"sessionID":"ses_1","part":{"type":"step-finish"}}"#
+            .to_owned(),
+        now_utc(),
+    );
+
+    let refreshed = context
+        .review_service()
+        .refresh_review_dispatch_record_from_snapshot(record, &snapshot)
+        .expect("opencode review event stream should refresh successfully");
+
+    assert_eq!(refreshed.status, DispatchStatus::Succeeded);
+    assert_eq!(
+        refreshed.summary.as_deref(),
+        Some("Mock opencode reviewed the pull request successfully.")
+    );
+    assert!(refreshed.review_submitted);
+    assert_eq!(refreshed.github_review_id.as_deref(), Some("1001"));
+    assert_eq!(
+        refreshed.github_review_url.as_ref().map(Url::as_str),
+        Some("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
+    );
+    assert_eq!(
+        refreshed.worktree_path,
+        Some(
+            DispatchWorktreePath::new("/tmp/project-a/review-worktrees/review-dispatch-1").unwrap()
+        )
+    );
+    assert_eq!(
+        refreshed.notes.as_deref(),
+        Some("Captured from the opencode review mock.")
     );
 }
 

@@ -686,12 +686,11 @@ impl<'a> RemoteReviewService<'a> {
                 "Remote review run completed without producing a structured result.",
             )?;
             let outcome = match record.preferred_tool {
-                RemoteAgentPreferredTool::Opencode => {
-                    OpencodeStructuredOutput::<RemoteAgentReviewOutcome>::parse_result(
-                        remote_result,
-                        "Remote review result",
-                    )?
-                }
+                RemoteAgentPreferredTool::Opencode => OpencodeStructuredOutput::<
+                    RemoteAgentReviewOutcome,
+                >::parse_result(
+                    remote_result, "Remote review result"
+                )?,
                 RemoteAgentPreferredTool::Claude => {
                     ClaudeStructuredOutputEnvelope::<RemoteAgentReviewOutcome>::parse_result(
                         remote_result,

@@ -39,7 +39,12 @@ const pinnedToolLabel = computed(() => {
     return null
   }
 
-  return props.dispatch.preferredTool === 'claude' ? 'Claude' : 'Codex'
+  switch (props.dispatch.preferredTool) {
+    case 'claude': return 'Claude'
+    case 'opencode': return 'opencode'
+    case 'codex':
+    default: return 'Codex'
+  }
 })
 
 function submit() {

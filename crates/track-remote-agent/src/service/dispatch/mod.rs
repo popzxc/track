@@ -1144,12 +1144,11 @@ pub(super) fn refresh_dispatch_record_from_snapshot(
         let remote_result = snapshot
             .required_result("Remote agent run completed without producing a structured result.")?;
         let outcome = match record.preferred_tool {
-            RemoteAgentPreferredTool::Opencode => {
-                OpencodeStructuredOutput::<RemoteAgentDispatchOutcome>::parse_result(
-                    remote_result,
-                    "Remote agent result",
-                )?
-            }
+            RemoteAgentPreferredTool::Opencode => OpencodeStructuredOutput::<
+                RemoteAgentDispatchOutcome,
+            >::parse_result(
+                remote_result, "Remote agent result"
+            )?,
             RemoteAgentPreferredTool::Claude => {
                 ClaudeStructuredOutputEnvelope::<RemoteAgentDispatchOutcome>::parse_result(
                     remote_result,
@@ -1157,16 +1156,15 @@ pub(super) fn refresh_dispatch_record_from_snapshot(
                     "Remote agent result",
                 )?
             }
-            RemoteAgentPreferredTool::Codex => {
-                serde_json::from_str::<RemoteAgentDispatchOutcome>(remote_result).map_err(
-                    |error| {
-                        TrackError::new(
-                            ErrorCode::RemoteDispatchFailed,
-                            format!("Remote agent result is not valid JSON: {error}"),
-                        )
-                    },
-                )?
-            }
+            RemoteAgentPreferredTool::Codex => serde_json::from_str::<RemoteAgentDispatchOutcome>(
+                remote_result,
+            )
+            .map_err(|error| {
+                TrackError::new(
+                    ErrorCode::RemoteDispatchFailed,
+                    format!("Remote agent result is not valid JSON: {error}"),
+                )
+            })?,
         };
         return Ok(record.apply_remote_dispatch_outcome(outcome, refreshed_at, finished_at));
     }
