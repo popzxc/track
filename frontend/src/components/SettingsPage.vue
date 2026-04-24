@@ -25,7 +25,6 @@ const emit = defineEmits<{
 function remoteAgentToolLabel(tool: RemoteAgentSettings['preferredTool'] | undefined): string {
   switch (tool) {
     case 'claude': return 'Claude'
-    case 'opencode': return 'opencode'
     case 'codex':
     default: return 'Codex'
   }

@@ -64,24 +64,4 @@ describe('SettingsPage', () => {
     expect(wrapper.get('[data-testid="settings-reset-button"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('Stop active task runs and PR reviews before resetting the remote workspace.')
   })
-
-  it('renders opencode in the preferred tool summary', () => {
-    const wrapper = mount(SettingsPage, {
-      props: {
-        activeRemoteWorkCount: 0,
-        cleaningUpRemoteArtifacts: false,
-        cleanupSummary: null,
-        remoteAgentSettings: buildRemoteAgentSettings(
-          {},
-          { preferredTool: 'opencode' },
-        ),
-        resettingRemoteWorkspace: false,
-        resetSummary: null,
-        runnerSetupReady: true,
-        shellPreludeHelpText: 'Prelude help.',
-      },
-    })
-
-    expect(wrapper.text()).toContain('opencode')
-  })
 })

@@ -367,11 +367,10 @@ def launch_run(request: dict[str, object], helper_path: Path) -> dict[str, objec
 def cancel_run(request: dict[str, object]) -> dict[str, object]:
     run_directory = expand_remote_path(str(request["runDirectory"]))
     launcher_pid_file = run_directory / LAUNCHER_PID_FILE_NAME
-    # For cancel, we need to check all possible agent PID files since we don't know which tool was used
+    # For cancel, we need to check all possible agent PID files since we don't know which tool was used.
     agent_pid_files = [
         run_directory / "codex.pid",
         run_directory / "claude.pid",
-        run_directory / "opencode.pid",
     ]
 
     kill_if_running(read_pid(launcher_pid_file))
@@ -697,8 +696,8 @@ def fetch_ignore_failure(argv: list[str]) -> None:
 
 def kill_run_directory_processes(run_directory: Path) -> None:
     kill_if_running(read_pid(run_directory / LAUNCHER_PID_FILE_NAME))
-    # Check all possible agent PID files since we don't know which tool was used
-    for agent_pid_name in ["codex.pid", "claude.pid", "opencode.pid"]:
+    # Check all possible agent PID files since cleanup may not know which tool was used.
+    for agent_pid_name in ["codex.pid", "claude.pid"]:
         kill_if_running(read_pid(run_directory / agent_pid_name))
 
 

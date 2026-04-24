@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import type { RemoteAgentPreferredTool } from '../api/types'
 import * as apiClient from '../api/client'
 import { buildDispatch, buildDispatchForTool, buildTask } from '../testing/factories'
-import { TOOL_CONSTANTS } from '../testing/constants'
+import { ALL_TOOLS, TOOL_CONSTANTS } from '../testing/constants'
 import { useTaskMutations } from './useTaskMutations'
 
 afterEach(() => {
@@ -166,11 +166,7 @@ describe('useTaskMutations', () => {
     expect(harness.dispatchingTaskId.value).toBeNull()
   })
 
-  describe.each([
-    TOOL_CONSTANTS.CODEX,
-    TOOL_CONSTANTS.CLAUDE,
-    TOOL_CONSTANTS.OPENCODE,
-  ])('tool support (%s)', (tool) => {
+  describe.each(ALL_TOOLS)('tool support (%s)', (tool) => {
     it(`dispatches with ${tool}`, async () => {
       const harness = createTaskMutationHarness()
       const dispatch = buildDispatchForTool(tool)

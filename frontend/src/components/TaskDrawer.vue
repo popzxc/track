@@ -63,7 +63,6 @@ const startToolModel = computed({
 function remoteAgentToolLabel(tool: RemoteAgentPreferredTool | null | undefined): string {
   switch (tool) {
     case 'claude': return 'Claude'
-    case 'opencode': return 'opencode'
     case 'codex':
     default: return 'Codex'
   }
@@ -225,9 +224,6 @@ function remoteAgentToolLabel(tool: RemoteAgentPreferredTool | null | undefined)
                 </option>
                 <option value="claude">
                   Claude
-                </option>
-                <option value="opencode">
-                  opencode
                 </option>
               </select>
             </label>

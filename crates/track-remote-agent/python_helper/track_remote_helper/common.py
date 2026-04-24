@@ -26,7 +26,6 @@ TOOL_OVERRIDE_ENV_VARS = {
     "gh": "TRACK_REMOTE_HELPER_GH",
     "codex": "TRACK_REMOTE_HELPER_CODEX",
     "claude": "TRACK_REMOTE_HELPER_CLAUDE",
-    "opencode": "TRACK_REMOTE_HELPER_OPENCODE",
 }
 LOCK_ROOT = Path(
     os.environ.get("TRACK_REMOTE_HELPER_LOCK_ROOT", tempfile.gettempdir())

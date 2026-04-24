@@ -19,6 +19,8 @@ from track_remote_helper.common import (
     write_text_with_trailing_newline,
 )
 
+SUPPORTED_AGENT_TOOLS = {"codex", "claude"}
+
 
 def run_worker_from_config(config_path: Path) -> int:
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -35,6 +37,14 @@ def run_worker_from_config(config_path: Path) -> int:
     finished_at_path = run_directory / FINISHED_AT_FILE_NAME
     launcher_pid_path = run_directory / LAUNCHER_PID_FILE_NAME
     events_path = run_directory / CODEX_EVENTS_FILE_NAME
+
+    if preferred_tool not in SUPPORTED_AGENT_TOOLS:
+        write_text_with_trailing_newline(
+            stderr_path, f"Unsupported remote agent tool: {preferred_tool}"
+        )
+        write_text_with_trailing_newline(status_path, "launcher_failed")
+        write_text_with_trailing_newline(finished_at_path, utc_timestamp())
+        return 0
 
     write_text_with_trailing_newline(launcher_pid_path, str(os.getpid()))
 
@@ -98,18 +108,7 @@ def spawn_agent_process(
     events_path: Path,
     shell_prelude: str,
 ) -> subprocess.Popen:
-    if preferred_tool == "opencode":
-        # Opencode outputs JSON event stream; we extract final text on the Rust side
-        # TODO: Consider capturing intermediate events (tool calls, thinking) for debugging
-        tool_args = [
-            resolve_binary("opencode"),
-            "run",
-            "--format", "json",
-            "--add-dir", str(worktree_path),
-        ]
-        stdout_file = result_path.open("w", encoding="utf-8")
-        cwd = worktree_path
-    elif preferred_tool == "claude":
+    if preferred_tool == "claude":
         schema_content = schema_path.read_text(encoding="utf-8").replace("\n", "")
         tool_args = [
             resolve_binary("claude"),
@@ -124,7 +123,7 @@ def spawn_agent_process(
         ]
         stdout_file = result_path.open("w", encoding="utf-8")
         cwd = worktree_path
-    else:
+    elif preferred_tool == "codex":
         tool_args = [
             resolve_binary("codex"),
             "--search",
@@ -141,6 +140,8 @@ def spawn_agent_process(
         ]
         stdout_file = events_path.open("w", encoding="utf-8")
         cwd = run_directory
+    else:
+        raise ValueError(f"Unsupported remote agent tool: {preferred_tool}")
 
     spawn_args = tool_args
     if shell_prelude.strip():

@@ -82,7 +82,7 @@ export interface TasksResponse {
 export type Priority = 'high' | 'medium' | 'low'
 export type Status = 'open' | 'closed'
 export type DispatchStatus = 'preparing' | 'running' | 'succeeded' | 'canceled' | 'failed' | 'blocked'
-export type RemoteAgentPreferredTool = 'codex' | 'claude' | 'opencode'
+export type RemoteAgentPreferredTool = 'codex' | 'claude'
 
 export interface ProjectInfo {
   canonicalName: string
