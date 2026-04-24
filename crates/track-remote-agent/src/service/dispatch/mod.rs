@@ -22,8 +22,7 @@ use crate::constants::PREPARING_STALE_AFTER;
 use crate::prompts::RemoteDispatchPrompt;
 use crate::schemas::RemoteDispatchSchema;
 use crate::types::{
-    ClaudeStructuredOutputEnvelope, OpencodeStructuredOutput, RemoteArtifactCleanupCounts,
-    RemoteTaskCleanupMode,
+    ClaudeStructuredOutputEnvelope, RemoteArtifactCleanupCounts, RemoteTaskCleanupMode,
 };
 use crate::utils::parse_github_repository_name;
 use crate::RemoteRunSnapshotView;
@@ -1144,11 +1143,6 @@ pub(super) fn refresh_dispatch_record_from_snapshot(
         let remote_result = snapshot
             .required_result("Remote agent run completed without producing a structured result.")?;
         let outcome = match record.preferred_tool {
-            RemoteAgentPreferredTool::Opencode => OpencodeStructuredOutput::<
-                RemoteAgentDispatchOutcome,
-            >::parse_result(
-                remote_result, "Remote agent result"
-            )?,
             RemoteAgentPreferredTool::Claude => {
                 ClaudeStructuredOutputEnvelope::<RemoteAgentDispatchOutcome>::parse_result(
                     remote_result,

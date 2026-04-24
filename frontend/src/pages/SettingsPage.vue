@@ -30,8 +30,8 @@ const modal = computed(() => firstQueryValue(route.query.modal))
 const resumeTaskId = computed(() => firstQueryValue(route.query.resumeTask))
 const resumePreferredTool = computed<RemoteAgentPreferredTool>(() => {
   const preferredTool = firstQueryValue(route.query.preferredTool)
-  // TODO: Move `TOOL_CONSTANTS` from tests to actual types and use it instead.
-  if (preferredTool === 'claude' || preferredTool === 'opencode' || preferredTool === 'codex') {
+  // TODO(codex): Move `TOOL_CONSTANTS` from tests to actual types and use it instead.
+  if (preferredTool === 'claude' || preferredTool === 'codex') {
     return preferredTool
   }
 

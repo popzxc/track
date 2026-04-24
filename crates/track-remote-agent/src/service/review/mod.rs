@@ -19,7 +19,7 @@ use super::remote_agent_services::{
 use crate::constants::PREPARING_STALE_AFTER;
 use crate::prompts::RemoteReviewPrompt;
 use crate::schemas::RemoteReviewSchema;
-use crate::types::{ClaudeStructuredOutputEnvelope, OpencodeStructuredOutput};
+use crate::types::ClaudeStructuredOutputEnvelope;
 use crate::RemoteRunSnapshotView;
 use crate::RemoteWorkspace;
 
@@ -686,11 +686,6 @@ impl<'a> RemoteReviewService<'a> {
                 "Remote review run completed without producing a structured result.",
             )?;
             let outcome = match record.preferred_tool {
-                RemoteAgentPreferredTool::Opencode => OpencodeStructuredOutput::<
-                    RemoteAgentReviewOutcome,
-                >::parse_result(
-                    remote_result, "Remote review result"
-                )?,
                 RemoteAgentPreferredTool::Claude => {
                     ClaudeStructuredOutputEnvelope::<RemoteAgentReviewOutcome>::parse_result(
                         remote_result,

@@ -19,18 +19,15 @@ COPY entrypoint.sh /opt/track-testing/entrypoint.sh
 COPY bin/gh /opt/track-testing/bin/gh
 COPY bin/codex /opt/track-testing/bin/codex
 COPY bin/claude /opt/track-testing/bin/claude
-COPY bin/opencode /opt/track-testing/bin/opencode
 COPY mocks/common.py /opt/track-testing/mocks/common.py
 COPY mocks/gh.py /opt/track-testing/mocks/gh.py
 COPY mocks/codex.py /opt/track-testing/mocks/codex.py
 COPY mocks/claude.py /opt/track-testing/mocks/claude.py
-COPY mocks/opencode.py /opt/track-testing/mocks/opencode.py
 
 RUN chmod +x /opt/track-testing/entrypoint.sh \
   /opt/track-testing/bin/gh \
   /opt/track-testing/bin/codex \
-  /opt/track-testing/bin/claude \
-  /opt/track-testing/bin/opencode
+  /opt/track-testing/bin/claude
 
 EXPOSE 22
 

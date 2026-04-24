@@ -30,12 +30,6 @@ if [ ! -f "$RUNTIME_DIR/state/claude.json" ]; then
     > "$RUNTIME_DIR/state/claude.json"
 fi
 
-if [ ! -f "$RUNTIME_DIR/state/opencode.json" ]; then
-  printf '%s\n' \
-    '{"mode":"success","sleepSeconds":0,"status":"succeeded","summary":"Mock opencode completed successfully.","pullRequestUrl":null,"branchName":null,"worktreePath":null,"reviewSubmitted":false,"githubReviewId":null,"githubReviewUrl":null,"reviewBody":null,"notes":null}' \
-    > "$RUNTIME_DIR/state/opencode.json"
-fi
-
 if [ -f "$RUNTIME_DIR/authorized_keys" ]; then
   cp "$RUNTIME_DIR/authorized_keys" "$TRACK_HOME/.ssh/authorized_keys"
 fi

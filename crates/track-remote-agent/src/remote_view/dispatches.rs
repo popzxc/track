@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use track_dal::database::DatabaseContext;
 use track_types::errors::TrackError;
 use track_types::ids::ProjectId;
@@ -29,7 +31,7 @@ pub(super) async fn list_task_dispatches_for_project(
         );
     }
 
-    dispatches.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    dispatches.sort_by_key(|dispatch| Reverse(dispatch.created_at));
     Ok(dispatches)
 }
 
@@ -44,7 +46,7 @@ pub(super) async fn list_reviews_for_project(
         .into_iter()
         .filter(|review| review.project.as_ref() == Some(project_id))
         .collect::<Vec<_>>();
-    reviews.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    reviews.sort_by_key(|review| Reverse(review.updated_at));
 
     Ok(reviews)
 }
@@ -65,6 +67,6 @@ pub(super) async fn list_review_runs_for_project(
         );
     }
 
-    review_runs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    review_runs.sort_by_key(|run| Reverse(run.created_at));
     Ok(review_runs)
 }

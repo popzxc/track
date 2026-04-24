@@ -23,7 +23,6 @@ const pinnedToolLabel = computed(() => {
 
   switch (props.review.preferredTool) {
     case 'claude': return 'Claude'
-    case 'opencode': return 'opencode'
     case 'codex':
     default: return 'Codex'
   }
