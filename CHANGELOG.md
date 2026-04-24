@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/popzxc/track/compare/v0.3.0...v0.4.0) (2026-04-24)
+
+
+### Features
+
+* Get rid of legacy migration ([#22](https://github.com/popzxc/track/issues/22)) ([c750739](https://github.com/popzxc/track/commit/c750739e9885c34f670cdd33a80e8d2b3a8034b2))
+* Major refactoring ([#20](https://github.com/popzxc/track/issues/20)) ([82c91f1](https://github.com/popzxc/track/commit/82c91f14d9d07d905920fd48b734fbcc557d91ca))
+* Support opencode ([#25](https://github.com/popzxc/track/issues/25)) ([666d618](https://github.com/popzxc/track/commit/666d618a5c1128bdae885ce3815a9105072ab495))
+
+
+### Bug Fixes
+
+* Fix macos docker build ([#15](https://github.com/popzxc/track/issues/15)) ([b3f0fdc](https://github.com/popzxc/track/commit/b3f0fdc21bdb6f39767e74c6c1d0e43908a56edb))
+* Refactor frontend ([#21](https://github.com/popzxc/track/issues/21)) ([1b00a41](https://github.com/popzxc/track/commit/1b00a41ab33d3d4b7a90973381000adb08c96198))
+* remove docs backdrop blur ([#18](https://github.com/popzxc/track/issues/18)) ([865a0b3](https://github.com/popzxc/track/commit/865a0b3e4aff3bb178180a208b9cca4d3cbed83e))
+
 ## [0.3.0](https://github.com/popzxc/track/compare/v0.2.0...v0.3.0) (2026-04-02)
 
 
