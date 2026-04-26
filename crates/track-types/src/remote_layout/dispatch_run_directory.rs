@@ -14,7 +14,7 @@ use super::{impl_string_value, WorkspaceKey, REVIEW_RUN_DIRECTORY_NAME, TASK_RUN
 pub struct DispatchRunDirectory(String);
 
 impl DispatchRunDirectory {
-    fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
+    pub fn new(value: impl AsRef<str>) -> Result<Self, TrackError> {
         let trimmed = value.as_ref().trim();
         parse_dispatch_run_directory(trimmed)?;
 

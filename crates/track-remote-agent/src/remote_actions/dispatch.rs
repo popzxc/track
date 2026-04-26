@@ -1,10 +1,10 @@
-use track_types::errors::TrackError;
+use track_types::errors::{ErrorCode, TrackError};
 use track_types::remote_layout::{DispatchRunDirectory, DispatchWorktreePath};
 use track_types::types::RemoteAgentPreferredTool;
 
 use crate::helper::{
     CancelRunRequest, EmptyResponse, LaunchRunRequest, ReadRunSnapshotsRequest,
-    ReadRunSnapshotsResponse,
+    ReadRunSnapshotsResponse, RunSnapshot,
 };
 use crate::ssh::SshClient;
 use crate::{RemoteRunObservedStatus, RemoteRunSnapshotView};
@@ -120,16 +120,58 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
             )
             .await?;
 
-        Ok(response
+        response
             .snapshots
             .into_iter()
-            .map(|snapshot| RemoteRunSnapshotView {
-                run_directory: DispatchRunDirectory::from_db_unchecked(snapshot.run_directory),
-                status: RemoteRunObservedStatus::from_status_file_contents(snapshot.status),
-                result: snapshot.result,
-                stderr: snapshot.stderr,
-                finished_at: snapshot.finished_at,
-            })
-            .collect())
+            .map(remote_snapshot_view)
+            .collect()
+    }
+}
+
+fn remote_snapshot_view(snapshot: RunSnapshot) -> Result<RemoteRunSnapshotView, TrackError> {
+    let run_directory = DispatchRunDirectory::new(&snapshot.run_directory).map_err(|error| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!(
+                "Remote helper returned an invalid run directory `{}` while reading dispatch snapshots: {error}. The remote workspace may be corrupted; reset the remote workspace and retry.",
+                snapshot.run_directory
+            ),
+        )
+    })?;
+
+    Ok(RemoteRunSnapshotView {
+        run_directory,
+        status: RemoteRunObservedStatus::from_status_file_contents(snapshot.status),
+        result: snapshot.result,
+        stderr: snapshot.stderr,
+        finished_at: snapshot.finished_at,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::helper::RunSnapshot;
+    use track_types::errors::ErrorCode;
+
+    use super::remote_snapshot_view;
+
+    #[test]
+    fn rejects_invalid_remote_snapshot_run_directory() {
+        let error = remote_snapshot_view(RunSnapshot {
+            run_directory: "/tmp/not-a-dispatch-run".to_owned(),
+            status: Some("running".to_owned()),
+            result: None,
+            stderr: None,
+            finished_at: None,
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::RemoteDispatchFailed);
+        assert!(
+            error
+                .message()
+                .contains("Remote helper returned an invalid run directory"),
+            "unexpected error: {error}"
+        );
     }
 }
