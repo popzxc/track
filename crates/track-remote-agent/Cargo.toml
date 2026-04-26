@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 slug = { workspace = true }
 tera = { workspace = true }
 time = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process"] }
 tracing = { workspace = true }
 track-config = { workspace = true }
 track-dal = { workspace = true }

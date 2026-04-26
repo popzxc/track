@@ -33,17 +33,19 @@ impl<'a> LaunchRemoteDispatchAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "launch-run",
-            &LaunchRunRequest {
-                run_directory: self.remote_run_directory.as_str(),
-                worktree_path: self.worktree_path.as_str(),
-                preferred_tool: self.preferred_tool,
-                shell_prelude: (!self.ssh_client.shell_prelude().trim().is_empty())
-                    .then_some(self.ssh_client.shell_prelude()),
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "launch-run",
+                &LaunchRunRequest {
+                    run_directory: self.remote_run_directory.as_str(),
+                    worktree_path: self.worktree_path.as_str(),
+                    preferred_tool: self.preferred_tool,
+                    shell_prelude: (!self.ssh_client.shell_prelude().trim().is_empty())
+                        .then_some(self.ssh_client.shell_prelude()),
+                },
+            )
+            .await?;
 
         Ok(())
     }
@@ -67,13 +69,15 @@ impl<'a> CancelRemoteDispatchAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "cancel-run",
-            &CancelRunRequest {
-                run_directory: self.remote_run_directory.as_str(),
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "cancel-run",
+                &CancelRunRequest {
+                    run_directory: self.remote_run_directory.as_str(),
+                },
+            )
+            .await?;
         Ok(())
     }
 }
@@ -96,7 +100,7 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
         if self.run_directories.is_empty() {
             return Ok(Vec::new());
         }
@@ -113,7 +117,8 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
                 &ReadRunSnapshotsRequest {
                     run_directories: &run_directories,
                 },
-            )?;
+            )
+            .await?;
 
         Ok(response
             .snapshots

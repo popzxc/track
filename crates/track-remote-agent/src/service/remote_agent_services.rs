@@ -254,10 +254,13 @@ impl<'a> RemoteAgentServices<'a> {
             }
         }
 
-        let orphan_cleanup_counts = workspace.maintenance().cleanup_orphaned_artifacts(
-            &kept_worktree_paths.into_iter().collect::<Vec<_>>(),
-            &kept_run_directories.into_iter().collect::<Vec<_>>(),
-        )?;
+        let orphan_cleanup_counts = workspace
+            .maintenance()
+            .cleanup_orphaned_artifacts(
+                &kept_worktree_paths.into_iter().collect::<Vec<_>>(),
+                &kept_run_directories.into_iter().collect::<Vec<_>>(),
+            )
+            .await?;
         summary.remote_worktrees_removed += orphan_cleanup_counts.worktrees_removed;
         summary.remote_run_directories_removed += orphan_cleanup_counts.run_directories_removed;
 
@@ -270,7 +273,8 @@ impl<'a> RemoteAgentServices<'a> {
             .collect::<Vec<_>>();
         workspace
             .maintenance()
-            .cleanup_reclaimable_review_workspaces(&reclaimable_review_workspace_keys)?;
+            .cleanup_reclaimable_review_workspaces(&reclaimable_review_workspace_keys)
+            .await?;
 
         tracing::info!(
             closed_tasks_cleaned = summary.closed_tasks_cleaned,
@@ -311,7 +315,8 @@ impl<'a> RemoteAgentServices<'a> {
         let summary = self
             .remote_workspace(remote_agent)?
             .maintenance()
-            .reset_workspace()?;
+            .reset_workspace()
+            .await?;
         invalidate_helper_upload();
         tracing::warn!(
             workspace_entries_removed = summary.workspace_entries_removed,
@@ -388,6 +393,7 @@ impl<'a> RemoteAgentServices<'a> {
             let pull_request_state = workspace
                 .projects()
                 .fetch_pull_request_review_state(pull_request_url, &review_follow_up.main_user)
+                .await
                 .map_err(|error| {
                     contextualize_track_error(
                         error,
@@ -524,6 +530,7 @@ impl<'a> RemoteAgentServices<'a> {
             let notify_reviewer_result = workspace
                 .projects()
                 .post_pull_request_comment(pull_request_url, &notification_comment)
+                .await
                 .map_err(|error| {
                     contextualize_track_error(
                         error,

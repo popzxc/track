@@ -36,7 +36,7 @@ impl<'a> EnsureCheckoutAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<GitRemote, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<GitRemote, TrackError> {
         let git_url = self.metadata.git_url.clone().into_remote_string();
         let response = self
             .ssh_client
@@ -50,7 +50,8 @@ impl<'a> EnsureCheckoutAction<'a> {
                     checkout_path: self.checkout_path.as_str(),
                     github_login: self.github_login,
                 },
-            )?;
+            )
+            .await?;
         let fork_git_url = response.fork_git_url;
 
         let fork_git_url = fork_git_url.trim();
@@ -100,16 +101,18 @@ impl<'a> CreateWorktreeAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "create-worktree",
-            &CreateWorktreeRequest {
-                checkout_path: self.checkout_path.as_str(),
-                base_branch: self.base_branch,
-                branch_name: self.branch_name.as_str(),
-                worktree_path: self.worktree_path.as_str(),
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "create-worktree",
+                &CreateWorktreeRequest {
+                    checkout_path: self.checkout_path.as_str(),
+                    base_branch: self.base_branch,
+                    branch_name: self.branch_name.as_str(),
+                    worktree_path: self.worktree_path.as_str(),
+                },
+            )
+            .await?;
 
         Ok(())
     }
@@ -145,17 +148,19 @@ impl<'a> CreateReviewWorktreeAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "create-review-worktree",
-            &CreateReviewWorktreeRequest {
-                checkout_path: self.checkout_path.as_str(),
-                pull_request_number: self.pull_request_number,
-                branch_name: self.branch_name.as_str(),
-                worktree_path: self.worktree_path.as_str(),
-                target_head_oid: self.target_head_oid,
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "create-review-worktree",
+                &CreateReviewWorktreeRequest {
+                    checkout_path: self.checkout_path.as_str(),
+                    pull_request_number: self.pull_request_number,
+                    branch_name: self.branch_name.as_str(),
+                    worktree_path: self.worktree_path.as_str(),
+                    target_head_oid: self.target_head_oid,
+                },
+            )
+            .await?;
 
         Ok(())
     }
@@ -185,15 +190,17 @@ impl<'a> EnsureFollowUpWorktreeAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "ensure-follow-up-worktree",
-            &EnsureFollowUpWorktreeRequest {
-                checkout_path: self.checkout_path.as_str(),
-                branch_name: self.branch_name.as_str(),
-                worktree_path: self.worktree_path.as_str(),
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "ensure-follow-up-worktree",
+                &EnsureFollowUpWorktreeRequest {
+                    checkout_path: self.checkout_path.as_str(),
+                    branch_name: self.branch_name.as_str(),
+                    worktree_path: self.worktree_path.as_str(),
+                },
+            )
+            .await?;
 
         Ok(())
     }

@@ -63,7 +63,8 @@ impl<'a> RemoteReviewService<'a> {
         let workspace = self.remote_workspace(remote_agent.clone())?;
         let pull_request_metadata = workspace
             .projects()
-            .fetch_pull_request_metadata(&validated_input.pull_request_url)?;
+            .fetch_pull_request_metadata(&validated_input.pull_request_url)
+            .await?;
         let initial_target_head_oid = pull_request_metadata.head_oid.clone();
         let project_match = self
             .project_repository()
@@ -205,7 +206,8 @@ impl<'a> RemoteReviewService<'a> {
         let workspace = self.remote_workspace(remote_agent.clone())?;
         let pull_request_metadata = workspace
             .projects()
-            .fetch_pull_request_metadata(&review.pull_request_url)?;
+            .fetch_pull_request_metadata(&review.pull_request_url)
+            .await?;
         let previous_updated_at = review.updated_at;
         review.updated_at = now_utc();
         self.review_repository().save_review(&review).await?;
@@ -305,7 +307,7 @@ impl<'a> RemoteReviewService<'a> {
                 tracing::info!("Review launch stopped while refreshing checkout because run is no longer active");
                 return Ok::<(), TrackError>(());
             }
-            let checkout_path = workspace.projects().ensure_review_checkout(&review)?;
+            let checkout_path = workspace.projects().ensure_review_checkout(&review).await?;
             tracing::info!(checkout_path = ?checkout_path, "Remote review checkout is ready");
 
             if !self
@@ -320,7 +322,8 @@ impl<'a> RemoteReviewService<'a> {
                 &checkout_path,
                 review.pull_request_number,
                 dispatch_record.target_head_oid.as_deref(),
-            )?;
+            )
+            .await?;
             tracing::info!("Prepared remote review worktree");
 
             let dispatch_history = self
@@ -347,7 +350,8 @@ impl<'a> RemoteReviewService<'a> {
             }
             workspace
                 .review_runs()
-                .upload_run_files(&dispatch_record, &prompt, &schema)?;
+                .upload_run_files(&dispatch_record, &prompt, &schema)
+                .await?;
             tracing::info!("Uploaded remote review prompt and schema");
 
             let dispatch_is_still_active = self
@@ -371,7 +375,7 @@ impl<'a> RemoteReviewService<'a> {
                 tracing::info!("Review launch stopped before remote agent start because run is no longer active");
                 return Ok(());
             }
-            workspace.review_runs().launch(&dispatch_record)?;
+            workspace.review_runs().launch(&dispatch_record).await?;
             tracing::info!("Started remote review agent process");
 
             Ok(())
@@ -547,7 +551,8 @@ impl<'a> RemoteReviewService<'a> {
         };
         let snapshots_by_dispatch_id = workspace
             .review_runs()
-            .load_snapshots_for_active_records(&records)?;
+            .load_snapshots_for_active_records(&records)
+            .await?;
         let mut refreshed_records = Vec::with_capacity(records.len());
         for record in records {
             if !record.status.is_active() {
@@ -878,6 +883,7 @@ impl<'a> RemoteReviewService<'a> {
         workspace
             .review_runs()
             .cancel(dispatch_record)
+            .await
             .map(|_| ())?;
         tracing::info!(
             dispatch_id = %dispatch_record.dispatch_id,
@@ -936,6 +942,7 @@ impl<'a> RemoteReviewService<'a> {
         workspace
             .review_runs()
             .cleanup(review, dispatch_history)
+            .await
             .map(|_| ())?;
         tracing::info!(
             review_id = %review.id,

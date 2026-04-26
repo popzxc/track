@@ -10,14 +10,16 @@ use crate::ssh::SshClient;
 // The remote view only needs a tiny read-only subset of shell access today.
 // These helpers keep that contract explicit so the rest of the module can talk
 // in terms of "list directories" instead of embedding ad-hoc shell snippets.
-pub(super) fn list_directories(
+pub(super) async fn list_directories(
     ssh_client: &SshClient,
     remote_path: &str,
 ) -> Result<Vec<String>, TrackError> {
-    let response = ssh_client.run_helper_json::<_, ListDirectoriesResponse>(
-        "list-directories",
-        &ListDirectoriesRequest { path: remote_path },
-    )?;
+    let response = ssh_client
+        .run_helper_json::<_, ListDirectoriesResponse>(
+            "list-directories",
+            &ListDirectoriesRequest { path: remote_path },
+        )
+        .await?;
 
     response
         .paths

@@ -31,7 +31,7 @@ pub(super) async fn load_task_dispatch_views(
         .dispatch_repository()
         .dispatches_for_task(task_id)
         .await?;
-    map_task_dispatch_views(remote_agent, ssh_client, records)
+    map_task_dispatch_views(remote_agent, ssh_client, records).await
 }
 
 pub(super) async fn load_task_dispatch_views_for_project(
@@ -41,7 +41,7 @@ pub(super) async fn load_task_dispatch_views_for_project(
     project_id: &ProjectId,
 ) -> Result<Vec<TaskDispatchView>, TrackError> {
     let records = dispatches::list_task_dispatches_for_project(database, project_id).await?;
-    map_task_dispatch_views(remote_agent, ssh_client, records)
+    map_task_dispatch_views(remote_agent, ssh_client, records).await
 }
 
 pub(super) async fn load_review_run_views(
@@ -54,7 +54,7 @@ pub(super) async fn load_review_run_views(
         .review_dispatch_repository()
         .dispatches_for_review(review_id)
         .await?;
-    map_review_run_views(remote_agent, ssh_client, records)
+    map_review_run_views(remote_agent, ssh_client, records).await
 }
 
 pub(super) async fn load_review_run_views_for_project(
@@ -64,7 +64,7 @@ pub(super) async fn load_review_run_views_for_project(
     project_id: &ProjectId,
 ) -> Result<Vec<ReviewRunView>, TrackError> {
     let records = dispatches::list_review_runs_for_project(database, project_id).await?;
-    map_review_run_views(remote_agent, ssh_client, records)
+    map_review_run_views(remote_agent, ssh_client, records).await
 }
 
 pub(super) fn list_task_run_directories(
@@ -93,7 +93,7 @@ pub(super) fn list_review_run_directories(
     run_directories
 }
 
-fn map_task_dispatch_views(
+async fn map_task_dispatch_views(
     remote_agent: &RemoteAgentRuntimeConfig,
     ssh_client: &SshClient,
     records: Vec<TaskDispatchRecord>,
@@ -102,7 +102,7 @@ fn map_task_dispatch_views(
         .iter()
         .map(|record| derive_task_run_directory(record, remote_agent))
         .collect::<Vec<_>>();
-    let snapshots = load_snapshots(ssh_client, &run_directories)?;
+    let snapshots = load_snapshots(ssh_client, &run_directories).await?;
 
     Ok(records
         .into_iter()
@@ -117,7 +117,7 @@ fn map_task_dispatch_views(
         .collect())
 }
 
-fn map_review_run_views(
+async fn map_review_run_views(
     remote_agent: &RemoteAgentRuntimeConfig,
     ssh_client: &SshClient,
     records: Vec<ReviewRunRecord>,
@@ -126,7 +126,7 @@ fn map_review_run_views(
         .iter()
         .map(|record| derive_review_run_directory(record, remote_agent))
         .collect::<Vec<_>>();
-    let snapshots = load_snapshots(ssh_client, &run_directories)?;
+    let snapshots = load_snapshots(ssh_client, &run_directories).await?;
 
     Ok(records
         .into_iter()
@@ -171,7 +171,7 @@ pub(super) fn derive_review_run_directory(
     )
 }
 
-pub(super) fn load_snapshots(
+pub(super) async fn load_snapshots(
     ssh_client: &SshClient,
     run_directories: &[DispatchRunDirectory],
 ) -> Result<BTreeMap<String, RemoteRunSnapshotView>, TrackError> {
@@ -179,7 +179,9 @@ pub(super) fn load_snapshots(
         return Ok(BTreeMap::new());
     }
 
-    let snapshots = ReadDispatchSnapshotsAction::new(ssh_client, run_directories).execute()?;
+    let snapshots = ReadDispatchSnapshotsAction::new(ssh_client, run_directories)
+        .execute()
+        .await?;
     Ok(snapshots
         .into_iter()
         .map(|snapshot| (snapshot.run_directory.as_str().to_owned(), snapshot))

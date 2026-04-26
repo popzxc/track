@@ -272,7 +272,8 @@ impl<'a> RemoteDispatchService<'a> {
             }
             let checkout_path = workspace
                 .projects()
-                .ensure_task_checkout(&task.project, &project_metadata)?;
+                .ensure_task_checkout(&task.project, &project_metadata)
+                .await?;
             tracing::info!(checkout_path = ?checkout_path, "Remote checkout is ready");
 
             if !self
@@ -284,12 +285,15 @@ impl<'a> RemoteDispatchService<'a> {
                 );
                 return Ok::<(), TrackError>(());
             }
-            workspace.task_runs().prepare_worktree(
-                &dispatch_record,
-                &checkout_path,
-                &project_metadata.base_branch,
-                dispatch_record.follow_up_request.is_some(),
-            )?;
+            workspace
+                .task_runs()
+                .prepare_worktree(
+                    &dispatch_record,
+                    &checkout_path,
+                    &project_metadata.base_branch,
+                    dispatch_record.follow_up_request.is_some(),
+                )
+                .await?;
             tracing::info!("Prepared remote task worktree");
 
             let prompt = RemoteDispatchPrompt::new(
@@ -317,7 +321,8 @@ impl<'a> RemoteDispatchService<'a> {
             }
             workspace
                 .task_runs()
-                .upload_run_files(&dispatch_record, &prompt, &schema)?;
+                .upload_run_files(&dispatch_record, &prompt, &schema)
+                .await?;
             tracing::info!("Uploaded remote task prompt and schema");
 
             // Cancellation can arrive while the API is still preparing the
@@ -344,7 +349,7 @@ impl<'a> RemoteDispatchService<'a> {
                 );
                 return Ok(());
             }
-            workspace.task_runs().launch(&dispatch_record)?;
+            workspace.task_runs().launch(&dispatch_record).await?;
             tracing::info!("Started remote task agent process");
 
             Ok(())
@@ -665,6 +670,7 @@ impl<'a> RemoteDispatchService<'a> {
         let snapshots_by_dispatch_id = match workspace
             .task_runs()
             .load_snapshots_for_active_records(&records)
+            .await
         {
             Ok(snapshots) => snapshots,
             Err(error) => {
@@ -818,14 +824,17 @@ impl<'a> RemoteDispatchService<'a> {
         let checkout_path = workspace
             .projects()
             .resolve_checkout_path_for_project(&dispatch_history[0].project);
-        let summary = workspace.task_runs().cleanup(
-            &checkout_path,
-            dispatch_history,
-            match cleanup_mode {
-                RemoteTaskCleanupMode::CloseTask => RemoteTaskArtifactCleanupMode::CloseTask,
-                RemoteTaskCleanupMode::DeleteTask => RemoteTaskArtifactCleanupMode::DeleteTask,
-            },
-        )?;
+        let summary = workspace
+            .task_runs()
+            .cleanup(
+                &checkout_path,
+                dispatch_history,
+                match cleanup_mode {
+                    RemoteTaskCleanupMode::CloseTask => RemoteTaskArtifactCleanupMode::CloseTask,
+                    RemoteTaskCleanupMode::DeleteTask => RemoteTaskArtifactCleanupMode::DeleteTask,
+                },
+            )
+            .await?;
 
         let cleanup_counts = RemoteArtifactCleanupCounts {
             worktrees_removed: summary.worktrees_removed,
@@ -926,7 +935,11 @@ impl<'a> RemoteDispatchService<'a> {
         };
         let workspace = self.remote_workspace(remote_agent)?;
         let _ = worktree_path;
-        workspace.task_runs().cancel(dispatch_record).map(|_| ())?;
+        workspace
+            .task_runs()
+            .cancel(dispatch_record)
+            .await
+            .map(|_| ())?;
         tracing::info!(
             dispatch_id = %dispatch_record.dispatch_id,
             "Issued remote cancellation for task dispatch"
