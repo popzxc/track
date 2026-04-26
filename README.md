@@ -24,15 +24,6 @@ Start here:
 just run-docs
 ```
 
-## Repository shape
-
-- `crates/track-core`: shared backend behavior and remote-agent orchestration
-- `crates/track-capture`: local parsing and model resolution
-- `crates/track-cli`: CLI entrypoint
-- `crates/track-api`: Axum backend and static asset serving
-- `frontend/`: Vue WebUI
-- `docs/`: Astro Starlight documentation
-
 ## License
 
 `track` is licensed under [MIT](./LICENSE).

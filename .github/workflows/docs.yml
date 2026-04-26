@@ -9,7 +9,6 @@ on:
       - 'docs/**'
       - 'README.md'
       - 'SETUP.md'
-      - 'ARCHITECTURE.md'
   workflow_dispatch:
 
 permissions:

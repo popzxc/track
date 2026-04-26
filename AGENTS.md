@@ -1,5 +1,6 @@
 # AGENTS.md
 
+- Prefer using `just` for running actions on the workspace unless there is a reason not to.
 - After significant changes, run all the tests, even if the code you changed doesn't seem much.
 - Add reasons for why the code exists if it's not obvious.
 - Prefer few high-signal tests over a ton of low-signal ones.
