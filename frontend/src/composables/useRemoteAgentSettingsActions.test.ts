@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import type { RemoteAgentPreferredTool } from '../api/types'
+import { REMOTE_AGENT_TOOLS } from '../api/types'
 import * as apiClient from '../api/client'
 import { buildRemoteAgentSettings, buildTask } from '../testing/factories'
-import { TOOL_CONSTANTS } from '../testing/constants'
 import { useRemoteAgentSettingsActions } from './useRemoteAgentSettingsActions'
 
 afterEach(() => {
@@ -64,16 +64,16 @@ describe('useRemoteAgentSettingsActions', () => {
     const queuedTask = buildTask()
     const savedSettings = buildRemoteAgentSettings(
       { shellPrelude: 'export PATH=/srv/tools:$PATH' },
-      { preferredTool: TOOL_CONSTANTS.CLAUDE },
+      { preferredTool: REMOTE_AGENT_TOOLS.CLAUDE },
     )
     harness.taskPendingRunnerSetup.value = {
       task: queuedTask,
-      preferredTool: TOOL_CONSTANTS.CLAUDE,
+      preferredTool: REMOTE_AGENT_TOOLS.CLAUDE,
     }
     vi.spyOn(apiClient, 'updateRemoteAgentSettings').mockResolvedValue(savedSettings)
 
     await harness.actions.saveRemoteAgentSetup({
-      preferredTool: TOOL_CONSTANTS.CLAUDE,
+      preferredTool: REMOTE_AGENT_TOOLS.CLAUDE,
       shellPrelude: 'export PATH=/srv/tools:$PATH',
     })
     await vi.runAllTimersAsync()
@@ -81,6 +81,6 @@ describe('useRemoteAgentSettingsActions', () => {
     expect(harness.remoteAgentSettings.value).toEqual(savedSettings)
     expect(harness.editingRemoteAgentSetup.value).toBe(false)
     expect(harness.taskPendingRunnerSetup.value).toBeNull()
-    expect(harness.resumeQueuedTaskDispatch).toHaveBeenCalledWith(queuedTask, TOOL_CONSTANTS.CLAUDE)
+    expect(harness.resumeQueuedTaskDispatch).toHaveBeenCalledWith(queuedTask, REMOTE_AGENT_TOOLS.CLAUDE)
   })
 })

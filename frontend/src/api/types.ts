@@ -82,7 +82,17 @@ export interface TasksResponse {
 export type Priority = 'high' | 'medium' | 'low'
 export type Status = 'open' | 'closed'
 export type DispatchStatus = 'preparing' | 'running' | 'succeeded' | 'canceled' | 'failed' | 'blocked'
+
+export const REMOTE_AGENT_TOOLS = {
+  CODEX: 'codex',
+  CLAUDE: 'claude',
+} as const
+
 export type RemoteAgentPreferredTool = 'codex' | 'claude'
+
+export function isRemoteAgentPreferredTool(value: unknown): value is RemoteAgentPreferredTool {
+  return value === REMOTE_AGENT_TOOLS.CODEX || value === REMOTE_AGENT_TOOLS.CLAUDE
+}
 
 export interface ProjectInfo {
   canonicalName: string

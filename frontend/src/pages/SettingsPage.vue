@@ -14,6 +14,10 @@ import type {
   RemoteResetSummary,
   Task,
 } from '../types/task'
+import {
+  REMOTE_AGENT_TOOLS,
+  isRemoteAgentPreferredTool,
+} from '../types/task'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,12 +32,11 @@ const modal = computed(() => firstQueryValue(route.query.modal))
 const resumeTaskId = computed(() => firstQueryValue(route.query.resumeTask))
 const resumePreferredTool = computed<RemoteAgentPreferredTool>(() => {
   const preferredTool = firstQueryValue(route.query.preferredTool)
-  // TODO(codex): Move `TOOL_CONSTANTS` from tests to actual types and use it instead.
-  if (preferredTool === 'claude' || preferredTool === 'codex') {
+  if (isRemoteAgentPreferredTool(preferredTool)) {
     return preferredTool
   }
 
-  return 'codex'
+  return REMOTE_AGENT_TOOLS.CODEX
 })
 
 const editingRemoteAgentSetup = computed<boolean>({
