@@ -4,9 +4,9 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use track_dal::database::DatabaseContext;
 
-use track_remote_agent::RemoteAgentServices;
+use track_remote_agent::RemoteAgentRuntimeServices;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::types::{ActiveRemoteRun, RemoteRunOwner};
+use track_types::types::{ActiveRemoteRun, RemoteRunOwner, ReviewRunRecord, TaskDispatchRecord};
 
 use crate::backend_config::RemoteAgentConfigService;
 
@@ -28,8 +28,21 @@ impl AppState {
         }
     }
 
-    pub(crate) fn remote_agent_services(&self) -> RemoteAgentServices<'_> {
-        RemoteAgentServices::new(&self.config_service, &self.database)
+    pub(crate) async fn remote_agent_runtime_services(
+        &self,
+    ) -> Result<RemoteAgentRuntimeServices<'_>, TrackError> {
+        let remote_agent = self
+            .config_service
+            .load_remote_agent_runtime_config()
+            .await?
+            .ok_or_else(|| {
+                TrackError::new(
+                    ErrorCode::RemoteAgentNotConfigured,
+                    "Remote agent configuration is missing. Configure remote-agent settings before using remote runs.",
+                )
+            })?;
+
+        RemoteAgentRuntimeServices::new(remote_agent, &self.database)
     }
 
     pub(crate) async fn remote_agent_operation_guard(&self) -> RwLockReadGuard<'_, ()> {
@@ -57,6 +70,38 @@ impl AppState {
                 describe_active_remote_runs(&active_runs)
             ),
         ))
+    }
+
+    pub(crate) async fn refresh_task_dispatch_records_if_active(
+        &self,
+        records: Vec<TaskDispatchRecord>,
+    ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
+        if records.iter().all(|record| !record.run.status.is_active()) {
+            return Ok(records);
+        }
+
+        let _remote_agent_operation_guard = self.remote_agent_operation_guard().await;
+        self.remote_agent_runtime_services()
+            .await?
+            .dispatch()
+            .refresh_active_dispatch_records(records)
+            .await
+    }
+
+    pub(crate) async fn refresh_review_run_records_if_active(
+        &self,
+        records: Vec<ReviewRunRecord>,
+    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
+        if records.iter().all(|record| !record.run.status.is_active()) {
+            return Ok(records);
+        }
+
+        let _remote_agent_operation_guard = self.remote_agent_operation_guard().await;
+        self.remote_agent_runtime_services()
+            .await?
+            .review()
+            .refresh_active_review_dispatch_records(records)
+            .await
     }
 }
 

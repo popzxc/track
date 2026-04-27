@@ -1,4 +1,5 @@
-use track_config::paths::collapse_home_path;
+use std::sync::Arc;
+
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::database::DatabaseContext;
 use track_dal::project_repository::ProjectRepository;
@@ -10,7 +11,6 @@ use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::now_utc;
 use track_types::types::{CreateReviewInput, DispatchStatus, ReviewRecord, ReviewRunRecord};
 
-use super::remote_agent_services::RemoteAgentConfigProvider;
 use crate::RemoteWorkspace;
 
 pub(crate) use self::guard::ReviewDispatchStartGuard;
@@ -21,8 +21,8 @@ mod launch;
 mod refresh;
 
 pub struct RemoteReviewService<'a> {
-    pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
     pub(super) database: &'a DatabaseContext,
+    pub(super) workspace: Arc<RemoteWorkspace>,
 }
 
 impl<'a> RemoteReviewService<'a> {
@@ -51,9 +51,10 @@ impl<'a> RemoteReviewService<'a> {
         input: CreateReviewInput,
     ) -> Result<(ReviewRecord, ReviewRunRecord), TrackError> {
         let validated_input = input.validate();
-        let (remote_agent, review_settings) = self.load_review_runtime_prerequisites().await?;
-        let workspace = self.remote_workspace(remote_agent.clone())?;
-        let pull_request_metadata = workspace
+        let review_settings = self.load_review_runtime_prerequisites().await?;
+        let remote_agent = self.workspace.remote_agent();
+        let pull_request_metadata = self
+            .workspace
             .projects()
             .fetch_pull_request_metadata(&validated_input.pull_request_url)
             .await?;
@@ -190,13 +191,14 @@ impl<'a> RemoteReviewService<'a> {
             ));
         }
 
-        let (remote_agent, mut review) = self.load_review_dispatch_prerequisites(review_id).await?;
+        let mut review = self.load_review_dispatch_prerequisites(review_id).await?;
         let _dispatch_start_guard = ReviewDispatchStartGuard::acquire(review_id);
         self.ensure_no_blocking_active_review_dispatch(review_id)
             .await?;
 
-        let workspace = self.remote_workspace(remote_agent.clone())?;
-        let pull_request_metadata = workspace
+        let remote_agent = self.workspace.remote_agent();
+        let pull_request_metadata = self
+            .workspace
             .projects()
             .fetch_pull_request_metadata(&review.pull_request_url)
             .await?;
@@ -269,33 +271,6 @@ impl<'a> RemoteReviewService<'a> {
         self.refresh_active_review_dispatch_records(records).await
     }
 
-    pub async fn dispatch_history_for_review(
-        &self,
-        review_id: &ReviewId,
-    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        let mut records = self
-            .review_dispatch_repository()
-            .dispatches_for_review(review_id)
-            .await?;
-        if records
-            .first()
-            .is_some_and(|record| record.run.status.is_active())
-        {
-            if let Some(refreshed_latest) = self
-                .latest_dispatches_for_reviews(std::slice::from_ref(review_id))
-                .await?
-                .into_iter()
-                .next()
-            {
-                if let Some(first_record) = records.first_mut() {
-                    *first_record = refreshed_latest;
-                }
-            }
-        }
-
-        Ok(records)
-    }
-
     pub async fn cancel_dispatch(
         &self,
         review_id: &ReviewId,
@@ -315,6 +290,9 @@ impl<'a> RemoteReviewService<'a> {
                 .cleanup_review_remote_artifacts(&review, &dispatch_history)
                 .await
             {
+                if !remote_cleanup_can_be_skipped(&error) {
+                    return Err(error);
+                }
                 tracing::warn!(error = %error, "Skipping remote cleanup while deleting review");
             }
 
@@ -328,7 +306,7 @@ impl<'a> RemoteReviewService<'a> {
         Ok(())
     }
 
-    async fn refresh_active_review_dispatch_records(
+    pub async fn refresh_active_review_dispatch_records(
         &self,
         records: Vec<ReviewRunRecord>,
     ) -> Result<Vec<ReviewRunRecord>, TrackError> {
@@ -457,33 +435,11 @@ impl<'a> RemoteReviewService<'a> {
         &self,
         dispatch_record: &ReviewRunRecord,
     ) -> Result<(), TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()
-            .await?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    "Remote dispatch is not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
-
         let Some(worktree_path) = dispatch_record.run.worktree_path.as_ref() else {
             return Ok(());
         };
-        let workspace = self.remote_workspace(remote_agent)?;
         let _ = worktree_path;
-        workspace
+        self.workspace
             .review_runs()
             .cancel(dispatch_record)
             .await
@@ -538,11 +494,7 @@ impl<'a> RemoteReviewService<'a> {
             return Ok(());
         }
 
-        let remote_agent = self
-            .load_remote_agent_for_review_cleanup(&review.id)
-            .await?;
-        let workspace = self.remote_workspace(remote_agent)?;
-        workspace
+        self.workspace
             .review_runs()
             .cleanup(review, dispatch_history)
             .await
@@ -564,29 +516,8 @@ impl<'a> RemoteReviewService<'a> {
     // later follow-up runs should only depend on the remote runner itself still
     // being usable, not on the mutable global review-follow-up block still
     // existing in the current config.
-    async fn load_review_runner_prerequisites(
-        &self,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()
-            .await?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    "Remote reviews are not configured yet. Re-run `track` and add a remote agent host plus SSH key.",
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
+    fn ensure_review_runner_prerequisites(&self) -> Result<(), TrackError> {
+        let remote_agent = self.workspace.remote_agent();
 
         if remote_agent
             .shell_prelude
@@ -601,19 +532,14 @@ impl<'a> RemoteReviewService<'a> {
             ));
         }
 
-        Ok(remote_agent)
+        Ok(())
     }
 
     async fn load_review_runtime_prerequisites(
         &self,
-    ) -> Result<
-        (
-            RemoteAgentRuntimeConfig,
-            RemoteAgentReviewFollowUpRuntimeConfig,
-        ),
-        TrackError,
-    > {
-        let remote_agent = self.load_review_runner_prerequisites().await?;
+    ) -> Result<RemoteAgentReviewFollowUpRuntimeConfig, TrackError> {
+        self.ensure_review_runner_prerequisites()?;
+        let remote_agent = self.workspace.remote_agent();
         let review_settings = remote_agent.review_follow_up.clone().ok_or_else(|| {
             TrackError::new(
                 ErrorCode::InvalidRemoteAgentConfig,
@@ -621,54 +547,17 @@ impl<'a> RemoteReviewService<'a> {
             )
         })?;
 
-        Ok((remote_agent, review_settings))
+        Ok(review_settings)
     }
 
     pub(super) async fn load_review_dispatch_prerequisites(
         &self,
         review_id: &ReviewId,
-    ) -> Result<(RemoteAgentRuntimeConfig, ReviewRecord), TrackError> {
-        let remote_agent = self.load_review_runner_prerequisites().await?;
+    ) -> Result<ReviewRecord, TrackError> {
+        self.ensure_review_runner_prerequisites()?;
         let review = self.review_repository().get_review(review_id).await?;
 
-        Ok((remote_agent, review))
-    }
-
-    async fn load_remote_agent_for_review_cleanup(
-        &self,
-        review_id: &ReviewId,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()
-            .await?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    format!(
-                        "Review {review_id} has remote history, but remote-agent configuration is missing so cleanup cannot run."
-                    ),
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning review {review_id}.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
-
-        Ok(remote_agent)
-    }
-
-    fn remote_workspace(
-        &self,
-        remote_agent: RemoteAgentRuntimeConfig,
-    ) -> Result<RemoteWorkspace, TrackError> {
-        RemoteWorkspace::new(remote_agent, self.database.clone())
+        Ok(review)
     }
 }
 
@@ -691,6 +580,10 @@ fn first_follow_up_line(follow_up_request: &str) -> String {
         .find(|line| !line.is_empty())
         .unwrap_or("Continue the previous remote review.")
         .to_owned()
+}
+
+fn remote_cleanup_can_be_skipped(error: &TrackError) -> bool {
+    matches!(error.code, ErrorCode::RemoteDispatchFailed)
 }
 
 pub(super) fn select_previous_submitted_review_run<'a>(

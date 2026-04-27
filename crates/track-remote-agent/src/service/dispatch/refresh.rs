@@ -21,8 +21,7 @@ pub(super) async fn refresh_active_dispatch_records(
     records: Vec<TaskDispatchRecord>,
 ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
     refresh_active_remote_run_records(
-        service.config_service,
-        service.database,
+        &service.workspace,
         &TaskDispatchRefreshAdapter { service },
         records,
     )
@@ -40,8 +39,6 @@ impl RemoteRunRefreshAdapter for TaskDispatchRefreshAdapter<'_, '_> {
     fn messages(&self) -> RemoteRunRefreshMessages {
         RemoteRunRefreshMessages {
             run_kind: "task_dispatch",
-            unavailable_locally_summary:
-                "Remote reconciliation is unavailable locally, so active runs were released.",
             snapshot_load_failed_summary: Some(
                 "Remote reconciliation could not reach the remote machine, so active runs were released locally.",
             ),

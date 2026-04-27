@@ -50,15 +50,6 @@ impl TrackError {
     pub fn message(&self) -> &str {
         &self.message
     }
-
-    pub fn remote_unavailable(&self) -> bool {
-        matches!(
-            self.code,
-            ErrorCode::ConfigNotFound
-                | ErrorCode::InvalidConfig
-                | ErrorCode::InvalidRemoteAgentConfig
-        )
-    }
 }
 
 impl fmt::Display for ErrorCode {

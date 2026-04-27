@@ -50,9 +50,13 @@ pub(crate) async fn list_reviews(
         .map(|review| review.id.clone())
         .collect::<Vec<_>>();
     let latest_runs = state
-        .remote_agent_services()
-        .review()
+        .database
+        .review_dispatch_repository()
         .latest_dispatches_for_reviews(&review_ids)
+        .await
+        .map_err(ApiError::from_track_error)?;
+    let latest_runs = state
+        .refresh_review_run_records_if_active(latest_runs)
         .await
         .map_err(ApiError::from_track_error)?;
     let latest_runs_by_review_id = latest_runs
@@ -77,9 +81,13 @@ pub(crate) async fn list_review_runs(
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunsResponse>, ApiError> {
     let runs = state
-        .remote_agent_services()
-        .review()
-        .dispatch_history_for_review(&id)
+        .database
+        .review_dispatch_repository()
+        .dispatches_for_review(&id)
+        .await
+        .map_err(ApiError::from_track_error)?;
+    let runs = state
+        .refresh_review_run_records_if_active(runs)
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!(run_count = runs.len(), "Listed review run history");
@@ -98,7 +106,9 @@ pub(crate) async fn create_review(
     let (review, run) = {
         let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
         state
-            .remote_agent_services()
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
             .review()
             .create_review(input)
             .await
@@ -137,7 +147,9 @@ pub(crate) async fn follow_up_review(
     let run = {
         let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
         state
-            .remote_agent_services()
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
             .review()
             .queue_follow_up_review_dispatch(&id, &input.request)
             .await
@@ -166,11 +178,28 @@ pub(crate) async fn delete_review(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<DeleteReviewResponse>, ApiError> {
-    {
+    let has_dispatch_history = !state
+        .database
+        .review_dispatch_repository()
+        .dispatches_for_review(&id)
+        .await
+        .map_err(ApiError::from_track_error)?
+        .is_empty();
+
+    if has_dispatch_history {
         let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
         state
-            .remote_agent_services()
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
             .review()
+            .delete_review(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    } else {
+        state
+            .database
+            .review_repository()
             .delete_review(&id)
             .await
             .map_err(ApiError::from_track_error)?;
@@ -189,7 +218,9 @@ pub(crate) async fn cancel_review_dispatch(
     let canceled_dispatch = {
         let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
         state
-            .remote_agent_services()
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
             .review()
             .cancel_dispatch(&id)
             .await
@@ -211,11 +242,16 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
             remote_host = %queued_dispatch.run.remote_host,
             "Starting background review launch"
         );
-        let launch_result = state
-            .remote_agent_services()
-            .review()
-            .launch_prepared_review(queued_dispatch.clone())
-            .await;
+        let launch_result = async {
+            let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+            state
+                .remote_agent_runtime_services()
+                .await?
+                .review()
+                .launch_prepared_review(queued_dispatch.clone())
+                .await
+        }
+        .await;
 
         if let Err(join_error) = launch_result {
             tracing::error!(

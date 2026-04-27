@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
 use track_dal::database::DatabaseContext;
 use track_dal::dispatch_repository::DispatchRepository;
@@ -54,36 +54,20 @@ fn review_notification_decision(
     }
 }
 
-#[async_trait::async_trait]
-pub trait RemoteAgentConfigProvider: Send + Sync {
-    async fn load_remote_agent_runtime_config(
-        &self,
-    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError>;
-}
-
-#[async_trait::async_trait]
-impl<T: RemoteAgentConfigProvider + ?Sized> RemoteAgentConfigProvider for std::sync::Arc<T> {
-    async fn load_remote_agent_runtime_config(
-        &self,
-    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        (**self).load_remote_agent_runtime_config().await
-    }
-}
-
-pub struct RemoteAgentServices<'a> {
-    config_service: &'a dyn RemoteAgentConfigProvider,
+pub struct RemoteAgentRuntimeServices<'a> {
     database: &'a DatabaseContext,
+    workspace: Arc<RemoteWorkspace>,
 }
 
-impl<'a> RemoteAgentServices<'a> {
+impl<'a> RemoteAgentRuntimeServices<'a> {
     pub fn new(
-        config_service: &'a dyn RemoteAgentConfigProvider,
+        remote_agent: RemoteAgentRuntimeConfig,
         database: &'a DatabaseContext,
-    ) -> Self {
-        Self {
-            config_service,
+    ) -> Result<Self, TrackError> {
+        Ok(Self {
             database,
-        }
+            workspace: Arc::new(RemoteWorkspace::new(remote_agent, database.clone())?),
+        })
     }
 
     fn dispatch_repository(&self) -> DispatchRepository<'a> {
@@ -108,15 +92,15 @@ impl<'a> RemoteAgentServices<'a> {
 
     pub fn dispatch(&self) -> RemoteDispatchService<'a> {
         RemoteDispatchService {
-            config_service: self.config_service,
             database: self.database,
+            workspace: Arc::clone(&self.workspace),
         }
     }
 
     pub fn review(&self) -> RemoteReviewService<'a> {
         RemoteReviewService {
-            config_service: self.config_service,
             database: self.database,
+            workspace: Arc::clone(&self.workspace),
         }
     }
 
@@ -134,8 +118,7 @@ impl<'a> RemoteAgentServices<'a> {
         &self,
     ) -> Result<RemoteCleanupSummary, TrackError> {
         let dispatch_service = self.dispatch();
-        let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
-        let workspace = self.remote_workspace(remote_agent.clone())?;
+        let remote_agent = self.workspace.remote_agent();
         let task_ids_with_history = self.dispatch_repository().task_ids_with_history().await?;
         let review_ids_with_history = self
             .review_dispatch_repository()
@@ -168,7 +151,7 @@ impl<'a> RemoteAgentServices<'a> {
                 Ok(task) if task.status == Status::Open => {
                     kept_worktree_paths.extend(unique_worktree_paths(&dispatch_history));
                     kept_run_directories
-                        .extend(unique_run_directories(&dispatch_history, &remote_agent));
+                        .extend(unique_run_directories(&dispatch_history, remote_agent));
                 }
                 Ok(task) if task.status == Status::Closed => {
                     let cleanup_counts = dispatch_service
@@ -187,7 +170,7 @@ impl<'a> RemoteAgentServices<'a> {
                         )
                         .await?;
                     kept_run_directories
-                        .extend(unique_run_directories(&dispatch_history, &remote_agent));
+                        .extend(unique_run_directories(&dispatch_history, remote_agent));
                     summary.closed_tasks_cleaned += 1;
                     summary.remote_worktrees_removed += cleanup_counts.worktrees_removed;
                     summary.remote_run_directories_removed +=
@@ -239,7 +222,7 @@ impl<'a> RemoteAgentServices<'a> {
                             .extend(unique_review_worktree_paths(&active_dispatch_history));
                         kept_run_directories.extend(unique_review_run_directories(
                             &active_dispatch_history,
-                            &remote_agent,
+                            remote_agent,
                         ));
                         active_review_workspace_keys.insert(workspace_key);
                     }
@@ -254,7 +237,8 @@ impl<'a> RemoteAgentServices<'a> {
             }
         }
 
-        let orphan_cleanup_counts = workspace
+        let orphan_cleanup_counts = self
+            .workspace
             .maintenance()
             .cleanup_orphaned_artifacts(
                 &kept_worktree_paths.into_iter().collect::<Vec<_>>(),
@@ -271,7 +255,7 @@ impl<'a> RemoteAgentServices<'a> {
                     && !active_review_workspace_keys.contains(workspace_key)
             })
             .collect::<Vec<_>>();
-        workspace
+        self.workspace
             .maintenance()
             .cleanup_reclaimable_review_workspaces(&reclaimable_review_workspace_keys)
             .await?;
@@ -311,12 +295,7 @@ impl<'a> RemoteAgentServices<'a> {
             ));
         }
 
-        let remote_agent = self.load_remote_agent_for_global_cleanup().await?;
-        let summary = self
-            .remote_workspace(remote_agent)?
-            .maintenance()
-            .reset_workspace()
-            .await?;
+        let summary = self.workspace.maintenance().reset_workspace().await?;
         invalidate_helper_upload();
         tracing::warn!(
             workspace_entries_removed = summary.workspace_entries_removed,
@@ -330,29 +309,10 @@ impl<'a> RemoteAgentServices<'a> {
     pub async fn reconcile_review_follow_up(
         &self,
     ) -> Result<RemoteReviewFollowUpReconciliation, TrackError> {
-        let remote_agent = match self.config_service.load_remote_agent_runtime_config().await {
-            Ok(config) => config,
-            Err(error)
-                if matches!(
-                    error.code,
-                    ErrorCode::ConfigNotFound
-                        | ErrorCode::InvalidConfig
-                        | ErrorCode::InvalidRemoteAgentConfig
-                ) =>
-            {
-                return Ok(RemoteReviewFollowUpReconciliation::default());
-            }
-            Err(error) => return Err(error),
-        };
-        let Some(remote_agent) = remote_agent else {
-            return Ok(RemoteReviewFollowUpReconciliation::default());
-        };
+        let remote_agent = self.workspace.remote_agent();
         let Some(review_follow_up) = remote_agent.review_follow_up.clone() else {
             return Ok(RemoteReviewFollowUpReconciliation::default());
         };
-        if !remote_agent.managed_key_path.exists() {
-            return Ok(RemoteReviewFollowUpReconciliation::default());
-        }
 
         let task_ids = self.dispatch_repository().task_ids_with_history().await?;
         if task_ids.is_empty() {
@@ -375,7 +335,6 @@ impl<'a> RemoteAgentServices<'a> {
             .into_iter()
             .map(|task| (task.id.clone(), task))
             .collect::<std::collections::BTreeMap<_, _>>();
-        let workspace = self.remote_workspace(remote_agent)?;
         let mut reconciliation = RemoteReviewFollowUpReconciliation::default();
 
         for dispatch_record in latest_dispatches {
@@ -390,7 +349,8 @@ impl<'a> RemoteAgentServices<'a> {
                 continue;
             }
 
-            let pull_request_state = workspace
+            let pull_request_state = self
+                .workspace
                 .projects()
                 .fetch_pull_request_review_state(pull_request_url, &review_follow_up.main_user)
                 .await
@@ -527,7 +487,8 @@ impl<'a> RemoteAgentServices<'a> {
 
             let notification_comment =
                 build_review_follow_up_notification_comment(&review_follow_up.main_user, head_oid);
-            let notify_reviewer_result = workspace
+            let notify_reviewer_result = self
+                .workspace
                 .projects()
                 .post_pull_request_comment(pull_request_url, &notification_comment)
                 .await
@@ -593,40 +554,6 @@ impl<'a> RemoteAgentServices<'a> {
         Ok(reconciliation)
     }
 
-    async fn load_remote_agent_for_global_cleanup(
-        &self,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()
-            .await?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    "Remote cleanup cannot run because remote-agent configuration is missing.",
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before running cleanup.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
-
-        Ok(remote_agent)
-    }
-
-    fn remote_workspace(
-        &self,
-        remote_agent: RemoteAgentRuntimeConfig,
-    ) -> Result<RemoteWorkspace, TrackError> {
-        RemoteWorkspace::new(remote_agent, self.database.clone())
-    }
-
     async fn mark_review_notification_for_head(
         &self,
         dispatch_record: &TaskDispatchRecord,
@@ -645,44 +572,6 @@ impl<'a> RemoteAgentServices<'a> {
             .save_dispatch(&updated_record)
             .await
     }
-}
-
-pub(super) enum RefreshRemoteWorkspace {
-    Available(Box<RemoteWorkspace>),
-    UnavailableLocally { error_message: String },
-}
-
-pub(super) async fn load_refresh_remote_workspace(
-    config_service: &dyn RemoteAgentConfigProvider,
-    database: &DatabaseContext,
-) -> Result<RefreshRemoteWorkspace, TrackError> {
-    let remote_agent = match config_service.load_remote_agent_runtime_config().await {
-        Ok(Some(config)) => config,
-        Ok(None) => {
-            return Ok(RefreshRemoteWorkspace::UnavailableLocally {
-                error_message: "Remote agent configuration is missing locally.".to_owned(),
-            });
-        }
-        Err(error) if error.remote_unavailable() => {
-            return Ok(RefreshRemoteWorkspace::UnavailableLocally {
-                error_message: error.to_string(),
-            });
-        }
-        Err(error) => return Err(error),
-    };
-
-    if !remote_agent.managed_key_path.exists() {
-        return Ok(RefreshRemoteWorkspace::UnavailableLocally {
-            error_message: format!(
-                "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again.",
-                collapse_home_path(&remote_agent.managed_key_path)
-            ),
-        });
-    }
-
-    Ok(RefreshRemoteWorkspace::Available(Box::new(
-        RemoteWorkspace::new(remote_agent, database.clone())?,
-    )))
 }
 
 #[cfg(test)]

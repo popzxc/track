@@ -9,6 +9,7 @@ use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+use track_types::errors::ErrorCode;
 use track_types::time_utils::now_utc;
 
 use crate::api_error::ApiError;
@@ -30,22 +31,30 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
             let reconciliation_run_id =
                 format!("review-follow-up-{}", now_utc().unix_timestamp_nanos());
 
-            let reconciliation = match async {
+            let reconciliation = {
                 let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
-                state
-                    .remote_agent_services()
-                    .reconcile_review_follow_up()
-                    .await
-            }
-            .await
-            {
-                Ok(reconciliation) => reconciliation,
-                Err(error) => {
-                    tracing::warn!(
-                        reconciliation_run_id = %reconciliation_run_id,
-                        "Review follow-up reconciliation failed: {error}"
-                    );
-                    continue;
+                let runtime_services = match state.remote_agent_runtime_services().await {
+                    Ok(runtime_services) => runtime_services,
+                    Err(error) if error.code == ErrorCode::RemoteAgentNotConfigured => {
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            reconciliation_run_id = %reconciliation_run_id,
+                            "Review follow-up reconciliation failed: {error}"
+                        );
+                        continue;
+                    }
+                };
+                match runtime_services.reconcile_review_follow_up().await {
+                    Ok(reconciliation) => reconciliation,
+                    Err(error) => {
+                        tracing::warn!(
+                            reconciliation_run_id = %reconciliation_run_id,
+                            "Review follow-up reconciliation failed: {error}"
+                        );
+                        continue;
+                    }
                 }
             };
 

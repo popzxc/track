@@ -7,7 +7,6 @@ use super::super::lifecycle::launch::{
 };
 use crate::prompts::RemoteReviewPrompt;
 use crate::schemas::RemoteReviewSchema;
-use crate::RemoteWorkspace;
 
 use super::{select_previous_submitted_review_run, RemoteReviewService};
 
@@ -19,7 +18,6 @@ pub(super) async fn launch_prepared_review(
 }
 
 struct ReviewRunLaunchContext {
-    workspace: RemoteWorkspace,
     review: ReviewRecord,
 }
 
@@ -115,18 +113,18 @@ impl RemoteRunLaunchAdapter for ReviewRunLaunchAdapter<'_, '_> {
             .clone()
             .expect("queued review dispatches should store a branch name");
         let _remote_run_directory = worktree_path.run_directory();
-        let (remote_agent, review) = self
+        let review = self
             .service
             .load_review_dispatch_prerequisites(&record.review_id)
             .await?;
+        let remote_agent = self.service.workspace.remote_agent();
         tracing::info!(
             workspace_root = %remote_agent.workspace_root,
             pull_request_url = %review.pull_request_url,
             "Loaded PR review prerequisites"
         );
-        let workspace = self.service.remote_workspace(remote_agent)?;
 
-        Ok(ReviewRunLaunchContext { workspace, review })
+        Ok(ReviewRunLaunchContext { review })
     }
 
     async fn ensure_checkout(
@@ -134,7 +132,8 @@ impl RemoteRunLaunchAdapter for ReviewRunLaunchAdapter<'_, '_> {
         _record: &Self::Record,
         context: &Self::Context,
     ) -> Result<RemoteCheckoutPath, TrackError> {
-        let checkout_path = context
+        let checkout_path = self
+            .service
             .workspace
             .projects()
             .ensure_review_checkout(&context.review)
@@ -150,7 +149,7 @@ impl RemoteRunLaunchAdapter for ReviewRunLaunchAdapter<'_, '_> {
         context: &Self::Context,
         checkout_path: &RemoteCheckoutPath,
     ) -> Result<(), TrackError> {
-        context
+        self.service
             .workspace
             .review_runs()
             .prepare_worktree(
@@ -180,7 +179,7 @@ impl RemoteRunLaunchAdapter for ReviewRunLaunchAdapter<'_, '_> {
         let prompt =
             RemoteReviewPrompt::new(&context.review, record, previous_submitted_review).render();
         let schema = RemoteReviewSchema.render();
-        context
+        self.service
             .workspace
             .review_runs()
             .upload_run_files(record, &prompt, &schema)
@@ -193,9 +192,9 @@ impl RemoteRunLaunchAdapter for ReviewRunLaunchAdapter<'_, '_> {
     async fn launch_remote(
         &self,
         record: &Self::Record,
-        context: &Self::Context,
+        _context: &Self::Context,
     ) -> Result<(), TrackError> {
-        context.workspace.review_runs().launch(record).await?;
+        self.service.workspace.review_runs().launch(record).await?;
         tracing::info!("Started remote review agent process");
 
         Ok(())

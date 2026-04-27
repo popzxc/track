@@ -21,7 +21,7 @@ use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, Workspace
 use track_types::time_utils::now_utc;
 use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, RemoteRunState, ReviewRecord,
-    ReviewRunRecord, TaskCreateInput, TaskSource,
+    ReviewRunRecord, Status, TaskCreateInput, TaskSource,
 };
 use track_types::urls::Url;
 
@@ -793,6 +793,181 @@ async fn discards_dispatch_history_for_a_task() {
     let list_json: serde_json::Value =
         serde_json::from_slice(&list_body).expect("list response should be valid json");
     assert_eq!(list_json["dispatches"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn active_dispatch_listing_requires_remote_config() {
+    let directory = TempDir::new().expect("tempdir should be created");
+    let _environment = TestEnvironment::new(&directory);
+    let static_root = static_root(&directory);
+    let database = database(&directory).await;
+    register_project(&database, "project-a").await;
+
+    let task = database
+        .task_repository()
+        .create_task(TaskCreateInput {
+            project: ProjectId::new("project-a").unwrap(),
+            priority: Priority::High,
+            description: "Active remote history needs reconciliation".to_owned(),
+            source: Some(TaskSource::Web),
+        })
+        .await
+        .expect("task should be created")
+        .task;
+    let dispatch_id = DispatchId::new("dispatch-active-no-config").unwrap();
+    let mut dispatch = database
+        .dispatch_repository()
+        .create_dispatch(
+            &task,
+            &dispatch_id,
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            &DispatchBranch::for_task(&dispatch_id),
+            &DispatchWorktreePath::for_task("/tmp/track", &task.project, &dispatch_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("dispatch should be created");
+    dispatch.run.status = DispatchStatus::Running;
+    database
+        .dispatch_repository()
+        .save_dispatch(&dispatch)
+        .await
+        .expect("dispatch should save");
+
+    let app = build_app(
+        app_state(config_service(&directory).await, database.clone()),
+        &static_root,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/dispatches?taskId={}", task.id))
+                .body(Body::empty())
+                .expect("list request should build"),
+        )
+        .await
+        .expect("list request should succeed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).expect("response should be valid json");
+    assert_eq!(json["error"]["code"], "REMOTE_AGENT_NOT_CONFIGURED");
+    assert_eq!(
+        database
+            .dispatch_repository()
+            .get_dispatch(&task.id, &dispatch_id)
+            .await
+            .expect("dispatch lookup should succeed")
+            .expect("dispatch should still exist")
+            .run
+            .status,
+        DispatchStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn task_close_and_delete_with_remote_history_require_remote_config() {
+    let directory = TempDir::new().expect("tempdir should be created");
+    let _environment = TestEnvironment::new(&directory);
+    let static_root = static_root(&directory);
+    let database = database(&directory).await;
+    register_project(&database, "project-a").await;
+
+    let task = database
+        .task_repository()
+        .create_task(TaskCreateInput {
+            project: ProjectId::new("project-a").unwrap(),
+            priority: Priority::High,
+            description: "Remote cleanup requires configured SSH".to_owned(),
+            source: Some(TaskSource::Web),
+        })
+        .await
+        .expect("task should be created")
+        .task;
+    let dispatch_id = DispatchId::new("dispatch-cleanup-no-config").unwrap();
+    database
+        .dispatch_repository()
+        .create_dispatch(
+            &task,
+            &dispatch_id,
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            &DispatchBranch::for_task(&dispatch_id),
+            &DispatchWorktreePath::for_task("/tmp/track", &task.project, &dispatch_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("dispatch should be created");
+
+    let app = build_app(
+        app_state(config_service(&directory).await, database.clone()),
+        &static_root,
+    );
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tasks/{}", task.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"status":"closed"}"#))
+                .expect("patch request should build"),
+        )
+        .await
+        .expect("patch request should succeed");
+    assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+    let patch_body = axum::body::to_bytes(patch_response.into_body(), usize::MAX)
+        .await
+        .expect("patch response body should be readable");
+    let patch_json: serde_json::Value =
+        serde_json::from_slice(&patch_body).expect("patch response should be valid json");
+    assert_eq!(patch_json["error"]["code"], "REMOTE_AGENT_NOT_CONFIGURED");
+    assert_eq!(
+        database
+            .task_repository()
+            .get_task(&task.id)
+            .await
+            .expect("task should remain")
+            .status,
+        Status::Open
+    );
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tasks/{}", task.id))
+                .body(Body::empty())
+                .expect("delete request should build"),
+        )
+        .await
+        .expect("delete request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::BAD_REQUEST);
+    let delete_body = axum::body::to_bytes(delete_response.into_body(), usize::MAX)
+        .await
+        .expect("delete response body should be readable");
+    let delete_json: serde_json::Value =
+        serde_json::from_slice(&delete_body).expect("delete response should be valid json");
+    assert_eq!(delete_json["error"]["code"], "REMOTE_AGENT_NOT_CONFIGURED");
+    assert!(database.task_repository().get_task(&task.id).await.is_ok());
+    assert!(!database
+        .dispatch_repository()
+        .dispatches_for_task(&task.id)
+        .await
+        .expect("dispatch history lookup should succeed")
+        .is_empty());
 }
 
 #[tokio::test]

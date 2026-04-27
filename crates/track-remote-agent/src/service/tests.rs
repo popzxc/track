@@ -12,7 +12,6 @@ use track_config::config::RemoteAgentConfigFile;
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::database::DatabaseContext;
 use track_projects::project_metadata::ProjectMetadata;
-use track_types::errors::{ErrorCode, TrackError};
 use track_types::git_remote::GitRemote;
 use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
@@ -20,8 +19,7 @@ use track_types::test_support::{set_env_var, track_data_env_lock, EnvVarGuard};
 use track_types::time_utils::now_utc;
 use track_types::types::{
     DispatchStatus, Priority, RemoteAgentPreferredTool, RemoteRunState, ReviewRecord,
-    ReviewRunRecord, Status, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
-    TaskUpdateInput,
+    ReviewRunRecord, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
 };
 use track_types::urls::Url;
 
@@ -32,36 +30,14 @@ use super::dispatch::{
     select_follow_up_base_dispatch, unique_run_directories,
 };
 use super::review::select_previous_submitted_review_run;
-use super::{
-    RemoteAgentConfigProvider, RemoteAgentServices, RemoteDispatchService, RemoteReviewService,
-};
-
-#[derive(Debug, Clone)]
-pub(crate) struct StaticRemoteAgentConfigService {
-    remote_agent: Option<RemoteAgentRuntimeConfig>,
-}
-
-impl StaticRemoteAgentConfigService {
-    pub(crate) fn new(remote_agent: Option<RemoteAgentRuntimeConfig>) -> Self {
-        Self { remote_agent }
-    }
-}
-
-#[async_trait::async_trait]
-impl RemoteAgentConfigProvider for StaticRemoteAgentConfigService {
-    async fn load_remote_agent_runtime_config(
-        &self,
-    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        Ok(self.remote_agent.clone())
-    }
-}
+use super::{RemoteAgentRuntimeServices, RemoteDispatchService, RemoteReviewService};
 
 struct TestContext {
     _directory: TempDir,
     _env_lock_guard: std::sync::MutexGuard<'static, ()>,
     _track_state_dir_guard: EnvVarGuard,
     data_dir: PathBuf,
-    config_service: StaticRemoteAgentConfigService,
+    remote_agent: Option<RemoteAgentRuntimeConfig>,
     database: DatabaseContext,
 }
 
@@ -78,52 +54,55 @@ impl TestContext {
         let track_state_dir_guard = set_env_var("TRACK_STATE_DIR", &state_root);
         let data_dir = state_root.join("issues");
         let database_path = state_root.join("track.sqlite");
-        let config_service =
-            StaticRemoteAgentConfigService::new(remote_agent.map(|remote_agent| {
-                RemoteAgentRuntimeConfig {
-                    host: remote_agent.host,
-                    user: remote_agent.user,
-                    port: remote_agent.port,
-                    workspace_root: remote_agent.workspace_root,
-                    projects_registry_path: remote_agent.projects_registry_path,
-                    preferred_tool: remote_agent.preferred_tool,
-                    shell_prelude: remote_agent.shell_prelude,
-                    review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
-                        review_follow_up.main_user.map(|main_user| {
-                            RemoteAgentReviewFollowUpRuntimeConfig {
-                                enabled: review_follow_up.enabled,
-                                main_user,
-                                default_review_prompt: review_follow_up.default_review_prompt,
-                            }
-                        })
-                    }),
-                    managed_key_path: state_root.join("remote-agent").join("id_ed25519"),
-                    managed_known_hosts_path: state_root.join("remote-agent").join("known_hosts"),
-                }
-            }));
+        let remote_agent = remote_agent.map(|remote_agent| RemoteAgentRuntimeConfig {
+            host: remote_agent.host,
+            user: remote_agent.user,
+            port: remote_agent.port,
+            workspace_root: remote_agent.workspace_root,
+            projects_registry_path: remote_agent.projects_registry_path,
+            preferred_tool: remote_agent.preferred_tool,
+            shell_prelude: remote_agent.shell_prelude,
+            review_follow_up: remote_agent.review_follow_up.and_then(|review_follow_up| {
+                review_follow_up
+                    .main_user
+                    .map(|main_user| RemoteAgentReviewFollowUpRuntimeConfig {
+                        enabled: review_follow_up.enabled,
+                        main_user,
+                        default_review_prompt: review_follow_up.default_review_prompt,
+                    })
+            }),
+            managed_key_path: state_root.join("remote-agent").join("id_ed25519"),
+            managed_known_hosts_path: state_root.join("remote-agent").join("known_hosts"),
+        });
 
         Self {
             _directory: directory,
             _env_lock_guard: env_lock_guard,
             _track_state_dir_guard: track_state_dir_guard,
             data_dir: data_dir.clone(),
-            config_service,
+            remote_agent,
             database: DatabaseContext::initialized(Some(database_path))
                 .await
                 .expect("database should resolve"),
         }
     }
 
-    fn remote_agent_services(&self) -> RemoteAgentServices<'_> {
-        RemoteAgentServices::new(&self.config_service, &self.database)
+    fn runtime_services(&self) -> RemoteAgentRuntimeServices<'_> {
+        RemoteAgentRuntimeServices::new(
+            self.remote_agent
+                .clone()
+                .expect("test should configure a remote agent"),
+            &self.database,
+        )
+        .expect("runtime services should initialize")
     }
 
     fn service(&self) -> RemoteDispatchService<'_> {
-        self.remote_agent_services().dispatch()
+        self.runtime_services().dispatch()
     }
 
     fn review_service(&self) -> RemoteReviewService<'_> {
-        self.remote_agent_services().review()
+        self.runtime_services().review()
     }
 
     async fn create_task(&self, project: &str, description: &str) -> Task {
@@ -278,13 +257,12 @@ async fn saved_review_dispatch_prerequisites_do_not_depend_on_live_review_follow
     let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
     install_dummy_managed_remote_agent_material(&context.data_dir);
 
-    let (remote_agent, loaded_review) = context
+    let loaded_review = context
         .review_service()
         .load_review_dispatch_prerequisites(&review.id)
         .await
         .expect("saved review dispatch prerequisites should load");
 
-    assert_eq!(remote_agent.host, "127.0.0.1");
     assert_eq!(loaded_review.id, review.id);
     assert_eq!(loaded_review.main_user, review.main_user);
     assert_eq!(
@@ -364,7 +342,19 @@ fn refresh_reads_claude_dispatch_outcome_from_structured_output_envelope() {
 
 #[tokio::test]
 async fn refresh_reads_claude_review_outcome_from_structured_output_envelope() {
-    let context = TestContext::new(None).await;
+    let context = TestContext::new(Some(RemoteAgentConfigFile {
+        host: "127.0.0.1".to_owned(),
+        user: "builder".to_owned(),
+        port: 2222,
+        workspace_root: "~/workspace".to_owned(),
+        projects_registry_path: "~/track-projects.json".to_owned(),
+        preferred_tool: RemoteAgentPreferredTool::Codex,
+        shell_prelude: Some("export PATH=\"$PATH\"".to_owned()),
+        review_follow_up: None,
+    }))
+    .await;
+    let _track_data_dir = set_env_var("TRACK_DATA_DIR", &context.data_dir);
+    install_dummy_managed_remote_agent_material(&context.data_dir);
     let created_at = now_utc();
     let dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
     let workspace_key = WorkspaceKey::new("project-a").unwrap();
@@ -751,109 +741,6 @@ fn selects_the_latest_previous_submitted_review_run() {
 
     assert_eq!(selected.run.dispatch_id, "dispatch-2");
     assert_eq!(selected.github_review_id.as_deref(), Some("1002"));
-}
-
-#[tokio::test]
-async fn closing_task_stays_local_when_remote_cleanup_is_unavailable() {
-    let context = TestContext::new(None).await;
-    let task = context
-        .create_task("project-a", "Investigate a flaky remote cleanup")
-        .await;
-    let existing_dispatch = context.create_running_dispatch(&task).await;
-
-    let updated_task = context
-        .service()
-        .update_task(
-            &task.id,
-            TaskUpdateInput {
-                status: Some(Status::Closed),
-                ..TaskUpdateInput::default()
-            },
-        )
-        .await
-        .expect("closing should still succeed locally");
-
-    let updated_dispatch = context
-        .database
-        .dispatch_repository()
-        .get_dispatch(&task.id, &existing_dispatch.run.dispatch_id)
-        .await
-        .expect("dispatch lookup should succeed")
-        .expect("dispatch should still exist");
-
-    assert_eq!(updated_task.status, Status::Closed);
-    assert_eq!(updated_dispatch.run.status, DispatchStatus::Canceled);
-    assert_eq!(
-        updated_dispatch.run.summary.as_deref(),
-        Some("Canceled because the task was closed locally. Remote cleanup was skipped.")
-    );
-    assert!(updated_dispatch
-        .run
-        .error_message
-        .as_deref()
-        .is_some_and(|message| message.contains("Remote agent configuration is missing")));
-}
-
-#[tokio::test]
-async fn deleting_task_stays_local_when_remote_cleanup_is_unavailable() {
-    let context = TestContext::new(None).await;
-    let task = context
-        .create_task("project-a", "Delete the task even without remote cleanup")
-        .await;
-    let _existing_dispatch = context.create_running_dispatch(&task).await;
-
-    context
-        .service()
-        .delete_task(&task.id)
-        .await
-        .expect("delete should still succeed locally");
-
-    let task_error = context
-        .database
-        .task_repository()
-        .get_task(&task.id)
-        .await
-        .expect_err("deleted task should be gone");
-    assert_eq!(task_error.code, ErrorCode::TaskNotFound);
-    assert!(context
-        .database
-        .dispatch_repository()
-        .dispatches_for_task(&task.id)
-        .await
-        .expect("dispatch lookup should succeed")
-        .is_empty());
-}
-
-#[tokio::test]
-async fn refresh_releases_active_dispatches_when_remote_config_disappears() {
-    let context = TestContext::new(None).await;
-    let task = context
-        .create_task("project-a", "Recover from a missing remote config")
-        .await;
-    let existing_dispatch = context.create_running_dispatch(&task).await;
-
-    let refreshed = context
-        .service()
-        .latest_dispatches_for_tasks(std::slice::from_ref(&task.id))
-        .await
-        .expect("dispatch refresh should succeed");
-    let updated_dispatch = refreshed
-        .first()
-        .expect("latest dispatch should still be returned");
-
-    assert_eq!(
-        updated_dispatch.run.dispatch_id,
-        existing_dispatch.run.dispatch_id
-    );
-    assert_eq!(updated_dispatch.run.status, DispatchStatus::Blocked);
-    assert_eq!(
-        updated_dispatch.run.summary.as_deref(),
-        Some("Remote reconciliation is unavailable locally, so active runs were released.")
-    );
-    assert_eq!(
-        updated_dispatch.run.error_message.as_deref(),
-        Some("Remote agent configuration is missing locally.")
-    );
 }
 
 #[tokio::test]

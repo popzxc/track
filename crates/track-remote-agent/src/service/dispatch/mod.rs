@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use track_config::paths::collapse_home_path;
 use track_config::runtime::RemoteAgentRuntimeConfig;
 use track_dal::database::DatabaseContext;
 use track_dal::dispatch_repository::DispatchRepository;
@@ -22,8 +22,6 @@ use crate::utils::parse_github_repository_name;
 use crate::RemoteTaskArtifactCleanupMode;
 use crate::RemoteWorkspace;
 
-use super::remote_agent_services::RemoteAgentConfigProvider;
-
 pub(crate) use self::guard::TaskDispatchStartGuard;
 use self::record_ext::first_follow_up_line;
 #[cfg(test)]
@@ -36,8 +34,8 @@ mod record_ext;
 mod refresh;
 
 pub struct RemoteDispatchService<'a> {
-    pub(super) config_service: &'a dyn RemoteAgentConfigProvider,
     pub(super) database: &'a DatabaseContext,
+    pub(super) workspace: Arc<RemoteWorkspace>,
 }
 
 impl<'a> RemoteDispatchService<'a> {
@@ -66,10 +64,10 @@ impl<'a> RemoteDispatchService<'a> {
         task_id: &TaskId,
         preferred_tool: Option<RemoteAgentPreferredTool>,
     ) -> Result<TaskDispatchRecord, TrackError> {
-        let (remote_agent, task, _project_metadata) =
-            self.load_dispatch_prerequisites(task_id).await?;
+        let (task, _project_metadata) = self.load_dispatch_prerequisites(task_id).await?;
         let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
         self.ensure_no_blocking_active_dispatch(task_id).await?;
+        let remote_agent = self.workspace.remote_agent();
         let preferred_tool = preferred_tool.unwrap_or(remote_agent.preferred_tool);
         let dispatch_id = DispatchId::unique();
         let branch_name = DispatchBranch::for_task(&dispatch_id);
@@ -132,10 +130,10 @@ impl<'a> RemoteDispatchService<'a> {
             ));
         }
 
-        let (remote_agent, _task, _project_metadata) =
-            self.load_dispatch_prerequisites(task_id).await?;
+        let (_task, _project_metadata) = self.load_dispatch_prerequisites(task_id).await?;
         let _dispatch_start_guard = TaskDispatchStartGuard::acquire(task_id);
         self.ensure_no_blocking_active_dispatch(task_id).await?;
+        let remote_agent = self.workspace.remote_agent();
 
         let dispatch_history = self
             .dispatch_repository()
@@ -215,61 +213,18 @@ impl<'a> RemoteDispatchService<'a> {
     }
 
     // =============================================================================
-    // Dispatch Cancellation And Discard
+    // Dispatch Cancellation
     // =============================================================================
     //
-    // Cancellation and discard solve two different user intents:
-    //
-    // 1. "stop spending resources on this run" -> cancel the latest active run
-    // 2. "forget the previous outcome and let me try again cleanly" -> discard
-    //    the saved dispatch history for the task
-    //
-    // We keep them separate so the UI can expose both actions without
-    // overloading one button with two meanings.
+    // Cancellation means "stop spending remote resources on this run". The
+    // runtime service owns it because it may need to signal the remote helper
+    // before finalizing the local dispatch record.
     #[tracing::instrument(skip(self), fields(task_id = %task_id))]
     pub async fn cancel_dispatch(
         &self,
         task_id: &TaskId,
     ) -> Result<TaskDispatchRecord, TrackError> {
         cancel::cancel_dispatch(self, task_id).await
-    }
-
-    #[tracing::instrument(skip(self), fields(task_id = %task_id))]
-    pub async fn discard_dispatch_history(&self, task_id: &TaskId) -> Result<(), TrackError> {
-        let latest_dispatch = self
-            .dispatch_repository()
-            .latest_dispatch_for_task(task_id)
-            .await?
-            .ok_or_else(|| {
-                dispatch_not_found(task_id, "does not have a remote dispatch to discard.")
-            })?;
-
-        if latest_dispatch.run.status.is_active() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                "Cancel the active remote dispatch before discarding its history.",
-            ));
-        }
-
-        // Discard intentionally clears the entire visible dispatch history for
-        // the task so the card goes back to an undecorated state. That matches
-        // the UI intent of "let me try this task again from a clean slate".
-        // TODO: This currently leaves remote worktrees and dispatch directories
-        // alone on purpose. Product policy only asked for remote cleanup on
-        // task close/delete, not on discard.
-        // TODO: If users later want audit history, replace this hard delete
-        // with an explicit archived-history concept instead of reviving older
-        // dispatch records automatically.
-        self.dispatch_repository()
-            .delete_dispatch_history_for_task(task_id)
-            .await?;
-
-        tracing::info!(
-            latest_dispatch_id = %latest_dispatch.run.dispatch_id,
-            "Discarded task dispatch history"
-        );
-
-        Ok(())
     }
 
     pub async fn latest_dispatches_for_tasks(
@@ -284,57 +239,19 @@ impl<'a> RemoteDispatchService<'a> {
     }
 
     // =============================================================================
-    // Global Dispatch History
+    // Runtime Dispatch History
     // =============================================================================
     //
-    // The frontend's Runs page needs the same "what is the remote machine
-    // saying right now?" view as the task-level dispatch badges. We therefore
-    // route the global history listing through the same refresh path instead of
-    // reading raw JSON records and leaving active runs stale until some other
-    // endpoint happens to reconcile them.
+    // Runtime flows such as workspace reset need the same "what is the remote
+    // machine saying right now?" view as queueing and cancellation. We keep
+    // that refresh here so callers with a runtime service see active records
+    // reconciled before making remote-lifecycle decisions.
     pub async fn list_dispatches(
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let records = self.dispatch_repository().list_dispatches(limit).await?;
         self.refresh_active_dispatch_records(records).await
-    }
-
-    // The task drawer needs authoritative history for the selected task even
-    // when the global Runs page is intentionally truncated for UI cost. We
-    // therefore expose a task-scoped history path that keeps older tasks from
-    // losing their latest status or drawer history just because newer runs
-    // pushed them past the global limit.
-    pub async fn dispatch_history_for_task(
-        &self,
-        task_id: &TaskId,
-    ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        let mut records = self
-            .dispatch_repository()
-            .dispatches_for_task(task_id)
-            .await?;
-
-        // At most one dispatch should be active per task. If the newest record
-        // is still active, route it through the same remote reconciliation path
-        // as the queue badges so the drawer sees current state instead of raw
-        // persisted JSON.
-        if records
-            .first()
-            .is_some_and(|record| record.run.status.is_active())
-        {
-            if let Some(refreshed_latest) = self
-                .latest_dispatches_for_tasks(std::slice::from_ref(task_id))
-                .await?
-                .into_iter()
-                .next()
-            {
-                if let Some(first_record) = records.first_mut() {
-                    *first_record = refreshed_latest;
-                }
-            }
-        }
-
-        Ok(records)
     }
 
     // =============================================================================
@@ -366,10 +283,11 @@ impl<'a> RemoteDispatchService<'a> {
                     )
                     .await;
 
-                // The tracker should stay usable even if the remote machine,
-                // SSH key, or remote config disappears. Closing the task is a
-                // local filesystem mutation first; remote cleanup is only a
-                // best-effort follow-up.
+                // The tracker should stay usable if the remote machine itself
+                // is unhealthy. Local remote-agent configuration is different:
+                // by this point the API should have kept it stable, so missing
+                // config or SSH material is surfaced as a local invariant
+                // failure instead of being treated as a cleanup detail.
                 match cleanup_result {
                     Ok(_) => {
                         tracing::info!("Cleaned remote task artifacts while closing task");
@@ -381,7 +299,7 @@ impl<'a> RemoteDispatchService<'a> {
                         )
                         .await?
                     }
-                    Err(error) => {
+                    Err(error) if remote_cleanup_can_be_skipped(&error) => {
                         tracing::warn!(error = %error, "Skipping remote cleanup while closing task");
                         self.finalize_active_dispatches_locally(
                             &dispatch_history,
@@ -391,6 +309,7 @@ impl<'a> RemoteDispatchService<'a> {
                         )
                         .await?;
                     }
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -418,8 +337,13 @@ impl<'a> RemoteDispatchService<'a> {
                 )
                 .await
             {
+                if !remote_cleanup_can_be_skipped(&error) {
+                    return Err(error);
+                }
+
                 // Delete is the strongest local intent: once the user removes a
-                // task, stale remote artifacts must not veto that choice.
+                // task, stale artifacts on an unhealthy remote machine must not
+                // veto that choice.
                 // TODO: We intentionally do not persist this warning locally
                 // because delete also removes the task's local dispatch history.
                 tracing::warn!(error = %error, "Skipping remote cleanup while deleting task");
@@ -439,7 +363,7 @@ impl<'a> RemoteDispatchService<'a> {
         Ok(())
     }
 
-    async fn refresh_active_dispatch_records(
+    pub async fn refresh_active_dispatch_records(
         &self,
         records: Vec<TaskDispatchRecord>,
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
@@ -456,12 +380,12 @@ impl<'a> RemoteDispatchService<'a> {
             return Ok(RemoteArtifactCleanupCounts::default());
         }
 
-        let remote_agent = self.load_remote_agent(task_id).await?;
-        let workspace = self.remote_workspace(remote_agent)?;
-        let checkout_path = workspace
+        let checkout_path = self
+            .workspace
             .projects()
             .resolve_checkout_path_for_project(&dispatch_history[0].project);
-        let summary = workspace
+        let summary = self
+            .workspace
             .task_runs()
             .cleanup(
                 &checkout_path,
@@ -565,14 +489,11 @@ impl<'a> RemoteDispatchService<'a> {
         &self,
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<(), TrackError> {
-        let remote_agent = self.load_remote_agent(&dispatch_record.task_id).await?;
-
         let Some(worktree_path) = dispatch_record.run.worktree_path.as_ref() else {
             return Ok(());
         };
-        let workspace = self.remote_workspace(remote_agent)?;
         let _ = worktree_path;
-        workspace
+        self.workspace
             .task_runs()
             .cancel(dispatch_record)
             .await
@@ -639,8 +560,8 @@ impl<'a> RemoteDispatchService<'a> {
     async fn load_dispatch_prerequisites(
         &self,
         task_id: &TaskId,
-    ) -> Result<(RemoteAgentRuntimeConfig, Task, ProjectMetadata), TrackError> {
-        let remote_agent = self.load_remote_agent(task_id).await?;
+    ) -> Result<(Task, ProjectMetadata), TrackError> {
+        let remote_agent = self.workspace.remote_agent();
 
         if remote_agent
             .shell_prelude
@@ -662,42 +583,7 @@ impl<'a> RemoteDispatchService<'a> {
             .await?;
         validate_project_metadata_for_dispatch(&project.metadata)?;
 
-        Ok((remote_agent, task, project.metadata))
-    }
-
-    async fn load_remote_agent(
-        &self,
-        task_id: &TaskId,
-    ) -> Result<RemoteAgentRuntimeConfig, TrackError> {
-        let remote_agent = self
-            .config_service
-            .load_remote_agent_runtime_config()
-            .await?
-            .ok_or_else(|| {
-                TrackError::new(
-                    ErrorCode::RemoteAgentNotConfigured,
-                    format!("Task {task_id}: Remote agent configuration is missing."),
-                )
-            })?;
-
-        if !remote_agent.managed_key_path.exists() {
-            return Err(TrackError::new(
-                ErrorCode::RemoteAgentNotConfigured,
-                format!(
-                    "Task {task_id}: Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task.",
-                    collapse_home_path(&remote_agent.managed_key_path)
-                ),
-            ));
-        }
-
-        Ok(remote_agent)
-    }
-
-    fn remote_workspace(
-        &self,
-        remote_agent: RemoteAgentRuntimeConfig,
-    ) -> Result<RemoteWorkspace, TrackError> {
-        RemoteWorkspace::new(remote_agent, self.database.clone())
+        Ok((task, project.metadata))
     }
 }
 
@@ -718,6 +604,10 @@ fn dispatch_not_found(task_id: &TaskId, detail: &str) -> TrackError {
         ErrorCode::DispatchNotFound,
         format!("Task {task_id} {detail}"),
     )
+}
+
+fn remote_cleanup_can_be_skipped(error: &TrackError) -> bool {
+    matches!(error.code, ErrorCode::RemoteDispatchFailed)
 }
 
 pub(super) fn select_follow_up_base_dispatch(

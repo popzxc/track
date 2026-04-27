@@ -8,7 +8,6 @@ use super::super::lifecycle::launch::{
 };
 use crate::prompts::RemoteDispatchPrompt;
 use crate::schemas::RemoteDispatchSchema;
-use crate::RemoteWorkspace;
 
 use super::RemoteDispatchService;
 
@@ -20,7 +19,6 @@ pub(super) async fn launch_prepared_dispatch(
 }
 
 struct TaskDispatchLaunchContext {
-    workspace: RemoteWorkspace,
     task: Task,
     project_metadata: ProjectMetadata,
     branch_name: DispatchBranch,
@@ -118,19 +116,18 @@ impl RemoteRunLaunchAdapter for TaskDispatchLaunchAdapter<'_, '_> {
             .worktree_path
             .clone()
             .expect("queued dispatches should always store a worktree path");
-        let (remote_agent, task, project_metadata) = self
+        let (task, project_metadata) = self
             .service
             .load_dispatch_prerequisites(&record.task_id)
             .await?;
+        let remote_agent = self.service.workspace.remote_agent();
         tracing::info!(
             base_branch = %project_metadata.base_branch,
             workspace_root = %remote_agent.workspace_root,
             "Loaded task dispatch prerequisites"
         );
-        let workspace = self.service.remote_workspace(remote_agent)?;
 
         Ok(TaskDispatchLaunchContext {
-            workspace,
             task,
             project_metadata,
             branch_name,
@@ -143,7 +140,8 @@ impl RemoteRunLaunchAdapter for TaskDispatchLaunchAdapter<'_, '_> {
         _record: &Self::Record,
         context: &Self::Context,
     ) -> Result<RemoteCheckoutPath, TrackError> {
-        let checkout_path = context
+        let checkout_path = self
+            .service
             .workspace
             .projects()
             .ensure_task_checkout(&context.task.project, &context.project_metadata)
@@ -159,7 +157,7 @@ impl RemoteRunLaunchAdapter for TaskDispatchLaunchAdapter<'_, '_> {
         context: &Self::Context,
         checkout_path: &RemoteCheckoutPath,
     ) -> Result<(), TrackError> {
-        context
+        self.service
             .workspace
             .task_runs()
             .prepare_worktree(
@@ -190,7 +188,7 @@ impl RemoteRunLaunchAdapter for TaskDispatchLaunchAdapter<'_, '_> {
         )
         .render();
         let schema = RemoteDispatchSchema.render();
-        context
+        self.service
             .workspace
             .task_runs()
             .upload_run_files(record, &prompt, &schema)
@@ -203,9 +201,9 @@ impl RemoteRunLaunchAdapter for TaskDispatchLaunchAdapter<'_, '_> {
     async fn launch_remote(
         &self,
         record: &Self::Record,
-        context: &Self::Context,
+        _context: &Self::Context,
     ) -> Result<(), TrackError> {
-        context.workspace.task_runs().launch(record).await?;
+        self.service.workspace.task_runs().launch(record).await?;
         tracing::info!("Started remote task agent process");
 
         Ok(())

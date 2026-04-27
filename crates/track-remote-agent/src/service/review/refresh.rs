@@ -21,8 +21,7 @@ pub(super) async fn refresh_active_review_dispatch_records(
     records: Vec<ReviewRunRecord>,
 ) -> Result<Vec<ReviewRunRecord>, TrackError> {
     refresh_active_remote_run_records(
-        service.config_service,
-        service.database,
+        &service.workspace,
         &ReviewRunRefreshAdapter { service },
         records,
     )
@@ -40,8 +39,6 @@ impl RemoteRunRefreshAdapter for ReviewRunRefreshAdapter<'_, '_> {
     fn messages(&self) -> RemoteRunRefreshMessages {
         RemoteRunRefreshMessages {
             run_kind: "review_run",
-            unavailable_locally_summary:
-                "Remote reconciliation is unavailable locally, so active review runs were released.",
             snapshot_load_failed_summary: None,
             parse_error_blocked_summary:
                 "Remote reconciliation could not confirm this review run, so it was released locally.",

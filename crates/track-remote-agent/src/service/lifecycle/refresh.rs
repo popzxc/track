@@ -1,16 +1,12 @@
 use std::collections::BTreeMap;
 
 use time::OffsetDateTime;
-use track_dal::database::DatabaseContext;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::types::{DispatchStatus, RemoteRunState};
 
 use crate::{RemoteRunSnapshotView, RemoteWorkspace};
 
 use super::super::log_remote_failure_output;
-use super::super::remote_agent_services::{
-    load_refresh_remote_workspace, RefreshRemoteWorkspace, RemoteAgentConfigProvider,
-};
 
 // =============================================================================
 // Remote Run Refresh Orchestration
@@ -63,14 +59,12 @@ pub(in crate::service) trait RemoteRunRefreshAdapter: Sync {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::service) struct RemoteRunRefreshMessages {
     pub(in crate::service) run_kind: &'static str,
-    pub(in crate::service) unavailable_locally_summary: &'static str,
     pub(in crate::service) snapshot_load_failed_summary: Option<&'static str>,
     pub(in crate::service) parse_error_blocked_summary: &'static str,
 }
 
 pub(in crate::service) async fn refresh_active_remote_run_records<Adapter>(
-    config_service: &dyn RemoteAgentConfigProvider,
-    database: &DatabaseContext,
+    workspace: &RemoteWorkspace,
     adapter: &Adapter,
     records: Vec<Adapter::Record>,
 ) -> Result<Vec<Adapter::Record>, TrackError>
@@ -78,19 +72,14 @@ where
     Adapter: RemoteRunRefreshAdapter,
 {
     let messages = adapter.messages();
-    let workspace = match load_refresh_remote_workspace(config_service, database).await? {
-        RefreshRemoteWorkspace::Available(workspace) => workspace,
-        RefreshRemoteWorkspace::UnavailableLocally { error_message } => {
-            return release_active_runs_after_reconciliation_loss(
-                adapter,
-                records,
-                messages.unavailable_locally_summary,
-                &error_message,
-            )
-            .await;
-        }
-    };
-    let snapshots_by_dispatch_id = match adapter.load_snapshots(&workspace, &records).await {
+    if records
+        .iter()
+        .all(|record| !adapter.run(record).status.is_active())
+    {
+        return Ok(records);
+    }
+
+    let snapshots_by_dispatch_id = match adapter.load_snapshots(workspace, &records).await {
         Ok(snapshots) => snapshots,
         Err(error) => {
             let Some(summary) = messages.snapshot_load_failed_summary else {
@@ -250,23 +239,7 @@ mod tests {
     use track_types::time_utils::now_utc;
     use track_types::types::RemoteAgentPreferredTool;
 
-    use crate::service::remote_agent_services::RemoteAgentConfigProvider;
-
     use super::*;
-
-    #[derive(Debug, Clone)]
-    struct StaticConfigProvider {
-        remote_agent: RemoteAgentRuntimeConfig,
-    }
-
-    #[async_trait::async_trait]
-    impl RemoteAgentConfigProvider for StaticConfigProvider {
-        async fn load_remote_agent_runtime_config(
-            &self,
-        ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-            Ok(Some(self.remote_agent.clone()))
-        }
-    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestRecord {
@@ -306,8 +279,6 @@ mod tests {
         fn messages(&self) -> RemoteRunRefreshMessages {
             RemoteRunRefreshMessages {
                 run_kind: "test_run",
-                unavailable_locally_summary:
-                    "Remote reconciliation is unavailable for the test run.",
                 snapshot_load_failed_summary: None,
                 parse_error_blocked_summary: "The test run snapshot could not be parsed.",
             }
@@ -417,19 +388,13 @@ mod tests {
     async fn omitted_active_snapshot_is_a_refresh_adapter_contract_error() {
         let directory = TempDir::new().expect("tempdir should be created");
         let database = test_database(directory.path().join("track.sqlite")).await;
-        let config_provider = StaticConfigProvider {
-            remote_agent: test_remote_agent(&directory),
-        };
+        let workspace = RemoteWorkspace::new(test_remote_agent(&directory), database.clone())
+            .expect("workspace should initialize");
         let adapter = TestRefreshAdapter::new();
 
-        let error = refresh_active_remote_run_records(
-            &config_provider,
-            &database,
-            &adapter,
-            vec![test_record()],
-        )
-        .await
-        .expect_err("omitted active snapshot should fail the adapter contract");
+        let error = refresh_active_remote_run_records(&workspace, &adapter, vec![test_record()])
+            .await
+            .expect_err("omitted active snapshot should fail the adapter contract");
 
         assert_eq!(error.code, ErrorCode::InternalError);
         assert!(error

@@ -21,9 +21,13 @@ pub(crate) async fn list_dispatches(
 ) -> Result<Json<DispatchesResponse>, ApiError> {
     let task_ids = parse_dispatch_task_ids(uri.query());
     let dispatches = state
-        .remote_agent_services()
-        .dispatch()
+        .database
+        .dispatch_repository()
         .latest_dispatches_for_tasks(&task_ids)
+        .await
+        .map_err(ApiError::from_track_error)?;
+    let dispatches = state
+        .refresh_task_dispatch_records_if_active(dispatches)
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!(

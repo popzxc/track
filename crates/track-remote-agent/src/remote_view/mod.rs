@@ -74,6 +74,10 @@ impl RemoteWorkspace {
         RemoteMaintenanceRepository::new(self)
     }
 
+    pub(crate) fn remote_agent(&self) -> &RemoteAgentRuntimeConfig {
+        &self.remote_agent
+    }
+
     pub fn resolve_checkout_path_for_project(&self, project_id: &ProjectId) -> RemoteCheckoutPath {
         self.projects()
             .resolve_checkout_path_for_project(project_id)

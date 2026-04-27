@@ -19,9 +19,7 @@ pub use remote_view::{
     RemoteWorktreeKind, ReviewRunRemoteRepository, ReviewRunView, TaskDispatchView,
     TaskRunRemoteRepository,
 };
-pub use service::{
-    RemoteAgentConfigProvider, RemoteAgentServices, RemoteDispatchService, RemoteReviewService,
-};
+pub use service::{RemoteAgentRuntimeServices, RemoteDispatchService, RemoteReviewService};
 pub use types::{RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation};
 
 // TODO: It's a hack to expose it, we shouldn't leak implementation details

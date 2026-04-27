@@ -44,7 +44,7 @@ impl SshClient {
             return Err(TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task.",
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before using the remote agent.",
                     collapse_home_path(&config.managed_key_path)
                 ),
             ));

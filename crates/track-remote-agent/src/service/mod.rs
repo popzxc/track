@@ -4,7 +4,7 @@ mod remote_agent_services;
 mod review;
 
 pub use self::dispatch::RemoteDispatchService;
-pub use self::remote_agent_services::{RemoteAgentConfigProvider, RemoteAgentServices};
+pub use self::remote_agent_services::RemoteAgentRuntimeServices;
 pub use self::review::RemoteReviewService;
 
 const REMOTE_FAILURE_LOG_TAIL_LINES: usize = 30;

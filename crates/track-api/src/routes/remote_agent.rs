@@ -257,7 +257,9 @@ pub(crate) async fn cleanup_remote_agent_artifacts(
 ) -> Result<Json<RemoteCleanupResponse>, ApiError> {
     let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
     let summary = state
-        .remote_agent_services()
+        .remote_agent_runtime_services()
+        .await
+        .map_err(ApiError::from_track_error)?
         .cleanup_unused_remote_artifacts()
         .await
         .map_err(ApiError::from_track_error)?;
@@ -279,7 +281,9 @@ pub(crate) async fn reset_remote_agent_workspace(
 ) -> Result<Json<RemoteResetResponse>, ApiError> {
     let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
     let summary = state
-        .remote_agent_services()
+        .remote_agent_runtime_services()
+        .await
+        .map_err(ApiError::from_track_error)?
         .reset_remote_workspace()
         .await
         .map_err(ApiError::from_track_error)?;
