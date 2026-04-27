@@ -2,7 +2,9 @@ use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{DispatchId, ProjectId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::parse_iso_8601_millis;
-use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, TaskDispatchRecord};
+use track_types::types::{
+    DispatchStatus, RemoteAgentPreferredTool, RemoteRunState, TaskDispatchRecord,
+};
 use track_types::urls::parse_persisted_url;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -56,26 +58,28 @@ impl TryFrom<TaskDispatchRow> for TaskDispatchRecord {
             })?;
 
         Ok(TaskDispatchRecord {
-            dispatch_id: DispatchId::from_db(dispatch_id),
+            run: RemoteRunState {
+                dispatch_id: DispatchId::from_db(dispatch_id),
+                preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
+                status: parse_dispatch_status(record.status.as_str())?,
+                created_at,
+                updated_at,
+                finished_at,
+                remote_host: record.remote_host,
+                branch_name: record.branch_name.map(DispatchBranch::from_db_unchecked),
+                worktree_path: record
+                    .worktree_path
+                    .map(DispatchWorktreePath::from_db_unchecked),
+                follow_up_request: record.follow_up_request,
+                summary: record.summary,
+                notes: record.notes,
+                error_message: record.error_message,
+            },
             task_id: TaskId::from_db(record.task_id),
-            preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
             project: ProjectId::from_db(record.project),
-            status: parse_dispatch_status(record.status.as_str())?,
-            created_at,
-            updated_at,
-            finished_at,
-            remote_host: record.remote_host,
-            branch_name: record.branch_name.map(DispatchBranch::from_db_unchecked),
-            worktree_path: record
-                .worktree_path
-                .map(DispatchWorktreePath::from_db_unchecked),
             pull_request_url: record.pull_request_url.map(|value| {
                 parse_persisted_url(value, "stored dispatch pull request URLs should be valid")
             }),
-            follow_up_request: record.follow_up_request,
-            summary: record.summary,
-            notes: record.notes,
-            error_message: record.error_message,
             review_request_head_oid: record.review_request_head_oid,
             review_request_user: record.review_request_user,
         })

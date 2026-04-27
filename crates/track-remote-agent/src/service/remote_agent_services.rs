@@ -231,7 +231,7 @@ impl<'a> RemoteAgentServices<'a> {
                 Ok(_) => {
                     let active_dispatch_history = dispatch_history
                         .iter()
-                        .filter(|record| record.status.is_active())
+                        .filter(|record| record.run.status.is_active())
                         .cloned()
                         .collect::<Vec<_>>();
                     if !active_dispatch_history.is_empty() {
@@ -409,7 +409,7 @@ impl<'a> RemoteAgentServices<'a> {
                     reconciliation.failures += 1;
                     tracing::warn!(
                         task_id = %dispatch_record.task_id,
-                        dispatch_id = %dispatch_record.dispatch_id,
+                        dispatch_id = %dispatch_record.run.dispatch_id,
                         pull_request_url = %pull_request_url,
                         reviewer = %review_follow_up.main_user,
                         error = %error,
@@ -444,7 +444,7 @@ impl<'a> RemoteAgentServices<'a> {
                 continue;
             }
 
-            if dispatch_record.status.is_active() {
+            if dispatch_record.run.status.is_active() {
                 reconciliation.events.push(RemoteReviewFollowUpEvent::new(
                     "skip_active_dispatch",
                     "Skipped automatic follow-up because the latest dispatch is still active.",
@@ -456,11 +456,11 @@ impl<'a> RemoteAgentServices<'a> {
             }
 
             if let Some(latest_review) = pull_request_state.latest_eligible_review.as_ref() {
-                if latest_review.submitted_at > dispatch_record.created_at {
+                if latest_review.submitted_at > dispatch_record.run.created_at {
                     let follow_up_request = RemoteDispatchPrompt::build_review_follow_up_request(
                         pull_request_url,
                         &review_follow_up.main_user,
-                        dispatch_record.created_at,
+                        dispatch_record.run.created_at,
                     );
                     let queued_dispatch = dispatch_service
                         .queue_follow_up_dispatch(&dispatch_record.task_id, &follow_up_request)
@@ -472,7 +472,7 @@ impl<'a> RemoteAgentServices<'a> {
                             review_follow_up.main_user,
                             latest_review.state,
                             format_iso_8601_millis(latest_review.submitted_at),
-                            dispatch_record.dispatch_id,
+                            dispatch_record.run.dispatch_id,
                         ),
                         &queued_dispatch,
                         &review_follow_up.main_user,
@@ -480,7 +480,7 @@ impl<'a> RemoteAgentServices<'a> {
                     ));
                     tracing::info!(
                         task_id = %queued_dispatch.task_id,
-                        dispatch_id = %queued_dispatch.dispatch_id,
+                        dispatch_id = %queued_dispatch.run.dispatch_id,
                         reviewer = %review_follow_up.main_user,
                         pull_request_url = %pull_request_url,
                         "Queued automatic follow-up dispatch from PR review state"
@@ -544,7 +544,7 @@ impl<'a> RemoteAgentServices<'a> {
                 reconciliation.failures += 1;
                 tracing::warn!(
                     task_id = %dispatch_record.task_id,
-                    dispatch_id = %dispatch_record.dispatch_id,
+                    dispatch_id = %dispatch_record.run.dispatch_id,
                     reviewer = %review_follow_up.main_user,
                     pull_request_url = %pull_request_url,
                     error = %error,
@@ -575,7 +575,7 @@ impl<'a> RemoteAgentServices<'a> {
             reconciliation.review_notifications_updated += 1;
             tracing::info!(
                 task_id = %dispatch_record.task_id,
-                dispatch_id = %dispatch_record.dispatch_id,
+                dispatch_id = %dispatch_record.run.dispatch_id,
                 reviewer = %review_follow_up.main_user,
                 pull_request_url = %pull_request_url,
                 "Posted PR reviewer follow-up notification"
@@ -690,26 +690,32 @@ mod tests {
     use super::{review_notification_decision, ReviewNotificationDecision};
     use track_types::ids::{DispatchId, ProjectId, TaskId};
     use track_types::time_utils::now_utc;
-    use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, TaskDispatchRecord};
+    use track_types::types::{
+        DispatchStatus, RemoteAgentPreferredTool, RemoteRunState, TaskDispatchRecord,
+    };
 
     fn sample_dispatch_record() -> TaskDispatchRecord {
+        let dispatch_id = DispatchId::new("dispatch-1").expect("dispatch ids should parse");
+        let timestamp = now_utc();
         TaskDispatchRecord {
-            dispatch_id: DispatchId::new("dispatch-1").expect("dispatch ids should parse"),
+            run: RemoteRunState {
+                dispatch_id,
+                preferred_tool: RemoteAgentPreferredTool::Codex,
+                status: DispatchStatus::Succeeded,
+                created_at: timestamp,
+                updated_at: timestamp,
+                finished_at: Some(timestamp),
+                remote_host: "127.0.0.1".to_owned(),
+                branch_name: None,
+                worktree_path: None,
+                follow_up_request: None,
+                summary: None,
+                notes: None,
+                error_message: None,
+            },
             task_id: TaskId::new("task-1").expect("task ids should parse"),
-            preferred_tool: RemoteAgentPreferredTool::Codex,
             project: ProjectId::new("project-a").expect("project ids should parse"),
-            status: DispatchStatus::Succeeded,
-            created_at: now_utc(),
-            updated_at: now_utc(),
-            finished_at: Some(now_utc()),
-            remote_host: "127.0.0.1".to_owned(),
-            branch_name: None,
-            worktree_path: None,
             pull_request_url: None,
-            follow_up_request: None,
-            summary: None,
-            notes: None,
-            error_message: None,
             review_request_head_oid: None,
             review_request_user: None,
         }

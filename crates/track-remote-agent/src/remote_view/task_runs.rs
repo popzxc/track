@@ -81,7 +81,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
     ) -> Result<BTreeMap<String, RemoteRunSnapshotView>, TrackError> {
         let active_records = records
             .iter()
-            .filter(|record| record.status.is_active())
+            .filter(|record| record.run.status.is_active())
             .cloned()
             .collect::<Vec<_>>();
         if active_records.is_empty() {
@@ -92,7 +92,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
         Ok(active_records
             .into_iter()
             .zip(snapshots)
-            .map(|(record, snapshot)| (record.dispatch_id.to_string(), snapshot))
+            .map(|(record, snapshot)| (record.run.dispatch_id.to_string(), snapshot))
             .collect())
     }
 
@@ -129,10 +129,12 @@ impl<'a> TaskRunRemoteRepository<'a> {
         reuse_existing_worktree: bool,
     ) -> Result<(), TrackError> {
         let branch_name = dispatch_record
+            .run
             .branch_name
             .as_ref()
             .expect("task dispatch records should include branch names before remote launch");
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("task dispatch records should include worktree paths before remote launch");
@@ -190,6 +192,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<DispatchRunDirectory, TrackError> {
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("task dispatch records should include worktree paths before remote launch");
@@ -199,7 +202,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
             &self.workspace.ssh_client,
             &run_directory,
             worktree_path,
-            dispatch_record.preferred_tool,
+            dispatch_record.run.preferred_tool,
         )
         .execute()
         .await?;
@@ -251,7 +254,7 @@ fn unique_task_worktree_paths(
 ) -> Vec<track_types::remote_layout::DispatchWorktreePath> {
     let mut paths = dispatch_history
         .iter()
-        .filter_map(|record| record.worktree_path.clone())
+        .filter_map(|record| record.run.worktree_path.clone())
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();

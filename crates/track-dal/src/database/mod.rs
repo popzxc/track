@@ -199,9 +199,10 @@ mod tests {
         "projects",
         "project_aliases",
         "tasks",
-        "task_dispatches",
         "reviews",
-        "review_runs",
+        "remote_runs",
+        "task_run_details",
+        "review_run_details",
         "backend_settings",
     ];
 
@@ -226,7 +227,7 @@ mod tests {
             .await
             .expect("migration count query should succeed");
         let migration_count = row.get::<i64, _>("count");
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
 
         for table_name in EXPECTED_APPLICATION_TABLES {
             let row = sqlx::query(

@@ -1,4 +1,5 @@
 mod dispatch;
+mod lifecycle;
 mod remote_agent_services;
 mod review;
 

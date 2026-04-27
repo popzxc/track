@@ -61,10 +61,11 @@ impl RemoteReviewFollowUpEvent {
             outcome: outcome.to_owned(),
             detail: detail.into(),
             task_id: dispatch_record.task_id.to_string(),
-            dispatch_id: dispatch_record.dispatch_id.to_string(),
-            dispatch_status: dispatch_record.status.as_str().to_owned(),
-            remote_host: dispatch_record.remote_host.clone(),
+            dispatch_id: dispatch_record.run.dispatch_id.to_string(),
+            dispatch_status: dispatch_record.run.status.as_str().to_owned(),
+            remote_host: dispatch_record.run.remote_host.clone(),
             branch_name: dispatch_record
+                .run
                 .branch_name
                 .clone()
                 .map(|branch_name| branch_name.into_inner()),

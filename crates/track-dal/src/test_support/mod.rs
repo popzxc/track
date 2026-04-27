@@ -7,8 +7,8 @@ use track_types::ids::{DispatchId, ProjectId, ReviewId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::parse_iso_8601_millis;
 use track_types::types::{
-    DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord, Status,
-    Task, TaskDispatchRecord, TaskSource,
+    DispatchStatus, Priority, RemoteAgentPreferredTool, RemoteRunState, ReviewRecord,
+    ReviewRunRecord, Status, Task, TaskDispatchRecord, TaskSource,
 };
 use track_types::urls::Url;
 
@@ -76,26 +76,28 @@ pub(crate) fn sample_dispatch(
     let project = ProjectId::new(project).unwrap();
 
     TaskDispatchRecord {
-        dispatch_id: dispatch_id.clone(),
+        run: RemoteRunState {
+            dispatch_id: dispatch_id.clone(),
+            preferred_tool,
+            status,
+            created_at: parse_iso_8601_millis(created_at).expect("fixture created_at should parse"),
+            updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
+            finished_at: None,
+            remote_host: "198.51.100.10".to_owned(),
+            branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
+            worktree_path: Some(DispatchWorktreePath::for_task(
+                "/tmp",
+                &project,
+                &dispatch_id,
+            )),
+            follow_up_request: None,
+            summary: None,
+            notes: None,
+            error_message: None,
+        },
         task_id,
-        preferred_tool,
         project: project.clone(),
-        status,
-        created_at: parse_iso_8601_millis(created_at).expect("fixture created_at should parse"),
-        updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
-        finished_at: None,
-        remote_host: "198.51.100.10".to_owned(),
-        branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
-        worktree_path: Some(DispatchWorktreePath::for_task(
-            "/tmp",
-            &project,
-            &dispatch_id,
-        )),
         pull_request_url: None,
-        follow_up_request: None,
-        summary: None,
-        notes: None,
-        error_message: None,
         review_request_head_oid: None,
         review_request_user: None,
     }
@@ -142,30 +144,32 @@ pub(crate) fn sample_review_run(
     let dispatch_id = DispatchId::new(dispatch_id).unwrap();
 
     ReviewRunRecord {
-        dispatch_id: dispatch_id.clone(),
+        run: RemoteRunState {
+            dispatch_id: dispatch_id.clone(),
+            preferred_tool,
+            status,
+            created_at: parse_iso_8601_millis(created_at).expect("fixture created_at should parse"),
+            updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
+            finished_at: None,
+            remote_host: "198.51.100.10".to_owned(),
+            branch_name: Some(DispatchBranch::for_review(&dispatch_id)),
+            worktree_path: Some(DispatchWorktreePath::for_review(
+                "/tmp",
+                &review.workspace_key,
+                &dispatch_id,
+            )),
+            follow_up_request: None,
+            summary: None,
+            notes: None,
+            error_message: None,
+        },
         review_id: review.id.clone(),
         pull_request_url: review.pull_request_url.clone(),
         repository_full_name: review.repository_full_name.clone(),
         workspace_key: review.workspace_key.clone(),
-        preferred_tool,
-        status,
-        created_at: parse_iso_8601_millis(created_at).expect("fixture created_at should parse"),
-        updated_at: parse_iso_8601_millis(updated_at).expect("fixture updated_at should parse"),
-        finished_at: None,
-        remote_host: "198.51.100.10".to_owned(),
-        branch_name: Some(DispatchBranch::for_review(&dispatch_id)),
-        worktree_path: Some(DispatchWorktreePath::for_review(
-            "/tmp",
-            &review.workspace_key,
-            &dispatch_id,
-        )),
-        follow_up_request: None,
         target_head_oid: None,
-        summary: None,
         review_submitted: false,
         github_review_id: None,
         github_review_url: None,
-        notes: None,
-        error_message: None,
     }
 }

@@ -106,9 +106,9 @@ pub(crate) async fn create_review(
     spawn_review_launch(state.clone(), run.clone());
     tracing::info!(
         review_id = %review.id,
-        dispatch_id = %run.dispatch_id,
-        remote_host = %run.remote_host,
-        preferred_tool = ?run.preferred_tool,
+        dispatch_id = %run.run.dispatch_id,
+        remote_host = %run.run.remote_host,
+        preferred_tool = ?run.run.preferred_tool,
         "Created review from API"
     );
 
@@ -141,8 +141,8 @@ pub(crate) async fn follow_up_review(
 
     spawn_review_launch(state.clone(), run.clone());
     tracing::info!(
-        dispatch_id = %run.dispatch_id,
-        remote_host = %run.remote_host,
+        dispatch_id = %run.run.dispatch_id,
+        remote_host = %run.run.remote_host,
         "Queued review follow-up from API"
     );
 
@@ -184,7 +184,7 @@ pub(crate) async fn cancel_review_dispatch(
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!(
-        dispatch_id = %canceled_dispatch.dispatch_id,
+        dispatch_id = %canceled_dispatch.run.dispatch_id,
         "Canceled review dispatch from API"
     );
 
@@ -195,8 +195,8 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
     tokio::spawn(async move {
         tracing::info!(
             review_id = %queued_dispatch.review_id,
-            dispatch_id = %queued_dispatch.dispatch_id,
-            remote_host = %queued_dispatch.remote_host,
+            dispatch_id = %queued_dispatch.run.dispatch_id,
+            remote_host = %queued_dispatch.run.remote_host,
             "Starting background review launch"
         );
         let launch_result = state
@@ -208,22 +208,22 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
         if let Err(join_error) = launch_result {
             tracing::error!(
                 review_id = %queued_dispatch.review_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background review launch failed"
             );
             if let Some(mut saved_dispatch) = state
                 .database
                 .review_dispatch_repository()
-                .get_dispatch(&queued_dispatch.review_id, &queued_dispatch.dispatch_id)
+                .get_dispatch(&queued_dispatch.review_id, &queued_dispatch.run.dispatch_id)
                 .await
                 .ok()
                 .flatten()
             {
-                if saved_dispatch.status.is_active() {
-                    saved_dispatch.status = track_types::types::DispatchStatus::Failed;
-                    saved_dispatch.updated_at = now_utc();
-                    saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
-                    saved_dispatch.error_message = Some(format!(
+                if saved_dispatch.run.status.is_active() {
+                    saved_dispatch.run.status = track_types::types::DispatchStatus::Failed;
+                    saved_dispatch.run.updated_at = now_utc();
+                    saved_dispatch.run.finished_at = Some(saved_dispatch.run.updated_at);
+                    saved_dispatch.run.error_message = Some(format!(
                         "Background review task stopped unexpectedly: {join_error}"
                     ));
                     let _ = state
@@ -236,7 +236,7 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
         } else {
             tracing::info!(
                 review_id = %queued_dispatch.review_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background review launch finished"
             );
         }

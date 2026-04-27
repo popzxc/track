@@ -10,7 +10,7 @@ pub(crate) fn unique_review_worktree_paths(
 ) -> Vec<DispatchWorktreePath> {
     dispatch_history
         .iter()
-        .filter_map(|record| record.worktree_path.as_ref())
+        .filter_map(|record| record.run.worktree_path.as_ref())
         .cloned()
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -24,14 +24,14 @@ pub(crate) fn unique_review_run_directories(
     dispatch_history
         .iter()
         .map(|record| {
-            if let Some(worktree_path) = record.worktree_path.as_ref() {
+            if let Some(worktree_path) = record.run.worktree_path.as_ref() {
                 return worktree_path.run_directory();
             }
 
             DispatchRunDirectory::for_review(
                 &remote_agent.workspace_root,
                 &record.workspace_key,
-                &record.dispatch_id,
+                &record.run.dispatch_id,
             )
         })
         .collect::<std::collections::BTreeSet<_>>()
@@ -45,14 +45,14 @@ pub(crate) fn describe_remote_reset_blockers(
 ) -> Vec<String> {
     let mut blockers = task_dispatches
         .iter()
-        .filter(|record| record.status.is_active())
-        .map(|record| format!("task {} ({})", record.task_id, record.dispatch_id))
+        .filter(|record| record.run.status.is_active())
+        .map(|record| format!("task {} ({})", record.task_id, record.run.dispatch_id))
         .collect::<Vec<_>>();
     blockers.extend(
         review_dispatches
             .iter()
-            .filter(|record| record.status.is_active())
-            .map(|record| format!("review {} ({})", record.review_id, record.dispatch_id)),
+            .filter(|record| record.run.status.is_active())
+            .map(|record| format!("review {} ({})", record.review_id, record.run.dispatch_id)),
     );
     blockers
 }
@@ -106,7 +106,8 @@ mod tests {
     use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
     use track_types::time_utils::now_utc;
     use track_types::types::{
-        DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord, TaskDispatchRecord,
+        DispatchStatus, RemoteAgentPreferredTool, RemoteRunState, ReviewRunRecord,
+        TaskDispatchRecord,
     };
     use track_types::urls::Url;
 
@@ -157,57 +158,61 @@ mod tests {
         let task_dispatch_id = DispatchId::new("dispatch-1").unwrap();
         let task_project = ProjectId::new("project-a").unwrap();
         let task_dispatch = TaskDispatchRecord {
-            dispatch_id: task_dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: task_dispatch_id.clone(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
+                status: DispatchStatus::Running,
+                created_at,
+                updated_at: created_at,
+                finished_at: None,
+                remote_host: "198.51.100.10".to_owned(),
+                branch_name: Some(DispatchBranch::for_task(&task_dispatch_id)),
+                worktree_path: Some(DispatchWorktreePath::for_task(
+                    "~/workspace",
+                    &task_project,
+                    &task_dispatch_id,
+                )),
+                follow_up_request: None,
+                summary: None,
+                notes: None,
+                error_message: None,
+            },
             task_id: TaskId::new("task-1").unwrap(),
-            preferred_tool: RemoteAgentPreferredTool::Codex,
             project: task_project.clone(),
-            status: DispatchStatus::Running,
-            created_at,
-            updated_at: created_at,
-            finished_at: None,
-            remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some(DispatchBranch::for_task(&task_dispatch_id)),
-            worktree_path: Some(DispatchWorktreePath::for_task(
-                "~/workspace",
-                &task_project,
-                &task_dispatch_id,
-            )),
             pull_request_url: None,
-            follow_up_request: None,
-            summary: None,
-            notes: None,
-            error_message: None,
             review_request_head_oid: None,
             review_request_user: None,
         };
         let review_dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
         let workspace_key = WorkspaceKey::new("project-a").unwrap();
         let review_dispatch = ReviewRunRecord {
-            dispatch_id: review_dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: review_dispatch_id.clone(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
+                status: DispatchStatus::Running,
+                created_at,
+                updated_at: created_at,
+                finished_at: None,
+                remote_host: "198.51.100.10".to_owned(),
+                branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
+                worktree_path: Some(DispatchWorktreePath::for_review(
+                    "~/workspace",
+                    &workspace_key,
+                    &review_dispatch_id,
+                )),
+                follow_up_request: None,
+                summary: None,
+                notes: None,
+                error_message: None,
+            },
             review_id: ReviewId::new("review-1").unwrap(),
             pull_request_url: Url::parse("https://github.com/acme/project-a/pull/42").unwrap(),
             repository_full_name: "acme/project-a".to_owned(),
             workspace_key: workspace_key.clone(),
-            preferred_tool: RemoteAgentPreferredTool::Codex,
-            status: DispatchStatus::Running,
-            created_at,
-            updated_at: created_at,
-            finished_at: None,
-            remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
-            worktree_path: Some(DispatchWorktreePath::for_review(
-                "~/workspace",
-                &workspace_key,
-                &review_dispatch_id,
-            )),
-            follow_up_request: None,
             target_head_oid: Some("abc123def456".to_owned()),
-            summary: None,
             review_submitted: false,
             github_review_id: None,
             github_review_url: None,
-            notes: None,
-            error_message: None,
         };
 
         let blockers = describe_remote_reset_blockers(&[task_dispatch], &[review_dispatch]);

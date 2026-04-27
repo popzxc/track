@@ -103,7 +103,7 @@ async fn remote_view_loads_projects_dispatches_reviews_and_worktrees() {
         .await
         .expect("task dispatch views should load");
     assert_eq!(task_dispatches.len(), 1);
-    assert_eq!(task_dispatches[0].record.dispatch_id, task_dispatch_id);
+    assert_eq!(task_dispatches[0].record.run.dispatch_id, task_dispatch_id);
     assert_eq!(
         task_dispatches[0].remote.status,
         RemoteRunObservedStatus::Completed
@@ -128,7 +128,7 @@ async fn remote_view_loads_projects_dispatches_reviews_and_worktrees() {
     assert_eq!(reviews.reviews[0].id, review_id);
     assert_eq!(reviews.review_runs.len(), 1);
     assert_eq!(
-        reviews.review_runs[0].record.dispatch_id,
+        reviews.review_runs[0].record.run.dispatch_id,
         review_dispatch_id
     );
     assert_eq!(

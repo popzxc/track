@@ -78,7 +78,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
     ) -> Result<BTreeMap<String, RemoteRunSnapshotView>, TrackError> {
         let active_records = records
             .iter()
-            .filter(|record| record.status.is_active())
+            .filter(|record| record.run.status.is_active())
             .cloned()
             .collect::<Vec<_>>();
         if active_records.is_empty() {
@@ -89,7 +89,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
         Ok(active_records
             .into_iter()
             .zip(snapshots)
-            .map(|(record, snapshot)| (record.dispatch_id.to_string(), snapshot))
+            .map(|(record, snapshot)| (record.run.dispatch_id.to_string(), snapshot))
             .collect())
     }
 
@@ -125,10 +125,12 @@ impl<'a> ReviewRunRemoteRepository<'a> {
         target_head_oid: Option<&str>,
     ) -> Result<(), TrackError> {
         let branch_name = dispatch_record
+            .run
             .branch_name
             .as_ref()
             .expect("review run records should include branch names before remote launch");
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("review run records should include worktree paths before remote launch");
@@ -176,6 +178,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
         dispatch_record: &ReviewRunRecord,
     ) -> Result<DispatchRunDirectory, TrackError> {
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("review run records should include worktree paths before remote launch");
@@ -185,7 +188,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             &self.workspace.ssh_client,
             &run_directory,
             worktree_path,
-            dispatch_record.preferred_tool,
+            dispatch_record.run.preferred_tool,
         )
         .execute()
         .await?;
@@ -213,7 +216,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
     ) -> Result<RemoteArtifactCleanupSummary, TrackError> {
         let branch_names = dispatch_history
             .iter()
-            .filter_map(|record| record.branch_name.clone())
+            .filter_map(|record| record.run.branch_name.clone())
             .collect::<Vec<_>>();
         let worktree_paths = unique_review_worktree_paths(dispatch_history);
         let run_directories =

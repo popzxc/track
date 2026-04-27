@@ -199,9 +199,9 @@ pub(crate) async fn dispatch_task(
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
     tracing::info!(
-        dispatch_id = %dispatch.dispatch_id,
-        remote_host = %dispatch.remote_host,
-        preferred_tool = ?dispatch.preferred_tool,
+        dispatch_id = %dispatch.run.dispatch_id,
+        remote_host = %dispatch.run.remote_host,
+        preferred_tool = ?dispatch.run.preferred_tool,
         "Queued task dispatch from API"
     );
 
@@ -227,8 +227,8 @@ pub(crate) async fn follow_up_task(
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
     tracing::info!(
-        dispatch_id = %dispatch.dispatch_id,
-        remote_host = %dispatch.remote_host,
+        dispatch_id = %dispatch.run.dispatch_id,
+        remote_host = %dispatch.run.remote_host,
         "Queued task follow-up dispatch from API"
     );
 
@@ -247,7 +247,7 @@ pub(crate) async fn cancel_task_dispatch(
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!(
-        dispatch_id = %canceled_dispatch.dispatch_id,
+        dispatch_id = %canceled_dispatch.run.dispatch_id,
         "Canceled task dispatch from API"
     );
 
@@ -275,8 +275,8 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
     tokio::spawn(async move {
         tracing::info!(
             task_id = %queued_dispatch.task_id,
-            dispatch_id = %queued_dispatch.dispatch_id,
-            remote_host = %queued_dispatch.remote_host,
+            dispatch_id = %queued_dispatch.run.dispatch_id,
+            remote_host = %queued_dispatch.run.remote_host,
             "Starting background task dispatch launch"
         );
         let launch_result = state
@@ -288,22 +288,22 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
         if let Err(join_error) = launch_result {
             tracing::error!(
                 task_id = %queued_dispatch.task_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background task dispatch launch failed"
             );
             if let Some(mut saved_dispatch) = state
                 .database
                 .dispatch_repository()
-                .get_dispatch(&queued_dispatch.task_id, &queued_dispatch.dispatch_id)
+                .get_dispatch(&queued_dispatch.task_id, &queued_dispatch.run.dispatch_id)
                 .await
                 .ok()
                 .flatten()
             {
-                if saved_dispatch.status.is_active() {
-                    saved_dispatch.status = track_types::types::DispatchStatus::Failed;
-                    saved_dispatch.updated_at = now_utc();
-                    saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
-                    saved_dispatch.error_message = Some(format!(
+                if saved_dispatch.run.status.is_active() {
+                    saved_dispatch.run.status = track_types::types::DispatchStatus::Failed;
+                    saved_dispatch.run.updated_at = now_utc();
+                    saved_dispatch.run.finished_at = Some(saved_dispatch.run.updated_at);
+                    saved_dispatch.run.error_message = Some(format!(
                         "Background dispatch task stopped unexpectedly: {join_error}"
                     ));
                     let _ = state
@@ -316,7 +316,7 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
         } else {
             tracing::info!(
                 task_id = %queued_dispatch.task_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background task dispatch launch finished"
             );
         }

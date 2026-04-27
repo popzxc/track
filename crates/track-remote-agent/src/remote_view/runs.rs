@@ -145,14 +145,14 @@ pub(super) fn derive_task_run_directory(
     record: &TaskDispatchRecord,
     remote_agent: &RemoteAgentRuntimeConfig,
 ) -> DispatchRunDirectory {
-    if let Some(worktree_path) = record.worktree_path.as_ref() {
-        return worktree_path.run_directory_for(&record.dispatch_id);
+    if let Some(worktree_path) = record.run.worktree_path.as_ref() {
+        return worktree_path.run_directory_for(&record.run.dispatch_id);
     }
 
     DispatchRunDirectory::for_task(
         &remote_agent.workspace_root,
         &record.project,
-        &record.dispatch_id,
+        &record.run.dispatch_id,
     )
 }
 
@@ -160,14 +160,14 @@ pub(super) fn derive_review_run_directory(
     record: &ReviewRunRecord,
     remote_agent: &RemoteAgentRuntimeConfig,
 ) -> DispatchRunDirectory {
-    if let Some(worktree_path) = record.worktree_path.as_ref() {
+    if let Some(worktree_path) = record.run.worktree_path.as_ref() {
         return worktree_path.run_directory();
     }
 
     DispatchRunDirectory::for_review(
         &remote_agent.workspace_root,
         &record.workspace_key,
-        &record.dispatch_id,
+        &record.run.dispatch_id,
     )
 }
 

@@ -21,8 +21,8 @@ use track_types::ids::{DispatchId, ProjectId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::now_utc;
 use track_types::types::{
-    DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
-    TaskCreateInput, TaskSource,
+    DispatchStatus, Priority, RemoteAgentPreferredTool, RemoteRunState, ReviewRecord,
+    ReviewRunRecord, TaskCreateInput, TaskSource,
 };
 use track_types::urls::Url;
 
@@ -323,8 +323,8 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         )
         .await
         .expect("first dispatch should be created");
-    first_dispatch.status = DispatchStatus::Succeeded;
-    first_dispatch.finished_at = Some(first_dispatch.updated_at);
+    first_dispatch.run.status = DispatchStatus::Succeeded;
+    first_dispatch.run.finished_at = Some(first_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&first_dispatch)
         .await
@@ -350,8 +350,8 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         )
         .await
         .expect("second dispatch should be created");
-    second_dispatch.status = DispatchStatus::Succeeded;
-    second_dispatch.finished_at = Some(second_dispatch.updated_at);
+    second_dispatch.run.status = DispatchStatus::Succeeded;
+    second_dispatch.run.finished_at = Some(second_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&second_dispatch)
         .await
@@ -447,8 +447,8 @@ async fn lists_runs_with_task_context() {
         )
         .await
         .expect("dispatch should be created");
-    dispatch.status = DispatchStatus::Succeeded;
-    dispatch.finished_at = Some(dispatch.updated_at);
+    dispatch.run.status = DispatchStatus::Succeeded;
+    dispatch.run.finished_at = Some(dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&dispatch)
         .await
@@ -480,7 +480,7 @@ async fn lists_runs_with_task_context() {
     assert_eq!(json["runs"][0]["task"]["id"], task.id.as_str());
     assert_eq!(
         json["runs"][0]["dispatch"]["dispatchId"],
-        dispatch.dispatch_id.as_str()
+        dispatch.run.dispatch_id.as_str()
     );
 }
 
@@ -525,8 +525,8 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         )
         .await
         .expect("first dispatch should be created");
-    first_dispatch.status = DispatchStatus::Succeeded;
-    first_dispatch.finished_at = Some(first_dispatch.updated_at);
+    first_dispatch.run.status = DispatchStatus::Succeeded;
+    first_dispatch.run.finished_at = Some(first_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&first_dispatch)
         .await
@@ -552,8 +552,8 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         )
         .await
         .expect("second dispatch should be created");
-    second_dispatch.status = DispatchStatus::Succeeded;
-    second_dispatch.finished_at = Some(second_dispatch.updated_at);
+    second_dispatch.run.status = DispatchStatus::Succeeded;
+    second_dispatch.run.finished_at = Some(second_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&second_dispatch)
         .await
@@ -623,34 +623,36 @@ async fn lists_reviews_with_latest_run_and_review_history() {
     let review_dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
     review_dispatch_repository
         .save_dispatch(&ReviewRunRecord {
-            dispatch_id: review_dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: review_dispatch_id.clone(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
+                status: DispatchStatus::Succeeded,
+                created_at,
+                updated_at: created_at,
+                finished_at: Some(created_at),
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
+                worktree_path: Some(DispatchWorktreePath::for_review(
+                    "/tmp",
+                    &review.workspace_key,
+                    &review_dispatch_id,
+                )),
+                follow_up_request: None,
+                summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
+                notes: None,
+                error_message: None,
+            },
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
-            preferred_tool: RemoteAgentPreferredTool::Codex,
-            status: DispatchStatus::Succeeded,
-            created_at,
-            updated_at: created_at,
-            finished_at: Some(created_at),
-            remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
-            worktree_path: Some(DispatchWorktreePath::for_review(
-                "/tmp",
-                &review.workspace_key,
-                &review_dispatch_id,
-            )),
-            follow_up_request: None,
             target_head_oid: Some("abc123def456".to_owned()),
-            summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),
             github_review_url: Some(
                 Url::parse("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
                     .unwrap(),
             ),
-            notes: None,
-            error_message: None,
         })
         .await
         .expect("review run should save");
@@ -749,8 +751,8 @@ async fn discards_dispatch_history_for_a_task() {
         )
         .await
         .expect("dispatch should be created");
-    dispatch.status = DispatchStatus::Failed;
-    dispatch.finished_at = Some(dispatch.updated_at);
+    dispatch.run.status = DispatchStatus::Failed;
+    dispatch.run.finished_at = Some(dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&dispatch)
         .await
