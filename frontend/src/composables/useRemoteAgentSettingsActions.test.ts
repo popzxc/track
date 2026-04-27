@@ -5,14 +5,14 @@ import type { RemoteAgentPreferredTool } from '../api/types'
 import * as apiClient from '../api/client'
 import { buildRemoteAgentSettings, buildTask } from '../testing/factories'
 import { TOOL_CONSTANTS } from '../testing/constants'
-import { useSettingsMutations } from './useSettingsMutations'
+import { useRemoteAgentSettingsActions } from './useRemoteAgentSettingsActions'
 
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
-function createSettingsMutationHarness() {
+function createRemoteAgentSettingsActionsHarness() {
   const cleaningUpRemoteArtifacts = ref(false)
   const cleanupPendingConfirmation = ref(false)
   const cleanupSummary = ref(null)
@@ -38,7 +38,7 @@ function createSettingsMutationHarness() {
     remoteAgentSettings,
     resumeQueuedTaskDispatch,
     taskPendingRunnerSetup,
-    mutations: useSettingsMutations({
+    actions: useRemoteAgentSettingsActions({
       cleaningUpRemoteArtifacts,
       cleanupPendingConfirmation,
       cleanupSummary,
@@ -57,10 +57,10 @@ function createSettingsMutationHarness() {
   }
 }
 
-describe('useSettingsMutations', () => {
+describe('useRemoteAgentSettingsActions', () => {
   it('saves remote runner settings and resumes the queued dispatch intent', async () => {
     vi.useFakeTimers()
-    const harness = createSettingsMutationHarness()
+    const harness = createRemoteAgentSettingsActionsHarness()
     const queuedTask = buildTask()
     const savedSettings = buildRemoteAgentSettings(
       { shellPrelude: 'export PATH=/srv/tools:$PATH' },
@@ -72,7 +72,7 @@ describe('useSettingsMutations', () => {
     }
     vi.spyOn(apiClient, 'updateRemoteAgentSettings').mockResolvedValue(savedSettings)
 
-    await harness.mutations.saveRemoteAgentSetup({
+    await harness.actions.saveRemoteAgentSetup({
       preferredTool: TOOL_CONSTANTS.CLAUDE,
       shellPrelude: 'export PATH=/srv/tools:$PATH',
     })

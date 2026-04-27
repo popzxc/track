@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import RemoteAgentSetupModal from '../components/RemoteAgentSetupModal.vue'
 import SettingsPageContent from '../components/SettingsPage.vue'
-import { useSettingsMutations } from '../composables/useSettingsMutations'
+import { useRemoteAgentSettingsActions } from '../composables/useRemoteAgentSettingsActions'
 import { useTrackerShell } from '../composables/useTrackerShell'
 import { firstQueryValue, replaceRouteQuery } from '../router/query'
 import type {
@@ -89,7 +89,7 @@ const {
   confirmRemoteCleanup,
   confirmRemoteReset,
   saveRemoteAgentSetup,
-} = useSettingsMutations({
+} = useRemoteAgentSettingsActions({
   cleaningUpRemoteArtifacts,
   cleanupPendingConfirmation,
   cleanupSummary,

@@ -19,7 +19,7 @@ interface PendingRunnerSetupRequest {
   preferredTool: RemoteAgentPreferredTool
 }
 
-interface UseSettingsMutationsOptions {
+interface UseRemoteAgentSettingsActionsOptions {
   cleaningUpRemoteArtifacts: Ref<boolean>
   cleanupPendingConfirmation: Ref<boolean>
   cleanupSummary: Ref<RemoteCleanupSummary | null>
@@ -44,7 +44,7 @@ interface UseSettingsMutationsOptions {
  * Keeping them together highlights that they are "environment" changes rather
  * than everyday queue interactions.
  */
-export function useSettingsMutations(options: UseSettingsMutationsOptions) {
+export function useRemoteAgentSettingsActions(options: UseRemoteAgentSettingsActionsOptions) {
   async function saveRemoteAgentSetup(payload: RemoteAgentSettingsUpdateInput) {
     options.saving.value = true
     options.errorMessage.value = ''
