@@ -352,7 +352,7 @@ async function seedOrphanedCleanupArtifacts(options: {
     `${FIXTURE_WORKSPACE_ROOT}/${E2E_PROJECT_NAME}/dispatches/${ORPHAN_CLEANUP_DISPATCH_ID}`
 
   // The real API has already initialized the SQLite schema by the time this
-  // helper runs. We only seed the orphan dispatch row here so the cleanup
+  // helper runs. We only seed the orphan dispatch rows here so the cleanup
   // flow can observe dispatch history that no longer has a matching task.
   const dbPath = path.join(options.stateDir, 'track.sqlite')
   await mkdir(path.dirname(dbPath), { recursive: true })
@@ -360,14 +360,14 @@ async function seedOrphanedCleanupArtifacts(options: {
   const db = new Database(dbPath)
   try {
     db.run(
-      `INSERT OR IGNORE INTO task_dispatches
-         (dispatch_id, task_id, project, status, created_at, updated_at, finished_at,
-          remote_host, branch_name, worktree_path, preferred_tool, summary)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO remote_runs
+         (dispatch_id, kind, preferred_tool, status, created_at, updated_at, finished_at,
+          remote_host, branch_name, worktree_path, summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         ORPHAN_CLEANUP_DISPATCH_ID,
-        ORPHAN_CLEANUP_TASK_ID,
-        E2E_PROJECT_NAME,
+        'task',
+        'codex',
         'succeeded',
         '2026-03-23T12:05:00.000Z',
         '2026-03-23T12:06:00.000Z',
@@ -375,8 +375,17 @@ async function seedOrphanedCleanupArtifacts(options: {
         FIXTURE_HOST,
         `track/${ORPHAN_CLEANUP_DISPATCH_ID}`,
         orphanWorktreePath,
-        'codex',
         'Left behind on purpose for the browser cleanup e2e.',
+      ],
+    )
+    db.run(
+      `INSERT OR IGNORE INTO task_run_details
+         (dispatch_id, task_id, project)
+       VALUES (?, ?, ?)`,
+      [
+        ORPHAN_CLEANUP_DISPATCH_ID,
+        ORPHAN_CLEANUP_TASK_ID,
+        E2E_PROJECT_NAME,
       ],
     )
   } finally {

@@ -1,10 +1,10 @@
-use track_types::errors::TrackError;
+use track_types::errors::{ErrorCode, TrackError};
 use track_types::remote_layout::{DispatchRunDirectory, DispatchWorktreePath};
 use track_types::types::RemoteAgentPreferredTool;
 
 use crate::helper::{
     CancelRunRequest, EmptyResponse, LaunchRunRequest, ReadRunSnapshotsRequest,
-    ReadRunSnapshotsResponse,
+    ReadRunSnapshotsResponse, RunSnapshot,
 };
 use crate::ssh::SshClient;
 use crate::{RemoteRunObservedStatus, RemoteRunSnapshotView};
@@ -33,17 +33,19 @@ impl<'a> LaunchRemoteDispatchAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "launch-run",
-            &LaunchRunRequest {
-                run_directory: self.remote_run_directory.as_str(),
-                worktree_path: self.worktree_path.as_str(),
-                preferred_tool: self.preferred_tool,
-                shell_prelude: (!self.ssh_client.shell_prelude().trim().is_empty())
-                    .then_some(self.ssh_client.shell_prelude()),
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "launch-run",
+                &LaunchRunRequest {
+                    run_directory: self.remote_run_directory.as_str(),
+                    worktree_path: self.worktree_path.as_str(),
+                    preferred_tool: self.preferred_tool,
+                    shell_prelude: (!self.ssh_client.shell_prelude().trim().is_empty())
+                        .then_some(self.ssh_client.shell_prelude()),
+                },
+            )
+            .await?;
 
         Ok(())
     }
@@ -67,13 +69,15 @@ impl<'a> CancelRemoteDispatchAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "cancel-run",
-            &CancelRunRequest {
-                run_directory: self.remote_run_directory.as_str(),
-            },
-        )?;
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "cancel-run",
+                &CancelRunRequest {
+                    run_directory: self.remote_run_directory.as_str(),
+                },
+            )
+            .await?;
         Ok(())
     }
 }
@@ -96,7 +100,7 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
         if self.run_directories.is_empty() {
             return Ok(Vec::new());
         }
@@ -113,18 +117,61 @@ impl<'a> ReadDispatchSnapshotsAction<'a> {
                 &ReadRunSnapshotsRequest {
                     run_directories: &run_directories,
                 },
-            )?;
+            )
+            .await?;
 
-        Ok(response
+        response
             .snapshots
             .into_iter()
-            .map(|snapshot| RemoteRunSnapshotView {
-                run_directory: DispatchRunDirectory::from_db_unchecked(snapshot.run_directory),
-                status: RemoteRunObservedStatus::from_status_file_contents(snapshot.status),
-                result: snapshot.result,
-                stderr: snapshot.stderr,
-                finished_at: snapshot.finished_at,
-            })
-            .collect())
+            .map(remote_snapshot_view)
+            .collect()
+    }
+}
+
+fn remote_snapshot_view(snapshot: RunSnapshot) -> Result<RemoteRunSnapshotView, TrackError> {
+    let run_directory = DispatchRunDirectory::new(&snapshot.run_directory).map_err(|error| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!(
+                "Remote helper returned an invalid run directory `{}` while reading dispatch snapshots: {error}. The remote workspace may be corrupted; reset the remote workspace and retry.",
+                snapshot.run_directory
+            ),
+        )
+    })?;
+
+    Ok(RemoteRunSnapshotView {
+        run_directory,
+        status: RemoteRunObservedStatus::from_status_file_contents(snapshot.status),
+        result: snapshot.result,
+        stderr: snapshot.stderr,
+        finished_at: snapshot.finished_at,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::helper::RunSnapshot;
+    use track_types::errors::ErrorCode;
+
+    use super::remote_snapshot_view;
+
+    #[test]
+    fn rejects_invalid_remote_snapshot_run_directory() {
+        let error = remote_snapshot_view(RunSnapshot {
+            run_directory: "/tmp/not-a-dispatch-run".to_owned(),
+            status: Some("running".to_owned()),
+            result: None,
+            stderr: None,
+            finished_at: None,
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::RemoteDispatchFailed);
+        assert!(
+            error
+                .message()
+                .contains("Remote helper returned an invalid run directory"),
+            "unexpected error: {error}"
+        );
     }
 }

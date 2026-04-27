@@ -1,6 +1,5 @@
 use std::env;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -46,11 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = format!("{bind_host}:{port}");
     let listener = TcpListener::bind(&address).await?;
 
-    let state = AppState {
-        config_service,
-        database,
-        task_change_version: Arc::new(AtomicU64::new(0)),
-    };
+    let state = AppState::new(config_service, database);
     spawn_remote_review_follow_up_reconciler(state.clone());
     let app = build_app(state, static_root());
 

@@ -42,7 +42,7 @@ impl<'a> CleanupTaskArtifactsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
         let worktree_paths = self
             .worktree_paths
             .iter()
@@ -66,7 +66,8 @@ impl<'a> CleanupTaskArtifactsAction<'a> {
                         RemoteTaskCleanupMode::DeleteTask => "deleteTask",
                     },
                 },
-            )?;
+            )
+            .await?;
         Ok(report.into())
     }
 }
@@ -98,7 +99,7 @@ impl<'a> CleanupReviewArtifactsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
         let branch_names = self
             .branch_names
             .iter()
@@ -124,7 +125,8 @@ impl<'a> CleanupReviewArtifactsAction<'a> {
                     worktree_paths: &worktree_paths,
                     run_directories: &run_directories,
                 },
-            )?;
+            )
+            .await?;
 
         Ok(report.into())
     }
@@ -154,7 +156,7 @@ impl<'a> CleanupOrphanedRemoteArtifactsAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<RemoteArtifactCleanupCounts, TrackError> {
         // The remote workspace layout is currently automation-owned:
         // `<workspace>/<name>/<name>` for the checkout plus sibling
         // task/review worktree and run directories. That lets one broad sweep
@@ -181,7 +183,8 @@ impl<'a> CleanupOrphanedRemoteArtifactsAction<'a> {
                     keep_worktree_paths: &kept_worktree_paths,
                     keep_run_directories: &kept_run_directories,
                 },
-            )?;
+            )
+            .await?;
         Ok(report.into())
     }
 }
@@ -201,7 +204,7 @@ impl<'a> CleanupReviewWorkspaceCachesAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
         if self.checkout_paths.is_empty() {
             return Ok(());
         }
@@ -211,12 +214,14 @@ impl<'a> CleanupReviewWorkspaceCachesAction<'a> {
             .iter()
             .map(|path| path.as_str().to_owned())
             .collect::<Vec<_>>();
-        self.ssh_client.run_helper_json::<_, EmptyResponse>(
-            "cleanup-review-workspace-caches",
-            &CleanupReviewWorkspaceCachesRequest {
-                checkout_paths: &checkout_paths,
-            },
-        )?;
+        self.ssh_client
+            .run_helper_json::<_, EmptyResponse>(
+                "cleanup-review-workspace-caches",
+                &CleanupReviewWorkspaceCachesRequest {
+                    checkout_paths: &checkout_paths,
+                },
+            )
+            .await?;
 
         Ok(())
     }
@@ -243,7 +248,7 @@ impl<'a> ResetWorkspaceAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<RemoteResetSummary, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<RemoteResetSummary, TrackError> {
         let report = self
             .ssh_client
             .run_helper_json::<_, RemoteWorkspaceResetReport>(
@@ -252,7 +257,8 @@ impl<'a> ResetWorkspaceAction<'a> {
                     workspace_root: self.workspace_root,
                     projects_registry_path: self.projects_registry_path,
                 },
-            )?;
+            )
+            .await?;
         Ok(report.into_summary())
     }
 }

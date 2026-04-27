@@ -1,152 +1,160 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { computed, effectScope, ref } from 'vue'
+import { describe, expect, it } from 'vitest'
+import { effectScope, ref } from 'vue'
 
-import { useRunState } from './useRunState'
+import {
+  upsertReviewRunRecord,
+  upsertTaskRunRecord,
+  useRunState,
+} from './useRunState'
 import {
   buildDispatch,
   buildReview,
   buildReviewRun,
-  buildReviewSummary,
   buildRunRecord,
   buildTask,
 } from '../testing/factories'
 
-afterEach(() => {
-  vi.restoreAllMocks()
-})
-
 describe('useRunState', () => {
-  it('maintains task run projections for the selected task', () => {
-    const selectedTask = buildTask()
-    const anotherTask = buildTask({
+  it('maintains task run projections and latest dispatches', () => {
+    const firstTask = buildTask()
+    const secondTask = buildTask({
       id: 'project-b/open/20260323-130000-another-task.md',
       project: 'project-b',
     })
 
-    const selectedTaskId = ref<string | null>(selectedTask.id)
-    const tasks = ref([selectedTask, anotherTask])
-    const selectedTaskRuns = ref([] as ReturnType<typeof buildRunRecord>[])
-
     const scope = effectScope()
-    const state = scope.run(() =>
-      useRunState({
-        closeReviewDrawer: vi.fn(),
-        isReviewDrawerOpen: ref(false),
-        isTaskDrawerOpen: ref(true),
-        latestTaskDispatchesByTaskId: ref({}),
-        reviews: ref([]),
-        runs: ref([]),
-        selectedReview: computed(() => null),
-        selectedReviewId: ref<string | null>(null),
-        selectedReviewRuns: ref([]),
-        selectedTask: computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) ?? null),
-        selectedTaskId,
-        selectedTaskRuns,
-        tasks,
-      }),
-    )
+    const state = scope.run(() => useRunState({ tasks: ref([firstTask, secondTask]) }))
 
     if (!state) {
       throw new Error('Expected run state')
     }
 
-    const firstDispatch = buildDispatch({
-      dispatchId: 'dispatch-1',
-      taskId: selectedTask.id,
-      project: selectedTask.project,
+    const olderDispatch = buildDispatch({
+      dispatchId: 'dispatch-older',
+      taskId: firstTask.id,
+      project: firstTask.project,
+      status: 'succeeded',
+      createdAt: '2026-03-23T12:05:00.000Z',
+      updatedAt: '2026-03-23T12:06:00.000Z',
     })
-    const secondDispatch = buildDispatch({
-      dispatchId: 'dispatch-2',
-      taskId: selectedTask.id,
-      project: selectedTask.project,
-      createdAt: '2026-03-23T12:07:00.000Z',
-      updatedAt: '2026-03-23T12:07:00.000Z',
+    const newerDispatch = buildDispatch({
+      dispatchId: 'dispatch-newer',
+      taskId: secondTask.id,
+      project: secondTask.project,
+      status: 'running',
+      createdAt: '2026-03-23T13:05:00.000Z',
+      updatedAt: '2026-03-23T13:06:00.000Z',
+      finishedAt: undefined,
     })
 
-    state.upsertRunRecord(selectedTask, firstDispatch)
-    state.upsertLatestTaskDispatch(firstDispatch)
-    state.upsertSelectedTaskRun(selectedTask, firstDispatch)
-    state.upsertRunRecord(selectedTask, secondDispatch)
-    state.upsertSelectedTaskRun(selectedTask, secondDispatch)
+    state.upsertRunRecord(firstTask, olderDispatch)
+    state.upsertRunRecord(secondTask, newerDispatch)
+    state.upsertLatestTaskDispatch(olderDispatch)
+    state.upsertLatestTaskDispatch(newerDispatch)
 
-    expect(state.recentRuns.value[0]?.dispatch.dispatchId).toBe('dispatch-2')
-    expect(selectedTaskRuns.value.map((run) => run.dispatch.dispatchId)).toEqual(['dispatch-2', 'dispatch-1'])
+    expect(state.activeRuns.value.map((run) => run.dispatch.dispatchId)).toEqual(['dispatch-newer'])
+    expect(state.recentRuns.value.map((run) => run.dispatch.dispatchId)).toEqual([
+      'dispatch-newer',
+      'dispatch-older',
+    ])
+    expect(state.latestTaskDispatchesByTaskId.value[firstTask.id]?.dispatchId).toBe('dispatch-older')
+    expect(state.latestTaskDispatchesByTaskId.value[secondTask.id]?.dispatchId).toBe('dispatch-newer')
 
-    state.removeTaskRuns(selectedTask.id)
+    state.upsertRunRecord(secondTask, {
+      ...newerDispatch,
+      status: 'canceled',
+      finishedAt: '2026-03-23T13:08:00.000Z',
+      updatedAt: '2026-03-23T13:08:00.000Z',
+    })
+    expect(state.activeRuns.value).toEqual([])
 
-    expect(state.recentRuns.value).toEqual([])
-    expect(selectedTaskRuns.value).toEqual([])
+    state.removeTaskRuns(firstTask.id)
+    expect(state.runs.value.map((run) => run.task.id)).toEqual([secondTask.id])
+    expect(state.latestTaskDispatchesByTaskId.value[firstTask.id]).toBeUndefined()
+
+    const selectedHistory = upsertTaskRunRecord(
+      [buildRunRecord({ ...firstTask }, { ...olderDispatch })],
+      firstTask,
+      {
+        ...olderDispatch,
+        dispatchId: 'dispatch-selected-newer',
+        createdAt: '2026-03-23T14:00:00.000Z',
+      },
+    )
+    expect(selectedHistory.map((run) => run.dispatch.dispatchId)).toEqual([
+      'dispatch-selected-newer',
+      'dispatch-older',
+    ])
 
     scope.stop()
   })
 
-  it('maintains review summaries and closes the drawer when the selected review disappears', () => {
-    const closeReviewDrawer = vi.fn()
-    const selectedReviewId = ref<string | null>('review-a')
-    const reviews = ref([
-      buildReviewSummary({
-        review: {
-          id: 'review-a',
-          createdAt: '2026-03-23T11:00:00.000Z',
-          updatedAt: '2026-03-23T12:00:00.000Z',
-        },
-        latestRun: {
-          createdAt: '2026-03-23T12:10:00.000Z',
-          updatedAt: '2026-03-23T12:10:00.000Z',
-        },
-      }),
-    ])
-
+  it('maintains review projections and review run history ordering', () => {
     const scope = effectScope()
-    const state = scope.run(() =>
-      useRunState({
-        closeReviewDrawer,
-        isReviewDrawerOpen: ref(true),
-        isTaskDrawerOpen: ref(false),
-        latestTaskDispatchesByTaskId: ref({}),
-        reviews,
-        runs: ref([]),
-        selectedReview: computed(() => reviews.value.find((summary) => summary.review.id === selectedReviewId.value)?.review ?? null),
-        selectedReviewId,
-        selectedReviewRuns: ref([buildReviewRun({ reviewId: 'review-a' })]),
-        selectedTask: computed(() => null),
-        selectedTaskId: ref<string | null>(null),
-        selectedTaskRuns: ref([]),
-        tasks: ref([]),
-      }),
-    )
+    const state = scope.run(() => useRunState({ tasks: ref([]) }))
 
     if (!state) {
       throw new Error('Expected run state')
     }
 
-    const newReview = buildReview({
-      id: 'review-b',
-      updatedAt: '2026-03-23T13:00:00.000Z',
+    const activeReview = buildReview({
+      id: 'review-active',
+      updatedAt: '2026-03-26T12:00:00.000Z',
     })
-    const latestRun = buildReviewRun({
-      reviewId: 'review-b',
-      createdAt: '2026-03-23T13:05:00.000Z',
-      updatedAt: '2026-03-23T13:05:00.000Z',
+    const finishedReview = buildReview({
+      id: 'review-finished',
+      updatedAt: '2026-03-26T13:00:00.000Z',
+    })
+    const activeRun = buildReviewRun({
+      dispatchId: 'review-run-active',
+      reviewId: activeReview.id,
+      status: 'running',
+      createdAt: '2026-03-26T12:05:00.000Z',
+      updatedAt: '2026-03-26T12:06:00.000Z',
+      finishedAt: undefined,
+    })
+    const finishedRun = buildReviewRun({
+      dispatchId: 'review-run-finished',
+      reviewId: finishedReview.id,
+      status: 'succeeded',
+      createdAt: '2026-03-26T13:05:00.000Z',
+      updatedAt: '2026-03-26T13:06:00.000Z',
     })
 
-    state.upsertReviewSummary(newReview, latestRun)
+    state.upsertReviewSummary(activeReview, activeRun)
+    state.upsertReviewSummary(finishedReview, finishedRun)
 
-    expect(reviews.value[0]?.review.id).toBe('review-b')
+    expect(state.activeReviewRuns.value.map((summary) => summary.review.id)).toEqual(['review-active'])
+    expect(state.recentReviewRuns.value.map((summary) => summary.review.id)).toEqual([
+      'review-finished',
+      'review-active',
+    ])
 
-    state.upsertLatestReviewRun('review-b', buildReviewRun({
-      reviewId: 'review-b',
-      dispatchId: 'review-run-2',
-      createdAt: '2026-03-23T13:06:00.000Z',
-      updatedAt: '2026-03-23T13:06:00.000Z',
-    }))
-    state.upsertSelectedReviewRun(buildReviewRun({
-      reviewId: 'review-a',
-      dispatchId: 'review-a-run-2',
-    }))
-    state.removeReview('review-a')
+    const canceledRun = buildReviewRun({
+      ...activeRun,
+      status: 'canceled',
+      finishedAt: '2026-03-26T12:08:00.000Z',
+      updatedAt: '2026-03-26T12:08:00.000Z',
+    })
+    state.upsertLatestReviewRun(activeReview.id, canceledRun)
+    expect(state.activeReviewRuns.value).toEqual([])
 
-    expect(closeReviewDrawer).toHaveBeenCalledTimes(1)
+    const followUpRun = buildReviewRun({
+      ...activeRun,
+      dispatchId: 'review-run-follow-up',
+      status: 'succeeded',
+      createdAt: '2026-03-26T12:09:00.000Z',
+      updatedAt: '2026-03-26T12:10:00.000Z',
+      finishedAt: '2026-03-26T12:10:00.000Z',
+    })
+    const selectedHistory = upsertReviewRunRecord([activeRun], followUpRun)
+    expect(selectedHistory.map((run) => run.dispatchId)).toEqual([
+      'review-run-follow-up',
+      'review-run-active',
+    ])
+
+    state.removeReview(finishedReview.id)
+    expect(state.reviews.value.map((summary) => summary.review.id)).toEqual(['review-active'])
 
     scope.stop()
   })

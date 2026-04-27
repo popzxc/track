@@ -22,3 +22,8 @@ export type {
   TaskFollowUpInput,
   TaskUpdateInput,
 } from '../api/types'
+
+export {
+  REMOTE_AGENT_TOOLS,
+  isRemoteAgentPreferredTool,
+} from '../api/types'

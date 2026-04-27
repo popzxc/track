@@ -1,6 +1,7 @@
 mod app;
 mod backend_config;
 mod build_info;
+mod remote_run_query;
 
 pub(crate) mod api_error;
 pub(crate) mod app_state;

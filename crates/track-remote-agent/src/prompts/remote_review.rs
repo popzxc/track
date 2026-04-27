@@ -42,19 +42,21 @@ impl<'a> RemoteReviewPrompt<'a> {
             base_branch: &self.review.base_branch,
             prepared_branch: self
                 .dispatch_record
+                .run
                 .branch_name
                 .as_ref()
                 .map(track_types::remote_layout::DispatchBranch::as_str)
                 .expect("queued review dispatches should always have a branch name"),
             worktree_path: self
                 .dispatch_record
+                .run
                 .worktree_path
                 .as_ref()
                 .map(track_types::remote_layout::DispatchWorktreePath::as_str)
                 .expect("queued review dispatches should always have a worktree path"),
             target_head_oid: self.dispatch_record.target_head_oid.as_deref(),
             main_user: &self.review.main_user,
-            follow_up_request: self.dispatch_record.follow_up_request.as_deref(),
+            follow_up_request: self.dispatch_record.run.follow_up_request.as_deref(),
             show_previous_review_context: self.previous_submitted_review.is_some(),
             previous_github_review_url: self
                 .previous_submitted_review
@@ -101,7 +103,7 @@ mod tests {
     use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
     use track_types::time_utils::now_utc;
     use track_types::types::{
-        DispatchStatus, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
+        DispatchStatus, RemoteAgentPreferredTool, RemoteRunState, ReviewRecord, ReviewRunRecord,
     };
     use track_types::urls::Url;
 
@@ -135,67 +137,71 @@ mod tests {
         let review = sample_review_record();
         let previous_dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
         let previous_review_run = ReviewRunRecord {
-            dispatch_id: previous_dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: previous_dispatch_id.clone(),
+                preferred_tool: review.preferred_tool,
+                status: DispatchStatus::Succeeded,
+                created_at: now_utc(),
+                updated_at: now_utc(),
+                finished_at: Some(now_utc()),
+                remote_host: "198.51.100.10".to_owned(),
+                branch_name: Some(DispatchBranch::for_review(&previous_dispatch_id)),
+                worktree_path: Some(DispatchWorktreePath::for_review(
+                    "~/workspace",
+                    &review.workspace_key,
+                    &previous_dispatch_id,
+                )),
+                follow_up_request: None,
+                summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
+                notes: None,
+                error_message: None,
+            },
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
-            preferred_tool: review.preferred_tool,
-            status: DispatchStatus::Succeeded,
-            created_at: now_utc(),
-            updated_at: now_utc(),
-            finished_at: Some(now_utc()),
-            remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&previous_dispatch_id)),
-            worktree_path: Some(DispatchWorktreePath::for_review(
-                "~/workspace",
-                &review.workspace_key,
-                &previous_dispatch_id,
-            )),
-            follow_up_request: None,
             target_head_oid: Some("abc123def456".to_owned()),
-            summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),
             github_review_url: Some(
                 Url::parse("https://github.com/acme/project-x/pull/42#pullrequestreview-1001")
                     .unwrap(),
             ),
-            notes: None,
-            error_message: None,
         };
         let current_dispatch_id = DispatchId::new("review-dispatch-2").unwrap();
         let current_review_run = ReviewRunRecord {
-            dispatch_id: current_dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: current_dispatch_id.clone(),
+                preferred_tool: review.preferred_tool,
+                status: DispatchStatus::Preparing,
+                created_at: now_utc(),
+                updated_at: now_utc(),
+                finished_at: None,
+                remote_host: "198.51.100.10".to_owned(),
+                branch_name: Some(DispatchBranch::for_review(&current_dispatch_id)),
+                worktree_path: Some(DispatchWorktreePath::for_review(
+                    "~/workspace",
+                    &review.workspace_key,
+                    &current_dispatch_id,
+                )),
+                follow_up_request: Some(
+                    "Check whether the main review comments were actually resolved.".to_owned(),
+                ),
+                summary: Some(
+                    "Re-review request: Check whether the main review comments were actually resolved."
+                        .to_owned(),
+                ),
+                notes: None,
+                error_message: None,
+            },
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
-            preferred_tool: review.preferred_tool,
-            status: DispatchStatus::Preparing,
-            created_at: now_utc(),
-            updated_at: now_utc(),
-            finished_at: None,
-            remote_host: "198.51.100.10".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&current_dispatch_id)),
-            worktree_path: Some(DispatchWorktreePath::for_review(
-                "~/workspace",
-                &review.workspace_key,
-                &current_dispatch_id,
-            )),
-            follow_up_request: Some(
-                "Check whether the main review comments were actually resolved.".to_owned(),
-            ),
             target_head_oid: Some("fedcba654321".to_owned()),
-            summary: Some(
-                "Re-review request: Check whether the main review comments were actually resolved."
-                    .to_owned(),
-            ),
             review_submitted: false,
             github_review_id: None,
             github_review_url: None,
-            notes: None,
-            error_message: None,
         };
         let prompt =
             RemoteReviewPrompt::new(&review, &current_review_run, Some(&previous_review_run))

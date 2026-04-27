@@ -5,15 +5,18 @@ import { useRoute, useRouter } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import RemoteAgentSetupModal from '../components/RemoteAgentSetupModal.vue'
 import SettingsPageContent from '../components/SettingsPage.vue'
-import { useSettingsMutations } from '../composables/useSettingsMutations'
+import { useRemoteAgentSettingsActions } from '../composables/useRemoteAgentSettingsActions'
 import { useTrackerShell } from '../composables/useTrackerShell'
 import { firstQueryValue, replaceRouteQuery } from '../router/query'
 import type {
-  ProjectInfo,
   RemoteAgentPreferredTool,
   RemoteCleanupSummary,
   RemoteResetSummary,
   Task,
+} from '../types/task'
+import {
+  REMOTE_AGENT_TOOLS,
+  isRemoteAgentPreferredTool,
 } from '../types/task'
 
 const route = useRoute()
@@ -24,18 +27,16 @@ const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
 const resetSummary = ref<RemoteResetSummary | null>(null)
 const cleaningUpRemoteArtifacts = ref(false)
 const resettingRemoteWorkspace = ref(false)
-const editingProject = ref<ProjectInfo | null>(null)
 
 const modal = computed(() => firstQueryValue(route.query.modal))
 const resumeTaskId = computed(() => firstQueryValue(route.query.resumeTask))
 const resumePreferredTool = computed<RemoteAgentPreferredTool>(() => {
   const preferredTool = firstQueryValue(route.query.preferredTool)
-  // TODO(codex): Move `TOOL_CONSTANTS` from tests to actual types and use it instead.
-  if (preferredTool === 'claude' || preferredTool === 'codex') {
+  if (isRemoteAgentPreferredTool(preferredTool)) {
     return preferredTool
   }
 
-  return 'codex'
+  return REMOTE_AGENT_TOOLS.CODEX
 })
 
 const editingRemoteAgentSetup = computed<boolean>({
@@ -91,11 +92,10 @@ const {
   confirmRemoteCleanup,
   confirmRemoteReset,
   saveRemoteAgentSetup,
-} = useSettingsMutations({
+} = useRemoteAgentSettingsActions({
   cleaningUpRemoteArtifacts,
   cleanupPendingConfirmation,
   cleanupSummary,
-  editingProject,
   editingRemoteAgentSetup,
   errorMessage: shell.errorMessage,
   refreshAll: shell.refreshAll,

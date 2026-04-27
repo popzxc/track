@@ -31,7 +31,7 @@ pub(super) async fn list_task_dispatches_for_project(
         );
     }
 
-    dispatches.sort_by_key(|dispatch| Reverse(dispatch.created_at));
+    dispatches.sort_by_key(|dispatch| Reverse(dispatch.run.created_at));
     Ok(dispatches)
 }
 
@@ -67,6 +67,6 @@ pub(super) async fn list_review_runs_for_project(
         );
     }
 
-    review_runs.sort_by_key(|run| Reverse(run.created_at));
+    review_runs.sort_by_key(|run| Reverse(run.run.created_at));
     Ok(review_runs)
 }

@@ -2,7 +2,9 @@ use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{DispatchId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::parse_iso_8601_millis;
-use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, ReviewRunRecord};
+use track_types::types::{
+    DispatchStatus, RemoteAgentPreferredTool, RemoteRunState, ReviewRunRecord,
+};
 use track_types::urls::parse_persisted_url;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -61,7 +63,23 @@ impl TryFrom<ReviewRunRow> for ReviewRunRecord {
             })?;
 
         Ok(ReviewRunRecord {
-            dispatch_id: DispatchId::from_db(dispatch_id),
+            run: RemoteRunState {
+                dispatch_id: DispatchId::from_db(dispatch_id),
+                preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
+                status: parse_dispatch_status(record.status.as_str())?,
+                created_at,
+                updated_at,
+                finished_at,
+                remote_host: record.remote_host,
+                branch_name: record.branch_name.map(DispatchBranch::from_db_unchecked),
+                worktree_path: record
+                    .worktree_path
+                    .map(DispatchWorktreePath::from_db_unchecked),
+                follow_up_request: record.follow_up_request,
+                summary: record.summary,
+                notes: record.notes,
+                error_message: record.error_message,
+            },
             review_id: ReviewId::from_db(record.review_id),
             pull_request_url: parse_persisted_url(
                 record.pull_request_url,
@@ -69,26 +87,12 @@ impl TryFrom<ReviewRunRow> for ReviewRunRecord {
             ),
             repository_full_name: record.repository_full_name,
             workspace_key: WorkspaceKey::from_db_unchecked(record.workspace_key),
-            preferred_tool: parse_preferred_tool(record.preferred_tool.as_str())?,
-            status: parse_dispatch_status(record.status.as_str())?,
-            created_at,
-            updated_at,
-            finished_at,
-            remote_host: record.remote_host,
-            branch_name: record.branch_name.map(DispatchBranch::from_db_unchecked),
-            worktree_path: record
-                .worktree_path
-                .map(DispatchWorktreePath::from_db_unchecked),
-            follow_up_request: record.follow_up_request,
             target_head_oid: record.target_head_oid,
-            summary: record.summary,
             review_submitted: record.review_submitted != 0,
             github_review_id: record.github_review_id,
             github_review_url: record.github_review_url.map(|value| {
                 parse_persisted_url(value, "stored GitHub review URLs should be valid")
             }),
-            notes: record.notes,
-            error_message: record.error_message,
         })
     }
 }

@@ -20,7 +20,8 @@ pub use remote_view::{
     TaskRunRemoteRepository,
 };
 pub use service::{
-    RemoteAgentConfigProvider, RemoteAgentServices, RemoteDispatchService, RemoteReviewService,
+    RemoteAgentRuntimeServices, RemoteDispatchService, RemoteReviewService,
+    RemoteWorkspaceMaintenanceService, ReviewFollowUpService,
 };
 pub use types::{RemoteReviewFollowUpEvent, RemoteReviewFollowUpReconciliation};
 

@@ -1,11 +1,13 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use track_config::paths::{collapse_home_path, path_to_string};
 use track_config::runtime::RemoteAgentRuntimeConfig;
 use track_types::errors::{ErrorCode, TrackError};
@@ -42,7 +44,7 @@ impl SshClient {
             return Err(TrackError::new(
                 ErrorCode::RemoteAgentNotConfigured,
                 format!(
-                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before cleaning task.",
+                    "Managed SSH key not found at {}. Re-run `track` and import the remote-agent key again before using the remote agent.",
                     collapse_home_path(&config.managed_key_path)
                 ),
             ));
@@ -102,61 +104,41 @@ impl SshClient {
         &self.shell_prelude
     }
 
-    pub(crate) fn run_helper_json<Request, Response>(
+    pub(crate) async fn run_helper_json<Request, Response>(
         &self,
         command_name: &str,
         request: &Request,
     ) -> Result<Response, TrackError>
     where
         Request: Serialize,
-        Response: DeserializeOwned,
+        Response: DeserializeOwned + Send + 'static,
     {
-        self.ensure_remote_helper_uploaded()?;
-
         let request_json = serde_json::to_vec(request).map_err(|error| {
             TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
                 format!("Could not serialize the remote helper request: {error}"),
             )
         })?;
+        self.ensure_remote_helper_uploaded().await?;
+        let command_name = command_name.to_owned();
 
         let mut command = self.base_ssh_command();
         command.arg(format!("{}@{}", self.user, self.host));
         command.arg(format!(
             "bash -lc {}",
-            shell_single_quote(&self.remote_helper_bootstrap_command(command_name))
+            shell_single_quote(&self.remote_helper_bootstrap_command(&command_name))
         ));
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
-        let mut child = command.spawn().map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not start the remote helper command: {error}"),
-            )
-        })?;
-
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                "Could not open stdin for the remote helper command.",
-            ));
-        };
-        stdin.write_all(&request_json).map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not write the remote helper request body: {error}"),
-            )
-        })?;
-        drop(stdin);
-
-        let output = child.wait_with_output().map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not wait for the remote helper command to finish: {error}"),
-            )
-        })?;
+        let output = run_command_with_stdin(
+            command,
+            request_json,
+            "remote helper command",
+            "remote helper request body",
+        )
+        .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -187,8 +169,12 @@ impl SshClient {
         })
     }
 
-    pub(crate) fn run_script(&self, script: &str, args: &[String]) -> Result<String, TrackError> {
-        match self.run_script_with_exit_code(script, args)? {
+    pub(crate) async fn run_script(
+        &self,
+        script: &str,
+        args: &[String],
+    ) -> Result<String, TrackError> {
+        match self.run_script_with_exit_code(script, args).await? {
             ScriptOutput::Success(stdout) => Ok(stdout),
             ScriptOutput::ExitCode(code) => Err(TrackError::new(
                 ErrorCode::RemoteDispatchFailed,
@@ -200,7 +186,7 @@ impl SshClient {
         }
     }
 
-    pub(crate) fn run_script_with_exit_code(
+    pub(crate) async fn run_script_with_exit_code(
         &self,
         script: &str,
         args: &[String],
@@ -215,36 +201,14 @@ impl SshClient {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
-        let mut child = command.spawn().map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not start the remote SSH command: {error}"),
-            )
-        })?;
-
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                "Could not open stdin for the remote SSH command.",
-            ));
-        };
         let rendered_script = render_remote_script_with_shell_prelude(script, &self.shell_prelude);
-        stdin
-            .write_all(rendered_script.as_bytes())
-            .map_err(|error| {
-                TrackError::new(
-                    ErrorCode::RemoteDispatchFailed,
-                    format!("Could not write the remote shell script to SSH stdin: {error}"),
-                )
-            })?;
-        drop(stdin);
-
-        let output = child.wait_with_output().map_err(|error| {
-            TrackError::new(
-                ErrorCode::RemoteDispatchFailed,
-                format!("Could not wait for the remote SSH command to finish: {error}"),
-            )
-        })?;
+        let output = run_command_with_stdin(
+            command,
+            rendered_script.into_bytes(),
+            "remote SSH command",
+            "remote shell script to SSH stdin",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(ScriptOutput::Success(
@@ -271,22 +235,21 @@ impl SshClient {
         }))
     }
 
-    pub(crate) fn copy_local_file_to_remote(
+    pub(crate) async fn copy_local_file_to_remote(
         &self,
         local_path: &Path,
         remote_path: &str,
     ) -> Result<(), TrackError> {
-        let output = self
-            .base_scp_command()
+        let mut command = self.base_scp_command();
+        command
             .arg(local_path)
-            .arg(format!("{}@{}:{remote_path}", self.user, self.host))
-            .output()
-            .map_err(|error| {
-                TrackError::new(
-                    ErrorCode::RemoteDispatchFailed,
-                    format!("Could not start `scp` for remote dispatch: {error}"),
-                )
-            })?;
+            .arg(format!("{}@{}:{remote_path}", self.user, self.host));
+        let output = command.output().await.map_err(|error| {
+            TrackError::new(
+                ErrorCode::RemoteDispatchFailed,
+                format!("Could not start `scp` for remote dispatch: {error}"),
+            )
+        })?;
 
         if !output.status.success() {
             return Err(TrackError::new(
@@ -301,25 +264,33 @@ impl SshClient {
         Ok(())
     }
 
-    fn ensure_remote_helper_uploaded(&self) -> Result<(), TrackError> {
-        let mut helper_uploaded = helper_upload_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *helper_uploaded {
-            return Ok(());
+    async fn ensure_remote_helper_uploaded(&self) -> Result<(), TrackError> {
+        {
+            let helper_uploaded = helper_upload_state()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *helper_uploaded {
+                return Ok(());
+            }
         }
 
-        if self.remote_helper_is_current()? {
+        if self.remote_helper_is_current().await? {
+            let mut helper_uploaded = helper_upload_state()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *helper_uploaded = true;
             return Ok(());
         }
 
-        self.upload_remote_helper()?;
+        self.upload_remote_helper().await?;
+        let mut helper_uploaded = helper_upload_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *helper_uploaded = true;
         Ok(())
     }
 
-    fn remote_helper_is_current(&self) -> Result<bool, TrackError> {
+    async fn remote_helper_is_current(&self) -> Result<bool, TrackError> {
         let script = format!(
             r#"
 set -eu
@@ -343,19 +314,25 @@ printf 'stale\n'
             helper_file = REMOTE_HELPER_FILE_NAME,
             version_file = REMOTE_HELPER_VERSION_FILE_NAME,
         );
-        let output = self.run_script(
-            &script,
-            &[
-                self.helper_directory.clone(),
-                REMOTE_HELPER_VERSION.to_owned(),
-            ],
-        )?;
+        let output = self
+            .run_script(
+                &script,
+                &[
+                    self.helper_directory.clone(),
+                    REMOTE_HELPER_VERSION.to_owned(),
+                ],
+            )
+            .await?;
         Ok(output.trim() == "current")
     }
 
-    fn upload_remote_helper(&self) -> Result<(), TrackError> {
-        let local_temp_file =
-            std::env::temp_dir().join(format!("track-remote-helper-{}.pyz", std::process::id()));
+    async fn upload_remote_helper(&self) -> Result<(), TrackError> {
+        static HELPER_TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let temp_file_id = HELPER_TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let local_temp_file = std::env::temp_dir().join(format!(
+            "track-remote-helper-{}-{temp_file_id}.pyz",
+            std::process::id()
+        ));
         fs::write(&local_temp_file, REMOTE_HELPER_BYTES).map_err(|error| {
             TrackError::new(
                 ErrorCode::DispatchWriteFailed,
@@ -366,7 +343,9 @@ printf 'stale\n'
             )
         })?;
 
-        let upload_result = self.copy_local_file_to_remote(&local_temp_file, &self.helper_path);
+        let upload_result = self
+            .copy_local_file_to_remote(&local_temp_file, &self.helper_path)
+            .await;
         let _ = fs::remove_file(&local_temp_file);
         upload_result?;
 
@@ -389,7 +368,8 @@ printf '%s\n' "$2" > "$VERSION_PATH"
                 ),
                 REMOTE_HELPER_VERSION.to_owned(),
             ],
-        )?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -473,6 +453,41 @@ exec python3 -B "$HELPER_PATH" {command_name}
         ));
         command
     }
+}
+
+async fn run_command_with_stdin(
+    mut command: Command,
+    stdin_body: Vec<u8>,
+    command_description: &str,
+    stdin_description: &str,
+) -> Result<Output, TrackError> {
+    let mut child = command.spawn().map_err(|error| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Could not start the {command_description}: {error}"),
+        )
+    })?;
+
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Could not open stdin for the {command_description}."),
+        ));
+    };
+    stdin.write_all(&stdin_body).await.map_err(|error| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Could not write the {stdin_description}: {error}"),
+        )
+    })?;
+    drop(stdin);
+
+    child.wait_with_output().await.map_err(|error| {
+        TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            format!("Could not wait for the {command_description} to finish: {error}"),
+        )
+    })
 }
 
 fn helper_upload_state() -> &'static Mutex<bool> {

@@ -11,7 +11,7 @@ use super::types::{RemoteWorktreeEntry, RemoteWorktreeKind};
 
 const TASK_WORKTREE_DIRECTORY_NAME: &str = "worktrees";
 
-pub(super) fn list_task_worktrees(
+pub(super) async fn list_task_worktrees(
     ssh_client: &SshClient,
     remote_agent: &RemoteAgentRuntimeConfig,
     project_id: &ProjectId,
@@ -25,9 +25,10 @@ pub(super) fn list_task_worktrees(
         ),
         RemoteWorktreeKind::Task,
     )
+    .await
 }
 
-pub(super) fn list_review_worktrees(
+pub(super) async fn list_review_worktrees(
     ssh_client: &SshClient,
     remote_agent: &RemoteAgentRuntimeConfig,
     workspace_key: &WorkspaceKey,
@@ -41,14 +42,16 @@ pub(super) fn list_review_worktrees(
         ),
         RemoteWorktreeKind::Review,
     )
+    .await
 }
 
-fn list_worktrees_for_directory(
+async fn list_worktrees_for_directory(
     ssh_client: &SshClient,
     directory_path: String,
     kind: RemoteWorktreeKind,
 ) -> Result<Vec<RemoteWorktreeEntry>, TrackError> {
-    let mut worktrees = filesystem::list_directories(ssh_client, &directory_path)?
+    let mut worktrees = filesystem::list_directories(ssh_client, &directory_path)
+        .await?
         .into_iter()
         .map(|path| {
             let path = DispatchWorktreePath::new(&path)?;

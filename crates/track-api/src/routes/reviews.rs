@@ -50,9 +50,8 @@ pub(crate) async fn list_reviews(
         .map(|review| review.id.clone())
         .collect::<Vec<_>>();
     let latest_runs = state
-        .remote_agent_services()
-        .review()
-        .latest_dispatches_for_reviews(&review_ids)
+        .remote_run_queries()
+        .latest_review_runs(&review_ids)
         .await
         .map_err(ApiError::from_track_error)?;
     let latest_runs_by_review_id = latest_runs
@@ -77,9 +76,8 @@ pub(crate) async fn list_review_runs(
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunsResponse>, ApiError> {
     let runs = state
-        .remote_agent_services()
-        .review()
-        .dispatch_history_for_review(&id)
+        .remote_run_queries()
+        .review_run_history(&id)
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!(run_count = runs.len(), "Listed review run history");
@@ -95,20 +93,25 @@ pub(crate) async fn create_review(
     let input = serde_json::from_slice::<CreateReviewInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let (review, run) = state
-        .remote_agent_services()
-        .review()
-        .create_review(input)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let (review, run) = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .review()
+            .create_review(input)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
 
     spawn_review_launch(state.clone(), run.clone());
     tracing::info!(
         review_id = %review.id,
-        dispatch_id = %run.dispatch_id,
-        remote_host = %run.remote_host,
-        preferred_tool = ?run.preferred_tool,
+        dispatch_id = %run.run.dispatch_id,
+        remote_host = %run.run.remote_host,
+        preferred_tool = ?run.run.preferred_tool,
         "Created review from API"
     );
 
@@ -131,18 +134,23 @@ pub(crate) async fn follow_up_review(
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let run = state
-        .remote_agent_services()
-        .review()
-        .queue_follow_up_review_dispatch(&id, &input.request)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let run = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .review()
+            .queue_follow_up_review_dispatch(&id, &input.request)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
 
     spawn_review_launch(state.clone(), run.clone());
     tracing::info!(
-        dispatch_id = %run.dispatch_id,
-        remote_host = %run.remote_host,
+        dispatch_id = %run.run.dispatch_id,
+        remote_host = %run.run.remote_host,
         "Queued review follow-up from API"
     );
 
@@ -160,12 +168,32 @@ pub(crate) async fn delete_review(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<DeleteReviewResponse>, ApiError> {
-    state
-        .remote_agent_services()
-        .review()
-        .delete_review(&id)
+    let has_dispatch_history = !state
+        .database
+        .review_dispatch_repository()
+        .dispatches_for_review(&id)
         .await
-        .map_err(ApiError::from_track_error)?;
+        .map_err(ApiError::from_track_error)?
+        .is_empty();
+
+    if has_dispatch_history {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .review()
+            .delete_review(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    } else {
+        state
+            .database
+            .review_repository()
+            .delete_review(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    }
     crate::app::bump_task_change_version(&state);
     tracing::info!("Deleted review");
 
@@ -177,14 +205,19 @@ pub(crate) async fn cancel_review_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunRecord>, ApiError> {
-    let canceled_dispatch = state
-        .remote_agent_services()
-        .review()
-        .cancel_dispatch(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let canceled_dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .review()
+            .cancel_dispatch(&id)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     tracing::info!(
-        dispatch_id = %canceled_dispatch.dispatch_id,
+        dispatch_id = %canceled_dispatch.run.dispatch_id,
         "Canceled review dispatch from API"
     );
 
@@ -195,35 +228,40 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
     tokio::spawn(async move {
         tracing::info!(
             review_id = %queued_dispatch.review_id,
-            dispatch_id = %queued_dispatch.dispatch_id,
-            remote_host = %queued_dispatch.remote_host,
+            dispatch_id = %queued_dispatch.run.dispatch_id,
+            remote_host = %queued_dispatch.run.remote_host,
             "Starting background review launch"
         );
-        let launch_result = state
-            .remote_agent_services()
-            .review()
-            .launch_prepared_review(queued_dispatch.clone())
-            .await;
+        let launch_result = async {
+            let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+            state
+                .remote_agent_runtime_services()
+                .await?
+                .review()
+                .launch_prepared_review(queued_dispatch.clone())
+                .await
+        }
+        .await;
 
         if let Err(join_error) = launch_result {
             tracing::error!(
                 review_id = %queued_dispatch.review_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background review launch failed"
             );
             if let Some(mut saved_dispatch) = state
                 .database
                 .review_dispatch_repository()
-                .get_dispatch(&queued_dispatch.review_id, &queued_dispatch.dispatch_id)
+                .get_dispatch(&queued_dispatch.review_id, &queued_dispatch.run.dispatch_id)
                 .await
                 .ok()
                 .flatten()
             {
-                if saved_dispatch.status.is_active() {
-                    saved_dispatch.status = track_types::types::DispatchStatus::Failed;
-                    saved_dispatch.updated_at = now_utc();
-                    saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
-                    saved_dispatch.error_message = Some(format!(
+                if saved_dispatch.run.status.is_active() {
+                    saved_dispatch.run.status = track_types::types::DispatchStatus::Failed;
+                    saved_dispatch.run.updated_at = now_utc();
+                    saved_dispatch.run.finished_at = Some(saved_dispatch.run.updated_at);
+                    saved_dispatch.run.error_message = Some(format!(
                         "Background review task stopped unexpectedly: {join_error}"
                     ));
                     let _ = state
@@ -236,7 +274,7 @@ pub(crate) fn spawn_review_launch(state: AppState, queued_dispatch: ReviewRunRec
         } else {
             tracing::info!(
                 review_id = %queued_dispatch.review_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background review launch finished"
             );
         }

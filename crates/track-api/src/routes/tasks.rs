@@ -2,11 +2,12 @@ use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use track_types::errors::{ErrorCode, TrackError};
 use track_types::ids::{ProjectId, TaskId};
 use track_types::task_sort::sort_tasks;
 use track_types::time_utils::now_utc;
 use track_types::types::{
-    RemoteAgentPreferredTool, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
+    RemoteAgentPreferredTool, Status, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
     TaskUpdateInput,
 };
 
@@ -82,9 +83,8 @@ pub(crate) async fn list_task_runs(
         .await
         .map_err(ApiError::from_track_error)?;
     let dispatches = state
-        .remote_agent_services()
-        .dispatch()
-        .dispatch_history_for_task(&id)
+        .remote_run_queries()
+        .task_dispatch_history(&id)
         .await
         .map_err(ApiError::from_track_error)?;
     let runs = dispatches
@@ -148,12 +148,32 @@ pub(crate) async fn patch_task(
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
     let validated_input = input.validate().map_err(ApiError::from_track_error)?;
 
-    let updated_task = state
-        .remote_agent_services()
-        .dispatch()
-        .update_task(&id, validated_input)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let updated_task = if validated_input.status == Some(Status::Closed)
+        && !state
+            .database
+            .dispatch_repository()
+            .dispatches_for_task(&id)
+            .await
+            .map_err(ApiError::from_track_error)?
+            .is_empty()
+    {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .dispatch()
+            .update_task(&id, validated_input)
+            .await
+            .map_err(ApiError::from_track_error)?
+    } else {
+        state
+            .database
+            .task_repository()
+            .update_task(&id, validated_input)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
     tracing::info!(status = ?updated_task.status, project = %updated_task.project, "Patched task");
 
@@ -165,12 +185,32 @@ pub(crate) async fn delete_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
-    state
-        .remote_agent_services()
-        .dispatch()
-        .delete_task(&id)
+    let has_dispatch_history = !state
+        .database
+        .dispatch_repository()
+        .dispatches_for_task(&id)
         .await
-        .map_err(ApiError::from_track_error)?;
+        .map_err(ApiError::from_track_error)?
+        .is_empty();
+
+    if has_dispatch_history {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .dispatch()
+            .delete_task(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    } else {
+        state
+            .database
+            .task_repository()
+            .delete_task(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    }
     crate::app::bump_task_change_version(&state);
     tracing::info!("Deleted task");
 
@@ -190,18 +230,23 @@ pub(crate) async fn dispatch_task(
             .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?
     };
 
-    let dispatch = state
-        .remote_agent_services()
-        .dispatch()
-        .queue_dispatch(&id, input.preferred_tool)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .dispatch()
+            .queue_dispatch(&id, input.preferred_tool)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
     tracing::info!(
-        dispatch_id = %dispatch.dispatch_id,
-        remote_host = %dispatch.remote_host,
-        preferred_tool = ?dispatch.preferred_tool,
+        dispatch_id = %dispatch.run.dispatch_id,
+        remote_host = %dispatch.run.remote_host,
+        preferred_tool = ?dispatch.run.preferred_tool,
         "Queued task dispatch from API"
     );
 
@@ -217,18 +262,23 @@ pub(crate) async fn follow_up_task(
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let dispatch = state
-        .remote_agent_services()
-        .dispatch()
-        .queue_follow_up_dispatch(&id, &input.request)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .dispatch()
+            .queue_follow_up_dispatch(&id, &input.request)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
     tracing::info!(
-        dispatch_id = %dispatch.dispatch_id,
-        remote_host = %dispatch.remote_host,
+        dispatch_id = %dispatch.run.dispatch_id,
+        remote_host = %dispatch.run.remote_host,
         "Queued task follow-up dispatch from API"
     );
 
@@ -240,14 +290,19 @@ pub(crate) async fn cancel_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
-    let canceled_dispatch = state
-        .remote_agent_services()
-        .dispatch()
-        .cancel_dispatch(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let canceled_dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_runtime_services()
+            .await
+            .map_err(ApiError::from_track_error)?
+            .dispatch()
+            .cancel_dispatch(&id)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     tracing::info!(
-        dispatch_id = %canceled_dispatch.dispatch_id,
+        dispatch_id = %canceled_dispatch.run.dispatch_id,
         "Canceled task dispatch from API"
     );
 
@@ -259,10 +314,7 @@ pub(crate) async fn discard_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
-    state
-        .remote_agent_services()
-        .dispatch()
-        .discard_dispatch_history(&id)
+    discard_dispatch_history(&state, &id)
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!("Discarded task dispatch history from API");
@@ -275,35 +327,40 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
     tokio::spawn(async move {
         tracing::info!(
             task_id = %queued_dispatch.task_id,
-            dispatch_id = %queued_dispatch.dispatch_id,
-            remote_host = %queued_dispatch.remote_host,
+            dispatch_id = %queued_dispatch.run.dispatch_id,
+            remote_host = %queued_dispatch.run.remote_host,
             "Starting background task dispatch launch"
         );
-        let launch_result = state
-            .remote_agent_services()
-            .dispatch()
-            .launch_prepared_dispatch(queued_dispatch.clone())
-            .await;
+        let launch_result = async {
+            let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+            state
+                .remote_agent_runtime_services()
+                .await?
+                .dispatch()
+                .launch_prepared_dispatch(queued_dispatch.clone())
+                .await
+        }
+        .await;
 
         if let Err(join_error) = launch_result {
             tracing::error!(
                 task_id = %queued_dispatch.task_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background task dispatch launch failed"
             );
             if let Some(mut saved_dispatch) = state
                 .database
                 .dispatch_repository()
-                .get_dispatch(&queued_dispatch.task_id, &queued_dispatch.dispatch_id)
+                .get_dispatch(&queued_dispatch.task_id, &queued_dispatch.run.dispatch_id)
                 .await
                 .ok()
                 .flatten()
             {
-                if saved_dispatch.status.is_active() {
-                    saved_dispatch.status = track_types::types::DispatchStatus::Failed;
-                    saved_dispatch.updated_at = now_utc();
-                    saved_dispatch.finished_at = Some(saved_dispatch.updated_at);
-                    saved_dispatch.error_message = Some(format!(
+                if saved_dispatch.run.status.is_active() {
+                    saved_dispatch.run.status = track_types::types::DispatchStatus::Failed;
+                    saved_dispatch.run.updated_at = now_utc();
+                    saved_dispatch.run.finished_at = Some(saved_dispatch.run.updated_at);
+                    saved_dispatch.run.error_message = Some(format!(
                         "Background dispatch task stopped unexpectedly: {join_error}"
                     ));
                     let _ = state
@@ -316,9 +373,39 @@ pub(crate) fn spawn_dispatch_launch(state: AppState, queued_dispatch: TaskDispat
         } else {
             tracing::info!(
                 task_id = %queued_dispatch.task_id,
-                dispatch_id = %queued_dispatch.dispatch_id,
+                dispatch_id = %queued_dispatch.run.dispatch_id,
                 "Background task dispatch launch finished"
             );
         }
     });
+}
+
+async fn discard_dispatch_history(state: &AppState, task_id: &TaskId) -> Result<(), TrackError> {
+    let latest_dispatch = state
+        .database
+        .dispatch_repository()
+        .latest_dispatch_for_task(task_id)
+        .await?
+        .ok_or_else(|| {
+            TrackError::new(
+                ErrorCode::DispatchNotFound,
+                format!("Task {task_id} does not have a remote dispatch to discard."),
+            )
+        })?;
+
+    if latest_dispatch.run.status.is_active() {
+        return Err(TrackError::new(
+            ErrorCode::RemoteDispatchFailed,
+            "Cancel the active remote dispatch before discarding its history.",
+        ));
+    }
+
+    // Discard is a local UI reset, not a remote cleanup command. Task
+    // close/delete own remote artifact reclamation; this path only forgets
+    // terminal history so the task can be tried again from a clean slate.
+    state
+        .database
+        .dispatch_repository()
+        .delete_dispatch_history_for_task(task_id)
+        .await
 }

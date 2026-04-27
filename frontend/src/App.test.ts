@@ -18,10 +18,24 @@ interface MockJsonRoute {
   method?: string
   path: string
   status?: number
-  body: unknown | ((request: { init?: RequestInit; method: string; path: string }) => unknown)
+  body:
+    | unknown
+    | Promise<unknown>
+    | ((request: { init?: RequestInit; method: string; path: string }) => unknown | Promise<unknown>)
 }
 
 type MockJsonRequest = { init?: RequestInit; method: string; path: string }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve
+    reject = innerReject
+  })
+
+  return { promise, reject, resolve }
+}
 
 function installFetchRoutes(routes: MockJsonRoute[]) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -41,9 +55,9 @@ function installFetchRoutes(routes: MockJsonRoute[]) {
       throw new Error(`Unexpected fetch request: ${method} ${resolvedUrl.pathname}${resolvedUrl.search}`)
     }
 
-    const responseBody = typeof route.body === 'function'
+    const responseBody = await (typeof route.body === 'function'
       ? route.body({ init, method, path: requestPath })
-      : route.body
+      : route.body)
 
     return new Response(JSON.stringify(responseBody), {
       status: route.status ?? 200,
@@ -179,6 +193,108 @@ describe('App shell', () => {
     expect(wrapper.get('[data-testid="run-latest-badge"]').text()).toBe('Latest')
     expect(wrapper.get('[data-testid="drawer-primary-action"]').text()).toContain('Continue run')
     expect(wrapper.get('[data-testid="drawer-pinned-tool"]').text()).toContain('Codex')
+  })
+
+  it('ignores stale task run history responses after switching the selected task', async () => {
+    const firstTask = buildTask({
+      id: 'project-a/open/20260323-120000-first-task.md',
+      description: 'First task\n\n## Summary\nFirst selected task.',
+    })
+    const secondTask = buildTask({
+      id: 'project-b/open/20260323-120100-second-task.md',
+      project: 'project-b',
+      description: 'Second task\n\n## Summary\nSecond selected task.',
+    })
+    const firstTaskRuns = deferred<{ runs: ReturnType<typeof buildRunRecord>[] }>()
+    const secondTaskRuns = deferred<{ runs: ReturnType<typeof buildRunRecord>[] }>()
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: {
+          projects: [
+            buildProject({ canonicalName: 'project-a' }),
+            buildProject({ canonicalName: 'project-b' }),
+          ],
+        },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [firstTask, secondTask] },
+      },
+      {
+        path: '/api/reviews',
+        body: { reviews: [] },
+      },
+      {
+        path: '/api/dispatches',
+        body: { dispatches: [] },
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings(),
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(firstTask.id)}/runs`,
+        body: () => firstTaskRuns.promise,
+      },
+      {
+        path: `/api/tasks/${encodeURIComponent(secondTask.id)}/runs`,
+        body: () => secondTaskRuns.promise,
+      },
+    ])
+
+    const wrapper = await mountApp()
+
+    await wrapper.get(`[data-task-id="${firstTask.id}"]`).trigger('click')
+    await flushPromises()
+    await wrapper.get(`[data-task-id="${secondTask.id}"]`).trigger('click')
+    await flushPromises()
+
+    secondTaskRuns.resolve({
+      runs: [
+        buildRunRecord(
+          { ...secondTask },
+          {
+            dispatchId: 'dispatch-second-history',
+            summary: 'Second task history response.',
+          },
+        ),
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="task-drawer"]').text()).toContain('Second task')
+    expect(wrapper.get('[data-testid="run-history-item"]').attributes('data-dispatch-id')).toBe(
+      'dispatch-second-history',
+    )
+
+    firstTaskRuns.resolve({
+      runs: [
+        buildRunRecord(
+          { ...firstTask },
+          {
+            dispatchId: 'dispatch-first-history',
+            summary: 'First task history response.',
+          },
+        ),
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="task-drawer"]').text()).toContain('Second task')
+    expect(wrapper.get('[data-testid="run-history-item"]').attributes('data-dispatch-id')).toBe(
+      'dispatch-second-history',
+    )
+    expect(wrapper.text()).not.toContain('First task history response.')
   })
 
   it('surfaces dispatch failures as a user-visible error banner', async () => {
@@ -544,6 +660,109 @@ describe('App shell', () => {
     const requestReviewButton = wrapper.findAll('button').find((button) => button.text().includes('Request review'))
     expect(requestReviewButton?.attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('Set the main GitHub user in Settings to enable PR reviews.')
+  })
+
+  it('ignores stale review run history responses after switching the selected review', async () => {
+    const firstReview = buildReviewSummary({
+      review: {
+        id: 'review-first',
+        pullRequestTitle: 'First review',
+      },
+      latestRun: {
+        dispatchId: 'review-latest-first',
+        createdAt: '2026-03-26T12:05:00.000Z',
+        summary: 'First latest review summary.',
+      },
+    })
+    const secondReview = buildReviewSummary({
+      review: {
+        id: 'review-second',
+        pullRequestTitle: 'Second review',
+      },
+      latestRun: {
+        dispatchId: 'review-latest-second',
+        createdAt: '2026-03-26T13:05:00.000Z',
+        summary: 'Second latest review summary.',
+      },
+    })
+    const firstReviewRuns = deferred<{ runs: ReturnType<typeof buildReviewRun>[] }>()
+    const secondReviewRuns = deferred<{ runs: ReturnType<typeof buildReviewRun>[] }>()
+
+    installFetchRoutes([
+      {
+        path: '/api/projects',
+        body: { projects: [buildProject()] },
+      },
+      {
+        path: '/api/tasks',
+        body: { tasks: [] },
+      },
+      {
+        path: '/api/reviews',
+        body: { reviews: [firstReview, secondReview] },
+      },
+      {
+        path: `/api/reviews/${encodeURIComponent(firstReview.review.id)}/runs`,
+        body: () => firstReviewRuns.promise,
+      },
+      {
+        path: `/api/reviews/${encodeURIComponent(secondReview.review.id)}/runs`,
+        body: () => secondReviewRuns.promise,
+      },
+      {
+        path: '/api/runs?limit=200',
+        body: { runs: [] },
+      },
+      {
+        path: '/api/events/version',
+        body: { version: 1 },
+      },
+      {
+        path: '/api/remote-agent',
+        body: buildRemoteAgentSettings({
+          reviewFollowUp: {
+            enabled: false,
+            mainUser: 'octocat',
+          },
+        }),
+      },
+    ])
+
+    const wrapper = await mountApp('/reviews')
+
+    await wrapper.get(`[data-review-id="${firstReview.review.id}"] [data-testid="review-row"]`).trigger('click')
+    await flushPromises()
+    await wrapper.get(`[data-review-id="${secondReview.review.id}"] [data-testid="review-row"]`).trigger('click')
+    await flushPromises()
+
+    secondReviewRuns.resolve({
+      runs: [
+        buildReviewRun({
+          dispatchId: 'review-history-second',
+          reviewId: secondReview.review.id,
+          summary: 'Second review history response.',
+        }),
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Second review')
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Second review history response.')
+
+    firstReviewRuns.resolve({
+      runs: [
+        buildReviewRun({
+          dispatchId: 'review-history-first',
+          reviewId: firstReview.review.id,
+          summary: 'First review history response.',
+        }),
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Second review')
+    expect(wrapper.get('[data-testid="review-drawer"]').text()).toContain('Second review history response.')
+    expect(wrapper.text()).not.toContain('First review history response.')
   })
 
   it('creates a review request, opens the review drawer, and deletes it cleanly', async () => {

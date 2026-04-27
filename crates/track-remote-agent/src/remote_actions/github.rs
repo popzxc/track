@@ -24,10 +24,11 @@ impl<'a> FetchGithubLoginAction<'a> {
         Self { ssh_client }
     }
 
-    pub(crate) fn execute(&self) -> Result<String, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<String, TrackError> {
         let login = self
             .ssh_client
-            .run_helper_json::<_, GithubLoginResponse>("github-login", &EmptyRequest {})?
+            .run_helper_json::<_, GithubLoginResponse>("github-login", &EmptyRequest {})
+            .await?
             .login;
 
         let login = login.trim().to_owned();
@@ -57,7 +58,7 @@ impl<'a> FetchPullRequestMetadataAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<GithubPullRequestMetadata, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<GithubPullRequestMetadata, TrackError> {
         let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
         let pull_request_endpoint = reference.pull_request_endpoint();
         let pull_request_json = self
@@ -68,6 +69,7 @@ impl<'a> FetchPullRequestMetadataAction<'a> {
                     endpoint: &pull_request_endpoint,
                 },
             )
+            .await
             .map(|response| response.output)
             .map_err(|error| {
                 contextualize_track_error(
@@ -123,7 +125,7 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<GithubPullRequestReviewState, TrackError> {
+    pub(crate) async fn execute(&self) -> Result<GithubPullRequestReviewState, TrackError> {
         let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
         let pull_request_endpoint = reference.pull_request_endpoint();
         let pull_request_json = self
@@ -134,6 +136,7 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
                     endpoint: &pull_request_endpoint,
                 },
             )
+            .await
             .map(|response| response.output)
             .map_err(|error| {
                 contextualize_track_error(
@@ -168,6 +171,7 @@ impl<'a> FetchPullRequestReviewStateAction<'a> {
                     endpoint: &reviews_endpoint,
                 },
             )
+            .await
             .map(|response| response.output)
             .map_err(|error| {
                 contextualize_track_error(
@@ -242,7 +246,7 @@ impl<'a> PostPullRequestCommentAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
         let reference = GithubPullRequestReference::parse(self.pull_request_url)?;
         let issue_comments_endpoint = reference.issue_comments_endpoint();
         self.ssh_client
@@ -253,6 +257,7 @@ impl<'a> PostPullRequestCommentAction<'a> {
                     body: self.comment_body,
                 },
             )
+            .await
             .map_err(|error| {
                 contextualize_track_error(
                     error,

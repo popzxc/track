@@ -21,7 +21,7 @@ impl<'a> UploadRemoteFileAction<'a> {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<(), TrackError> {
+    pub(crate) async fn execute(&self) -> Result<(), TrackError> {
         self.ssh_client
             .run_helper_json::<_, EmptyResponse>(
                 "write-file",
@@ -30,6 +30,7 @@ impl<'a> UploadRemoteFileAction<'a> {
                     contents: self.contents,
                 },
             )
+            .await
             .map(|_| ())
     }
 }

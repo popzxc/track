@@ -9,7 +9,7 @@ use track_config::paths::{
 };
 use track_config::runtime::{RemoteAgentReviewFollowUpRuntimeConfig, RemoteAgentRuntimeConfig};
 use track_dal::database::DatabaseContext;
-use track_remote_agent::{invalidate_helper_upload, RemoteAgentConfigProvider};
+use track_remote_agent::invalidate_helper_upload;
 use track_types::errors::{ErrorCode, TrackError};
 use track_types::types::RemoteAgentPreferredTool;
 
@@ -164,15 +164,6 @@ impl RemoteAgentConfigService {
             .await?
             .map(build_remote_agent_runtime_config)
             .transpose()
-    }
-}
-
-#[async_trait::async_trait]
-impl RemoteAgentConfigProvider for RemoteAgentConfigService {
-    async fn load_remote_agent_runtime_config(
-        &self,
-    ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
-        RemoteAgentConfigService::load_remote_agent_runtime_config(self).await
     }
 }
 

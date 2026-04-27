@@ -9,7 +9,7 @@ import type {
   Task,
   TaskDispatch,
 } from '../api/types'
-import { TOOL_CONSTANTS } from './constants'
+import { REMOTE_AGENT_TOOLS } from '../api/types'
 
 export function buildTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -32,7 +32,7 @@ export function buildDispatch(
   return {
     dispatchId: 'dispatch-123',
     taskId: 'project-a/open/20260323-120000-fix-queue-layout.md',
-    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
+    preferredTool: options.preferredTool ?? REMOTE_AGENT_TOOLS.CODEX,
     project: 'project-a',
     status: 'succeeded',
     createdAt: '2026-03-23T12:05:00.000Z',
@@ -93,7 +93,7 @@ export function buildReview(
     gitUrl: 'git@github.com:acme/project-a.git',
     baseBranch: 'main',
     workspaceKey: 'project-a',
-    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
+    preferredTool: options.preferredTool ?? REMOTE_AGENT_TOOLS.CODEX,
     project: 'project-a',
     mainUser: 'octocat',
     defaultReviewPrompt: 'Focus on regressions and missing tests.',
@@ -118,7 +118,7 @@ export function buildReviewRun(
     pullRequestUrl: 'https://github.com/acme/project-a/pull/42',
     repositoryFullName: 'acme/project-a',
     workspaceKey: 'project-a',
-    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
+    preferredTool: options.preferredTool ?? REMOTE_AGENT_TOOLS.CODEX,
     status: 'succeeded',
     createdAt: '2026-03-26T12:05:00.000Z',
     updatedAt: '2026-03-26T12:06:00.000Z',
@@ -168,7 +168,7 @@ export function buildRemoteAgentSettings(
 ): RemoteAgentSettings {
   return {
     configured: true,
-    preferredTool: options.preferredTool ?? TOOL_CONSTANTS.CODEX,
+    preferredTool: options.preferredTool ?? REMOTE_AGENT_TOOLS.CODEX,
     host: '127.0.0.1',
     user: 'track',
     port: 2222,

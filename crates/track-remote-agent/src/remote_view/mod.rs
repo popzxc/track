@@ -74,6 +74,10 @@ impl RemoteWorkspace {
         RemoteMaintenanceRepository::new(self)
     }
 
+    pub(crate) fn remote_agent(&self) -> &RemoteAgentRuntimeConfig {
+        &self.remote_agent
+    }
+
     pub fn resolve_checkout_path_for_project(&self, project_id: &ProjectId) -> RemoteCheckoutPath {
         self.projects()
             .resolve_checkout_path_for_project(project_id)
@@ -137,18 +141,18 @@ impl RemoteWorkspace {
             .await
     }
 
-    pub fn list_task_worktrees(
+    pub async fn list_task_worktrees(
         &self,
         project_id: &ProjectId,
     ) -> Result<Vec<RemoteWorktreeEntry>, TrackError> {
-        self.task_runs().list_worktrees(project_id)
+        self.task_runs().list_worktrees(project_id).await
     }
 
-    pub fn list_review_worktrees(
+    pub async fn list_review_worktrees(
         &self,
         workspace_key: &WorkspaceKey,
     ) -> Result<Vec<RemoteWorktreeEntry>, TrackError> {
-        self.review_runs().list_worktrees(workspace_key)
+        self.review_runs().list_worktrees(workspace_key).await
     }
 
     pub async fn load_project_snapshot(
@@ -171,7 +175,10 @@ impl RemoteWorkspace {
             .review_runs()
             .load_run_views_for_project(&project.canonical_name)
             .await?;
-        let task_worktrees = self.task_runs().list_worktrees(&project.canonical_name)?;
+        let task_worktrees = self
+            .task_runs()
+            .list_worktrees(&project.canonical_name)
+            .await?;
 
         let mut workspace_keys = reviews
             .iter()
@@ -185,7 +192,7 @@ impl RemoteWorkspace {
 
         let mut review_worktrees = Vec::new();
         for workspace_key in workspace_keys {
-            review_worktrees.extend(self.review_runs().list_worktrees(&workspace_key)?);
+            review_worktrees.extend(self.review_runs().list_worktrees(&workspace_key).await?);
         }
         review_worktrees.sort_by(|left, right| left.path.cmp(&right.path));
 

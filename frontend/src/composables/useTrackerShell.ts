@@ -4,18 +4,14 @@ import { useRoute } from 'vue-router'
 import {
   ApiClientError,
   dispatchTask,
-  fetchDispatches,
   fetchProjects,
   fetchRemoteAgentSettings,
-  fetchReviews,
-  fetchRuns,
   fetchTaskChangeVersion,
-  fetchTaskRuns,
   fetchTasks,
-  fetchReviewRuns,
 } from '../api/client'
 import { mergeProjects } from '../features/tasks/presentation'
 import { firstQueryValue, queryFlag } from '../router/query'
+import { useRunState } from './useRunState'
 import type {
   ProjectInfo,
   RemoteAgentPreferredTool,
@@ -70,53 +66,12 @@ interface TrackerShellContext {
   upsertLatestTaskDispatch: (dispatch: TaskDispatch) => void
   upsertReviewSummary: (review: ReviewRecord, latestRun?: ReviewRunRecord | null) => void
   upsertRunRecord: (task: Task, dispatch: TaskDispatch) => void
-  upsertSelectedReviewRun: (
-    selectedReviewId: Ref<string | null>,
-    selectedReviewRuns: Ref<ReviewRunRecord[]>,
-    run: ReviewRunRecord,
-  ) => void
-  upsertSelectedTaskRun: (
-    selectedTaskId: Ref<string | null>,
-    selectedTaskRuns: Ref<RunRecord[]>,
-    task: Task,
-    dispatch: TaskDispatch,
-  ) => void
-  removeReview: (
-    selectedReviewId: Ref<string | null>,
-    selectedReviewRuns: Ref<ReviewRunRecord[]>,
-    reviewId: string,
-  ) => void
-  removeTaskRuns: (
-    selectedTaskId: Ref<string | null>,
-    selectedTaskRuns: Ref<RunRecord[]>,
-    taskId: string,
-  ) => void
+  removeReview: (reviewId: string) => void
+  removeTaskRuns: (taskId: string) => void
   visibleTaskCount: ComputedRef<number>
 }
 
 const trackerShellContextKey: InjectionKey<TrackerShellContext> = Symbol('tracker-shell-context')
-
-function reviewSummaryTimestamp(summary: ReviewSummary) {
-  return summary.latestRun?.createdAt ?? summary.review.updatedAt ?? summary.review.createdAt
-}
-
-function sortReviewSummaries(reviewSummaries: ReviewSummary[]) {
-  return reviewSummaries
-    .slice()
-    .sort((left, right) => Date.parse(reviewSummaryTimestamp(right)) - Date.parse(reviewSummaryTimestamp(left)))
-}
-
-function sortTaskRuns(runs: RunRecord[]) {
-  return runs
-    .slice()
-    .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-}
-
-function sortReviewRuns(runs: ReviewRunRecord[]) {
-  return runs
-    .slice()
-    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-}
 
 function taskProjectOptions(tasks: Task[]): ProjectInfo[] {
   return tasks.map((task) => ({
@@ -140,11 +95,9 @@ export function provideTrackerShell(): TrackerShellContext {
   })
 
   const tasks = ref<Task[]>([])
-  const reviews = ref<ReviewSummary[]>([])
   const projects = ref<ProjectInfo[]>([])
   const taskProjects = ref<ProjectInfo[]>([])
-  const runs = ref<RunRecord[]>([])
-  const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
+  const runState = useRunState({ tasks })
   const remoteAgentSettings = ref<RemoteAgentSettings | null>(null)
 
   const loading = ref(true)
@@ -159,7 +112,7 @@ export function provideTrackerShell(): TrackerShellContext {
   let runPollInFlight = false
 
   const visibleTaskCount = computed(() => tasks.value.length)
-  const reviewCount = computed(() => reviews.value.length)
+  const reviewCount = computed(() => runState.reviews.value.length)
   const availableProjects = computed(() => mergeProjects(projects.value, taskProjects.value))
   const totalProjectCount = computed(() => availableProjects.value.length)
   const runnerSetupReady = computed(() =>
@@ -184,31 +137,8 @@ export function provideTrackerShell(): TrackerShellContext {
     return undefined
   })
   const canRequestReview = computed(() => !reviewRequestDisabledReason.value)
-  const activeRuns = computed(() =>
-    runs.value
-      .filter((run) => run.dispatch.status === 'preparing' || run.dispatch.status === 'running')
-      .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt)),
-  )
-  const activeReviewRuns = computed(() =>
-    reviews.value
-      .filter((summary) => summary.latestRun?.status === 'preparing' || summary.latestRun?.status === 'running')
-      .sort((left, right) => Date.parse(reviewSummaryTimestamp(right)) - Date.parse(reviewSummaryTimestamp(left))),
-  )
-  const recentRuns = computed(() =>
-    runs.value
-      .slice()
-      .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-      .slice(0, 40),
-  )
-  const recentReviewRuns = computed(() =>
-    reviews.value
-      .filter((summary) => Boolean(summary.latestRun))
-      .slice()
-      .sort((left, right) => Date.parse(reviewSummaryTimestamp(right)) - Date.parse(reviewSummaryTimestamp(left)))
-      .slice(0, 40),
-  )
   const activeRemoteWorkCount = computed(
-    () => activeRuns.value.length + activeReviewRuns.value.length,
+    () => runState.activeRuns.value.length + runState.activeReviewRuns.value.length,
   )
   const shellPreludeHelpText = 'The remote runner uses non-interactive SSH sessions, so it cannot rely on the environment tweaks that usually live in your interactive shell.\n\nKeep the shell prelude focused on PATH and toolchain setup. The backend reuses it before every remote command so dispatches stay predictable.'
 
@@ -238,33 +168,6 @@ export function provideTrackerShell(): TrackerShellContext {
     taskProjects.value = taskProjectOptions(tasks.value)
   }
 
-  async function loadReviews() {
-    reviews.value = sortReviewSummaries(await fetchReviews())
-  }
-
-  async function loadRuns() {
-    runs.value = await fetchRuns(200)
-  }
-
-  async function loadLatestDispatchesForVisibleTasks() {
-    const dispatches = await fetchDispatches(tasks.value.map((task) => task.id))
-
-    const latestByTaskId: Record<string, TaskDispatch> = {}
-    for (const dispatch of dispatches) {
-      latestByTaskId[dispatch.taskId] = dispatch
-    }
-
-    latestTaskDispatchesByTaskId.value = latestByTaskId
-  }
-
-  async function loadTaskRuns(taskId: string) {
-    return sortTaskRuns(await fetchTaskRuns(taskId))
-  }
-
-  async function loadReviewRuns(reviewId: string) {
-    return sortReviewRuns(await fetchReviewRuns(reviewId))
-  }
-
   async function refreshAll() {
     errorMessage.value = ''
     refreshing.value = true
@@ -273,7 +176,7 @@ export function provideTrackerShell(): TrackerShellContext {
       await Promise.all([
         loadProjects(),
         loadTasks(),
-        loadReviews(),
+        runState.loadReviews(),
         syncTaskChangeVersion(),
         loadRemoteAgentSettings().catch(() => {
           // Remote runner status is useful context, but the rest of the shell
@@ -284,8 +187,8 @@ export function provideTrackerShell(): TrackerShellContext {
       loading.value = false
 
       await Promise.all([
-        loadLatestDispatchesForVisibleTasks(),
-        loadRuns(),
+        runState.loadLatestDispatchesForVisibleTasks(),
+        runState.loadRuns(),
       ])
     } catch (error) {
       setFriendlyError(error)
@@ -295,103 +198,10 @@ export function provideTrackerShell(): TrackerShellContext {
     }
   }
 
-  function upsertRunRecord(task: Task, dispatch: TaskDispatch) {
-    const nextRecord: RunRecord = { task, dispatch }
-    runs.value = sortTaskRuns([
-      nextRecord,
-      ...runs.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId),
-    ])
-  }
-
-  function upsertLatestTaskDispatch(dispatch: TaskDispatch) {
-    latestTaskDispatchesByTaskId.value = {
-      ...latestTaskDispatchesByTaskId.value,
-      [dispatch.taskId]: dispatch,
-    }
-  }
-
-  function upsertSelectedTaskRun(
-    selectedTaskId: Ref<string | null>,
-    selectedTaskRuns: Ref<RunRecord[]>,
-    task: Task,
-    dispatch: TaskDispatch,
-  ) {
-    if (selectedTaskId.value !== task.id) {
-      return
-    }
-
-    selectedTaskRuns.value = sortTaskRuns([
-      { task, dispatch },
-      ...selectedTaskRuns.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId),
-    ])
-  }
-
-  function removeTaskRuns(
-    selectedTaskId: Ref<string | null>,
-    selectedTaskRuns: Ref<RunRecord[]>,
-    taskId: string,
-  ) {
-    runs.value = runs.value.filter((run) => run.task.id !== taskId)
-    const nextDispatches = { ...latestTaskDispatchesByTaskId.value }
-    delete nextDispatches[taskId]
-    latestTaskDispatchesByTaskId.value = nextDispatches
-
-    if (selectedTaskId.value === taskId) {
-      selectedTaskRuns.value = []
-    }
-  }
-
-  function upsertReviewSummary(review: ReviewRecord, latestRun?: ReviewRunRecord | null) {
-    const existingSummary = reviews.value.find((summary) => summary.review.id === review.id)
-    reviews.value = sortReviewSummaries([
-      {
-        review,
-        latestRun: latestRun ?? existingSummary?.latestRun,
-      },
-      ...reviews.value.filter((summary) => summary.review.id !== review.id),
-    ])
-  }
-
-  function upsertLatestReviewRun(reviewId: string, latestRun: ReviewRunRecord) {
-    reviews.value = sortReviewSummaries(
-      reviews.value.map((summary) =>
-        summary.review.id === reviewId
-          ? { ...summary, latestRun }
-          : summary),
-    )
-  }
-
-  function upsertSelectedReviewRun(
-    selectedReviewId: Ref<string | null>,
-    selectedReviewRuns: Ref<ReviewRunRecord[]>,
-    run: ReviewRunRecord,
-  ) {
-    if (selectedReviewId.value !== run.reviewId) {
-      return
-    }
-
-    selectedReviewRuns.value = sortReviewRuns([
-      run,
-      ...selectedReviewRuns.value.filter((entry) => entry.dispatchId !== run.dispatchId),
-    ])
-  }
-
-  function removeReview(
-    selectedReviewId: Ref<string | null>,
-    selectedReviewRuns: Ref<ReviewRunRecord[]>,
-    reviewId: string,
-  ) {
-    reviews.value = reviews.value.filter((summary) => summary.review.id !== reviewId)
-
-    if (selectedReviewId.value === reviewId) {
-      selectedReviewRuns.value = []
-    }
-  }
-
   async function startQueuedTaskDispatch(task: Task, preferredTool: RemoteAgentPreferredTool) {
     const dispatch = await dispatchTask(task.id, { preferredTool })
-    upsertRunRecord(task, dispatch)
-    upsertLatestTaskDispatch(dispatch)
+    runState.upsertRunRecord(task, dispatch)
+    runState.upsertLatestTaskDispatch(dispatch)
   }
 
   async function syncTaskChangeVersion() {
@@ -441,7 +251,7 @@ export function provideTrackerShell(): TrackerShellContext {
       return
     }
 
-    if (activeRuns.value.length === 0 && activeReviewRuns.value.length === 0) {
+    if (runState.activeRuns.value.length === 0 && runState.activeReviewRuns.value.length === 0) {
       return
     }
 
@@ -449,9 +259,9 @@ export function provideTrackerShell(): TrackerShellContext {
 
     try {
       await Promise.all([
-        loadRuns(),
-        loadReviews(),
-        loadLatestDispatchesForVisibleTasks(),
+        runState.loadRuns(),
+        runState.loadReviews(),
+        runState.loadLatestDispatchesForVisibleTasks(),
       ])
     } catch {
       // The current run state remains useful even if one poll fails.
@@ -483,7 +293,7 @@ export function provideTrackerShell(): TrackerShellContext {
     void (async () => {
       try {
         await loadTasks()
-        await loadLatestDispatchesForVisibleTasks()
+        await runState.loadLatestDispatchesForVisibleTasks()
       } catch (error) {
         setFriendlyError(error)
       }
@@ -514,42 +324,40 @@ export function provideTrackerShell(): TrackerShellContext {
 
   const context: TrackerShellContext = {
     activeRemoteWorkCount,
-    activeReviewRuns,
-    activeRuns,
+    activeReviewRuns: runState.activeReviewRuns,
+    activeRuns: runState.activeRuns,
     availableProjects,
     canRequestReview,
     defaultRemoteAgentPreferredTool,
     errorMessage,
-    latestTaskDispatchesByTaskId,
+    latestTaskDispatchesByTaskId: runState.latestTaskDispatchesByTaskId,
     loadRemoteAgentSettings,
-    loadReviewRuns,
-    loadTaskRuns,
+    loadReviewRuns: runState.loadReviewRuns,
+    loadTaskRuns: runState.loadTaskRuns,
     loading,
     projects,
-    recentReviewRuns,
-    recentRuns,
+    recentReviewRuns: runState.recentReviewRuns,
+    recentRuns: runState.recentRuns,
     refreshAll,
     refreshing,
     remoteAgentSettings,
     reviewCount,
     reviewRequestDisabledReason,
-    reviews,
+    reviews: runState.reviews,
     runnerSetupReady,
-    runs,
+    runs: runState.runs,
     saving,
     setFriendlyError,
     shellPreludeHelpText,
     startQueuedTaskDispatch,
     tasks,
     totalProjectCount,
-    upsertLatestReviewRun,
-    upsertLatestTaskDispatch,
-    upsertReviewSummary,
-    upsertRunRecord,
-    upsertSelectedReviewRun,
-    upsertSelectedTaskRun,
-    removeReview,
-    removeTaskRuns,
+    upsertLatestReviewRun: runState.upsertLatestReviewRun,
+    upsertLatestTaskDispatch: runState.upsertLatestTaskDispatch,
+    upsertReviewSummary: runState.upsertReviewSummary,
+    upsertRunRecord: runState.upsertRunRecord,
+    removeReview: runState.removeReview,
+    removeTaskRuns: runState.removeTaskRuns,
     visibleTaskCount,
   }
 

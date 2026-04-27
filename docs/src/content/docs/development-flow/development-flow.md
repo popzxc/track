@@ -68,15 +68,6 @@ Do not commit a crate-local `.env` with `DATABASE_URL` for this workflow. Normal
 builds should resolve SQLx queries from the checked-in `.sqlx` cache instead of
 preferring a live database connection.
 
-## What to edit
-
-- `crates/track-core`: shared backend behavior and remote-agent orchestration
-- `crates/track-capture`: local parsing and model resolution
-- `crates/track-cli`: CLI surface
-- `crates/track-api`: Axum API and static asset serving
-- `frontend/`: Vue WebUI
-- `docs/`: Astro Starlight documentation book
-
 ## Practical workflow
 
 For most feature work:

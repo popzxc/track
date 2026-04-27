@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -21,8 +20,8 @@ use track_types::ids::{DispatchId, ProjectId, ReviewId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath, WorkspaceKey};
 use track_types::time_utils::now_utc;
 use track_types::types::{
-    DispatchStatus, Priority, RemoteAgentPreferredTool, ReviewRecord, ReviewRunRecord,
-    TaskCreateInput, TaskSource,
+    DispatchStatus, Priority, RemoteAgentPreferredTool, RemoteRunState, ReviewRecord,
+    ReviewRunRecord, Status, TaskCreateInput, TaskSource,
 };
 use track_types::urls::Url;
 
@@ -84,11 +83,7 @@ async fn database(directory: &TempDir) -> DatabaseContext {
 }
 
 fn app_state(config_service: Arc<RemoteAgentConfigService>, database: DatabaseContext) -> AppState {
-    AppState {
-        config_service,
-        database,
-        task_change_version: Arc::new(AtomicU64::new(0)),
-    }
+    AppState::new(config_service, database)
 }
 
 async fn register_project(database: &DatabaseContext, canonical_name: &str) {
@@ -323,8 +318,8 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         )
         .await
         .expect("first dispatch should be created");
-    first_dispatch.status = DispatchStatus::Succeeded;
-    first_dispatch.finished_at = Some(first_dispatch.updated_at);
+    first_dispatch.run.status = DispatchStatus::Succeeded;
+    first_dispatch.run.finished_at = Some(first_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&first_dispatch)
         .await
@@ -350,8 +345,8 @@ async fn lists_dispatches_for_single_and_repeated_task_ids() {
         )
         .await
         .expect("second dispatch should be created");
-    second_dispatch.status = DispatchStatus::Succeeded;
-    second_dispatch.finished_at = Some(second_dispatch.updated_at);
+    second_dispatch.run.status = DispatchStatus::Succeeded;
+    second_dispatch.run.finished_at = Some(second_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&second_dispatch)
         .await
@@ -447,8 +442,8 @@ async fn lists_runs_with_task_context() {
         )
         .await
         .expect("dispatch should be created");
-    dispatch.status = DispatchStatus::Succeeded;
-    dispatch.finished_at = Some(dispatch.updated_at);
+    dispatch.run.status = DispatchStatus::Succeeded;
+    dispatch.run.finished_at = Some(dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&dispatch)
         .await
@@ -480,7 +475,7 @@ async fn lists_runs_with_task_context() {
     assert_eq!(json["runs"][0]["task"]["id"], task.id.as_str());
     assert_eq!(
         json["runs"][0]["dispatch"]["dispatchId"],
-        dispatch.dispatch_id.as_str()
+        dispatch.run.dispatch_id.as_str()
     );
 }
 
@@ -525,8 +520,8 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         )
         .await
         .expect("first dispatch should be created");
-    first_dispatch.status = DispatchStatus::Succeeded;
-    first_dispatch.finished_at = Some(first_dispatch.updated_at);
+    first_dispatch.run.status = DispatchStatus::Succeeded;
+    first_dispatch.run.finished_at = Some(first_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&first_dispatch)
         .await
@@ -552,8 +547,8 @@ async fn lists_task_scoped_runs_without_global_limit_truncation() {
         )
         .await
         .expect("second dispatch should be created");
-    second_dispatch.status = DispatchStatus::Succeeded;
-    second_dispatch.finished_at = Some(second_dispatch.updated_at);
+    second_dispatch.run.status = DispatchStatus::Succeeded;
+    second_dispatch.run.finished_at = Some(second_dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&second_dispatch)
         .await
@@ -623,34 +618,36 @@ async fn lists_reviews_with_latest_run_and_review_history() {
     let review_dispatch_id = DispatchId::new("review-dispatch-1").unwrap();
     review_dispatch_repository
         .save_dispatch(&ReviewRunRecord {
-            dispatch_id: review_dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: review_dispatch_id.clone(),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
+                status: DispatchStatus::Succeeded,
+                created_at,
+                updated_at: created_at,
+                finished_at: Some(created_at),
+                remote_host: "192.0.2.25".to_owned(),
+                branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
+                worktree_path: Some(DispatchWorktreePath::for_review(
+                    "/tmp",
+                    &review.workspace_key,
+                    &review_dispatch_id,
+                )),
+                follow_up_request: None,
+                summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
+                notes: None,
+                error_message: None,
+            },
             review_id: review.id.clone(),
             pull_request_url: review.pull_request_url.clone(),
             repository_full_name: review.repository_full_name.clone(),
             workspace_key: review.workspace_key.clone(),
-            preferred_tool: RemoteAgentPreferredTool::Codex,
-            status: DispatchStatus::Succeeded,
-            created_at,
-            updated_at: created_at,
-            finished_at: Some(created_at),
-            remote_host: "192.0.2.25".to_owned(),
-            branch_name: Some(DispatchBranch::for_review(&review_dispatch_id)),
-            worktree_path: Some(DispatchWorktreePath::for_review(
-                "/tmp",
-                &review.workspace_key,
-                &review_dispatch_id,
-            )),
-            follow_up_request: None,
             target_head_oid: Some("abc123def456".to_owned()),
-            summary: Some("Submitted a GitHub review with two inline comments.".to_owned()),
             review_submitted: true,
             github_review_id: Some("1001".to_owned()),
             github_review_url: Some(
                 Url::parse("https://github.com/acme/project-a/pull/42#pullrequestreview-1001")
                     .unwrap(),
             ),
-            notes: None,
-            error_message: None,
         })
         .await
         .expect("review run should save");
@@ -749,8 +746,8 @@ async fn discards_dispatch_history_for_a_task() {
         )
         .await
         .expect("dispatch should be created");
-    dispatch.status = DispatchStatus::Failed;
-    dispatch.finished_at = Some(dispatch.updated_at);
+    dispatch.run.status = DispatchStatus::Failed;
+    dispatch.run.finished_at = Some(dispatch.run.updated_at);
     dispatch_repository
         .save_dispatch(&dispatch)
         .await
@@ -796,6 +793,181 @@ async fn discards_dispatch_history_for_a_task() {
     let list_json: serde_json::Value =
         serde_json::from_slice(&list_body).expect("list response should be valid json");
     assert_eq!(list_json["dispatches"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn active_dispatch_listing_requires_remote_config() {
+    let directory = TempDir::new().expect("tempdir should be created");
+    let _environment = TestEnvironment::new(&directory);
+    let static_root = static_root(&directory);
+    let database = database(&directory).await;
+    register_project(&database, "project-a").await;
+
+    let task = database
+        .task_repository()
+        .create_task(TaskCreateInput {
+            project: ProjectId::new("project-a").unwrap(),
+            priority: Priority::High,
+            description: "Active remote history needs reconciliation".to_owned(),
+            source: Some(TaskSource::Web),
+        })
+        .await
+        .expect("task should be created")
+        .task;
+    let dispatch_id = DispatchId::new("dispatch-active-no-config").unwrap();
+    let mut dispatch = database
+        .dispatch_repository()
+        .create_dispatch(
+            &task,
+            &dispatch_id,
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            &DispatchBranch::for_task(&dispatch_id),
+            &DispatchWorktreePath::for_task("/tmp/track", &task.project, &dispatch_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("dispatch should be created");
+    dispatch.run.status = DispatchStatus::Running;
+    database
+        .dispatch_repository()
+        .save_dispatch(&dispatch)
+        .await
+        .expect("dispatch should save");
+
+    let app = build_app(
+        app_state(config_service(&directory).await, database.clone()),
+        &static_root,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/dispatches?taskId={}", task.id))
+                .body(Body::empty())
+                .expect("list request should build"),
+        )
+        .await
+        .expect("list request should succeed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).expect("response should be valid json");
+    assert_eq!(json["error"]["code"], "REMOTE_AGENT_NOT_CONFIGURED");
+    assert_eq!(
+        database
+            .dispatch_repository()
+            .get_dispatch(&task.id, &dispatch_id)
+            .await
+            .expect("dispatch lookup should succeed")
+            .expect("dispatch should still exist")
+            .run
+            .status,
+        DispatchStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn task_close_and_delete_with_remote_history_require_remote_config() {
+    let directory = TempDir::new().expect("tempdir should be created");
+    let _environment = TestEnvironment::new(&directory);
+    let static_root = static_root(&directory);
+    let database = database(&directory).await;
+    register_project(&database, "project-a").await;
+
+    let task = database
+        .task_repository()
+        .create_task(TaskCreateInput {
+            project: ProjectId::new("project-a").unwrap(),
+            priority: Priority::High,
+            description: "Remote cleanup requires configured SSH".to_owned(),
+            source: Some(TaskSource::Web),
+        })
+        .await
+        .expect("task should be created")
+        .task;
+    let dispatch_id = DispatchId::new("dispatch-cleanup-no-config").unwrap();
+    database
+        .dispatch_repository()
+        .create_dispatch(
+            &task,
+            &dispatch_id,
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            &DispatchBranch::for_task(&dispatch_id),
+            &DispatchWorktreePath::for_task("/tmp/track", &task.project, &dispatch_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("dispatch should be created");
+
+    let app = build_app(
+        app_state(config_service(&directory).await, database.clone()),
+        &static_root,
+    );
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tasks/{}", task.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"status":"closed"}"#))
+                .expect("patch request should build"),
+        )
+        .await
+        .expect("patch request should succeed");
+    assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+    let patch_body = axum::body::to_bytes(patch_response.into_body(), usize::MAX)
+        .await
+        .expect("patch response body should be readable");
+    let patch_json: serde_json::Value =
+        serde_json::from_slice(&patch_body).expect("patch response should be valid json");
+    assert_eq!(patch_json["error"]["code"], "REMOTE_AGENT_NOT_CONFIGURED");
+    assert_eq!(
+        database
+            .task_repository()
+            .get_task(&task.id)
+            .await
+            .expect("task should remain")
+            .status,
+        Status::Open
+    );
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tasks/{}", task.id))
+                .body(Body::empty())
+                .expect("delete request should build"),
+        )
+        .await
+        .expect("delete request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::BAD_REQUEST);
+    let delete_body = axum::body::to_bytes(delete_response.into_body(), usize::MAX)
+        .await
+        .expect("delete response body should be readable");
+    let delete_json: serde_json::Value =
+        serde_json::from_slice(&delete_body).expect("delete response should be valid json");
+    assert_eq!(delete_json["error"]["code"], "REMOTE_AGENT_NOT_CONFIGURED");
+    assert!(database.task_repository().get_task(&task.id).await.is_ok());
+    assert!(!database
+        .dispatch_repository()
+        .dispatches_for_task(&task.id)
+        .await
+        .expect("dispatch history lookup should succeed")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1135,4 +1307,92 @@ async fn puts_remote_agent_config_for_a_fresh_install() {
         fs::read_to_string(&known_hosts_path).expect("known_hosts should be readable"),
         "github.com ssh-ed25519 AAAA"
     );
+}
+
+#[tokio::test]
+async fn rejects_remote_agent_config_changes_while_remote_runs_are_active() {
+    let directory = TempDir::new().expect("tempdir should be created");
+    let _environment = TestEnvironment::new(&directory);
+    let static_root = static_root(&directory);
+    let database = database(&directory).await;
+    let config_service = configured_remote_agent_config_service(&directory).await;
+    register_project(&database, "project-a").await;
+
+    let task = database
+        .task_repository()
+        .create_task(TaskCreateInput {
+            project: ProjectId::new("project-a").unwrap(),
+            priority: Priority::High,
+            description: "Keep remote config stable while this runs".to_owned(),
+            source: Some(TaskSource::Web),
+        })
+        .await
+        .expect("task should be created")
+        .task;
+    let dispatch_id = DispatchId::new("dispatch-active-config-guard").unwrap();
+    database
+        .dispatch_repository()
+        .create_dispatch(
+            &task,
+            &dispatch_id,
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            &DispatchBranch::for_task(&dispatch_id),
+            &DispatchWorktreePath::for_task("/tmp/track", &task.project, &dispatch_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("active dispatch should be created");
+
+    let app = build_app(app_state(config_service, database.clone()), &static_root);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/remote-agent")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"preferredTool":"claude","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","reviewFollowUp":{"enabled":false}}"#,
+                ))
+                .expect("patch request should build"),
+        )
+        .await
+        .expect("patch request should succeed");
+    assert_eq!(patch_response.status(), StatusCode::CONFLICT);
+    let patch_body = axum::body::to_bytes(patch_response.into_body(), usize::MAX)
+        .await
+        .expect("patch response body should be readable");
+    let patch_json: serde_json::Value =
+        serde_json::from_slice(&patch_body).expect("patch response should be valid json");
+    assert_eq!(patch_json["error"]["code"], "REMOTE_AGENT_CONFIG_BUSY");
+    assert!(patch_json["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("dispatch-active-config-guard")));
+
+    let put_response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/remote-agent")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"host":"192.0.2.99","user":"builder","port":22,"workspaceRoot":"~/workspace","projectsRegistryPath":"~/track-projects.json","preferredTool":"codex","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","sshPrivateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n"}"#,
+                ))
+                .expect("put request should build"),
+        )
+        .await
+        .expect("put request should succeed");
+    assert_eq!(put_response.status(), StatusCode::CONFLICT);
+    let put_body = axum::body::to_bytes(put_response.into_body(), usize::MAX)
+        .await
+        .expect("put response body should be readable");
+    let put_json: serde_json::Value =
+        serde_json::from_slice(&put_body).expect("put response should be valid json");
+    assert_eq!(put_json["error"]["code"], "REMOTE_AGENT_CONFIG_BUSY");
 }

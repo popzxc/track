@@ -3,12 +3,9 @@ import type { Ref } from 'vue'
 import {
   cleanupRemoteAgentArtifacts,
   resetRemoteAgentWorkspace,
-  updateProject,
   updateRemoteAgentSettings,
 } from '../api/client'
 import type {
-  ProjectInfo,
-  ProjectMetadataUpdateInput,
   RemoteCleanupSummary,
   RemoteResetSummary,
   RemoteAgentPreferredTool,
@@ -22,11 +19,10 @@ interface PendingRunnerSetupRequest {
   preferredTool: RemoteAgentPreferredTool
 }
 
-interface UseSettingsMutationsOptions {
+interface UseRemoteAgentSettingsActionsOptions {
   cleaningUpRemoteArtifacts: Ref<boolean>
   cleanupPendingConfirmation: Ref<boolean>
   cleanupSummary: Ref<RemoteCleanupSummary | null>
-  editingProject: Ref<ProjectInfo | null>
   editingRemoteAgentSetup: Ref<boolean>
   errorMessage: Ref<string>
   refreshAll: () => Promise<void>
@@ -48,26 +44,7 @@ interface UseSettingsMutationsOptions {
  * Keeping them together highlights that they are "environment" changes rather
  * than everyday queue interactions.
  */
-export function useSettingsMutations(options: UseSettingsMutationsOptions) {
-  async function saveProjectEdits(payload: ProjectMetadataUpdateInput) {
-    if (!options.editingProject.value) {
-      return
-    }
-
-    options.saving.value = true
-    options.errorMessage.value = ''
-
-    try {
-      await updateProject(options.editingProject.value.canonicalName, payload)
-      options.editingProject.value = null
-      await options.refreshAll()
-    } catch (error) {
-      options.setFriendlyError(error)
-    } finally {
-      options.saving.value = false
-    }
-  }
-
+export function useRemoteAgentSettingsActions(options: UseRemoteAgentSettingsActionsOptions) {
   async function saveRemoteAgentSetup(payload: RemoteAgentSettingsUpdateInput) {
     options.saving.value = true
     options.errorMessage.value = ''
@@ -127,7 +104,6 @@ export function useSettingsMutations(options: UseSettingsMutationsOptions) {
   return {
     confirmRemoteCleanup,
     confirmRemoteReset,
-    saveProjectEdits,
     saveRemoteAgentSetup,
   }
 }

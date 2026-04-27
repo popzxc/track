@@ -39,13 +39,15 @@ impl<'a> ProjectRemoteRepository<'a> {
         )
     }
 
-    pub fn ensure_task_checkout(
+    pub async fn ensure_task_checkout(
         &self,
         project_id: &ProjectId,
         metadata: &ProjectMetadata,
     ) -> Result<RemoteCheckoutPath, TrackError> {
         let checkout_path = self.resolve_checkout_path_for_project(project_id);
-        let github_login = FetchGithubLoginAction::new(&self.workspace.ssh_client).execute()?;
+        let github_login = FetchGithubLoginAction::new(&self.workspace.ssh_client)
+            .execute()
+            .await?;
         let repository_name = parse_github_repository_name(&metadata.repo_url)?;
 
         EnsureCheckoutAction::new(
@@ -55,12 +57,13 @@ impl<'a> ProjectRemoteRepository<'a> {
             &checkout_path,
             &github_login,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(checkout_path)
     }
 
-    pub fn ensure_review_checkout(
+    pub async fn ensure_review_checkout(
         &self,
         review: &ReviewRecord,
     ) -> Result<RemoteCheckoutPath, TrackError> {
@@ -71,7 +74,9 @@ impl<'a> ProjectRemoteRepository<'a> {
             description: None,
         };
         let checkout_path = self.resolve_checkout_path_for_workspace(&review.workspace_key);
-        let github_login = FetchGithubLoginAction::new(&self.workspace.ssh_client).execute()?;
+        let github_login = FetchGithubLoginAction::new(&self.workspace.ssh_client)
+            .execute()
+            .await?;
         let repository_name = parse_github_repository_name(&review.repo_url)?;
 
         EnsureCheckoutAction::new(
@@ -81,22 +86,24 @@ impl<'a> ProjectRemoteRepository<'a> {
             &checkout_path,
             &github_login,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(checkout_path)
     }
 
-    pub fn fetch_pull_request_metadata(
+    pub async fn fetch_pull_request_metadata(
         &self,
         pull_request_url: &Url,
     ) -> Result<RemotePullRequestMetadata, TrackError> {
         let metadata =
             FetchPullRequestMetadataAction::new(&self.workspace.ssh_client, pull_request_url)
-                .execute()?;
+                .execute()
+                .await?;
         Ok(map_pull_request_metadata(metadata))
     }
 
-    pub fn fetch_pull_request_review_state(
+    pub async fn fetch_pull_request_review_state(
         &self,
         pull_request_url: &Url,
         main_user: &str,
@@ -106,11 +113,12 @@ impl<'a> ProjectRemoteRepository<'a> {
             pull_request_url,
             main_user,
         )
-        .execute()?;
+        .execute()
+        .await?;
         Ok(map_pull_request_review_state(state))
     }
 
-    pub fn post_pull_request_comment(
+    pub async fn post_pull_request_comment(
         &self,
         pull_request_url: &Url,
         comment_body: &str,
@@ -121,6 +129,7 @@ impl<'a> ProjectRemoteRepository<'a> {
             comment_body,
         )
         .execute()
+        .await
     }
 }
 

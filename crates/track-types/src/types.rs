@@ -103,9 +103,60 @@ impl DispatchStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "preparing" => Some(Self::Preparing),
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "canceled" => Some(Self::Canceled),
+            "failed" => Some(Self::Failed),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+
     pub fn is_active(self) -> bool {
         matches!(self, Self::Preparing | Self::Running)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteRunKind {
+    Task,
+    Review,
+}
+
+impl RemoteRunKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Review => "review",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "task" => Some(Self::Task),
+            "review" => Some(Self::Review),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteRunOwner {
+    Task(TaskId),
+    Review(ReviewId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRemoteRun {
+    pub dispatch_id: DispatchId,
+    pub kind: RemoteRunKind,
+    pub owner: RemoteRunOwner,
+    pub status: DispatchStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,12 +299,10 @@ pub struct RemoteAgentReviewOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskDispatchRecord {
+pub struct RemoteRunState {
     pub dispatch_id: DispatchId,
-    pub task_id: TaskId,
     #[serde(default)]
     pub preferred_tool: RemoteAgentPreferredTool,
-    pub project: ProjectId,
     pub status: DispatchStatus,
     #[serde(with = "iso_8601_timestamp")]
     pub created_at: OffsetDateTime,
@@ -271,8 +320,6 @@ pub struct TaskDispatchRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<DispatchWorktreePath>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pull_request_url: Option<Url>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub follow_up_request: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -280,14 +327,10 @@ pub struct TaskDispatchRecord {
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub review_request_head_oid: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub review_request_user: Option<String>,
 }
 
-impl TaskDispatchRecord {
-    /// Marks a preparing dispatch as actively running once remote reconciliation
+impl RemoteRunState {
+    /// Marks a preparing run as actively running once remote reconciliation
     /// observes the launcher making forward progress.
     pub fn mark_running_from_remote(mut self, refreshed_at: OffsetDateTime) -> Self {
         if self.status == DispatchStatus::Preparing {
@@ -300,13 +343,13 @@ impl TaskDispatchRecord {
         self
     }
 
-    /// Marks a preparing dispatch as abandoned when reconciliation can no
-    /// longer observe launch progress for longer than the tolerated stale
-    /// window.
+    /// Marks a preparing run as abandoned when reconciliation can no longer
+    /// observe launch progress for longer than the tolerated stale window.
     pub fn mark_abandoned_if_preparing_stale(
         mut self,
         refreshed_at: OffsetDateTime,
         stale_after: Duration,
+        error_message: impl Into<String>,
     ) -> Option<Self> {
         if self.status != DispatchStatus::Preparing {
             return None;
@@ -319,8 +362,7 @@ impl TaskDispatchRecord {
         self.status = DispatchStatus::Failed;
         self.updated_at = refreshed_at;
         self.finished_at = Some(refreshed_at);
-        self.error_message =
-            Some("Dispatch preparation stopped before the remote agent launched.".to_owned());
+        self.error_message = Some(error_message.into());
         Some(self)
     }
 
@@ -339,27 +381,6 @@ impl TaskDispatchRecord {
                 .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
         );
         self.error_message = None;
-        self
-    }
-
-    /// Applies the structured outcome returned by a completed remote task run
-    /// to the locally persisted dispatch record.
-    pub fn apply_remote_dispatch_outcome(
-        mut self,
-        outcome: RemoteAgentDispatchOutcome,
-        refreshed_at: OffsetDateTime,
-        finished_at: OffsetDateTime,
-    ) -> Self {
-        self.status = outcome.status;
-        self.updated_at = refreshed_at;
-        self.summary = Some(outcome.summary);
-        self.pull_request_url = outcome.pull_request_url;
-        let existing_branch_name = self.branch_name.take();
-        self.branch_name = outcome.branch_name.or(existing_branch_name);
-        self.worktree_path = Some(outcome.worktree_path);
-        self.notes = outcome.notes;
-        self.error_message = None;
-        self.finished_at = Some(finished_at);
         self
     }
 
@@ -387,11 +408,11 @@ impl TaskDispatchRecord {
         self
     }
 
-    pub fn into_running(mut self) -> Self {
+    pub fn into_running(mut self, summary: &str) -> Self {
         self.status = DispatchStatus::Running;
         self.updated_at = now_utc();
         self.finished_at = None;
-        self.summary = Some("The remote agent is working in the prepared environment.".to_owned());
+        self.summary = Some(summary.to_owned());
         self.error_message = None;
         self
     }
@@ -421,6 +442,130 @@ impl TaskDispatchRecord {
         self.summary = Some(summary.to_owned());
         self.notes = None;
         self.error_message = error_message.map(ToOwned::to_owned);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDispatchRecord {
+    #[serde(flatten)]
+    pub run: RemoteRunState,
+    pub task_id: TaskId,
+    pub project: ProjectId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pull_request_url: Option<Url>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_request_head_oid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_request_user: Option<String>,
+}
+
+impl TaskDispatchRecord {
+    /// Marks a preparing dispatch as actively running once remote reconciliation
+    /// observes the launcher making forward progress.
+    pub fn mark_running_from_remote(mut self, refreshed_at: OffsetDateTime) -> Self {
+        self.run = self.run.mark_running_from_remote(refreshed_at);
+        self
+    }
+
+    /// Marks a preparing dispatch as abandoned when reconciliation can no
+    /// longer observe launch progress for longer than the tolerated stale
+    /// window.
+    pub fn mark_abandoned_if_preparing_stale(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        stale_after: Duration,
+    ) -> Option<Self> {
+        let run = self.run.mark_abandoned_if_preparing_stale(
+            refreshed_at,
+            stale_after,
+            "Dispatch preparation stopped before the remote agent launched.",
+        )?;
+        self.run = run;
+        Some(self)
+    }
+
+    /// Records that the remote run was canceled after launch and should now be
+    /// treated as terminal locally.
+    pub fn mark_canceled_from_remote(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+    ) -> Self {
+        self.run = self
+            .run
+            .mark_canceled_from_remote(refreshed_at, finished_at);
+        self
+    }
+
+    /// Applies the structured outcome returned by a completed remote task run
+    /// to the locally persisted dispatch record.
+    pub fn apply_remote_dispatch_outcome(
+        mut self,
+        outcome: RemoteAgentDispatchOutcome,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+    ) -> Self {
+        self.run.status = outcome.status;
+        self.run.updated_at = refreshed_at;
+        self.run.summary = Some(outcome.summary);
+        self.pull_request_url = outcome.pull_request_url;
+        let existing_branch_name = self.run.branch_name.take();
+        self.run.branch_name = outcome.branch_name.or(existing_branch_name);
+        self.run.worktree_path = Some(outcome.worktree_path);
+        self.run.notes = outcome.notes;
+        self.run.error_message = None;
+        self.run.finished_at = Some(finished_at);
+        self
+    }
+
+    /// Records a terminal refresh failure after the remote run has already
+    /// reached a state that should not be retried locally.
+    pub fn mark_failed_from_remote_refresh(
+        mut self,
+        refreshed_at: OffsetDateTime,
+        finished_at: OffsetDateTime,
+        error_message: impl Into<String>,
+    ) -> Self {
+        self.run =
+            self.run
+                .mark_failed_from_remote_refresh(refreshed_at, finished_at, error_message);
+        self
+    }
+
+    pub fn into_preparing(mut self, summary: &str) -> Self {
+        self.run = self.run.into_preparing(summary);
+        self
+    }
+
+    pub fn into_running(mut self) -> Self {
+        self.run = self
+            .run
+            .into_running("The remote agent is working in the prepared environment.");
+        self
+    }
+
+    pub fn into_failed(mut self, error_message: String) -> Self {
+        self.run = self.run.into_failed(error_message);
+        self
+    }
+
+    pub fn into_canceled_from_ui(self) -> Self {
+        let mut record = self;
+        record.run = record.run.into_canceled_from_ui();
+        record
+    }
+
+    pub fn into_locally_finalized(
+        mut self,
+        status: DispatchStatus,
+        summary: &str,
+        error_message: Option<&str>,
+    ) -> Self {
+        self.run = self
+            .run
+            .into_locally_finalized(status, summary, error_message);
         self
     }
 }
@@ -455,58 +600,27 @@ pub struct ReviewRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewRunRecord {
-    pub dispatch_id: DispatchId,
+    #[serde(flatten)]
+    pub run: RemoteRunState,
     pub review_id: ReviewId,
     pub pull_request_url: Url,
     pub repository_full_name: String,
     pub workspace_key: WorkspaceKey,
-    #[serde(default)]
-    pub preferred_tool: RemoteAgentPreferredTool,
-    pub status: DispatchStatus,
-    #[serde(with = "iso_8601_timestamp")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "iso_8601_timestamp")]
-    pub updated_at: OffsetDateTime,
-    #[serde(
-        with = "optional_iso_8601_timestamp",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub finished_at: Option<OffsetDateTime>,
-    pub remote_host: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch_name: Option<DispatchBranch>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<DispatchWorktreePath>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub follow_up_request: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_head_oid: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
     #[serde(default, alias = "reviewPosted")]
     pub review_submitted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_review_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_review_url: Option<Url>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
 }
 
 impl ReviewRunRecord {
     /// Marks a preparing review run as actively running once the remote review
     /// launcher is confirmed to be making progress.
     pub fn mark_running_from_remote(mut self, refreshed_at: OffsetDateTime) -> Self {
-        if self.status == DispatchStatus::Preparing {
-            self.status = DispatchStatus::Running;
-            self.updated_at = refreshed_at;
-            self.finished_at = None;
-            self.error_message = None;
-        }
-
+        self.run = self.run.mark_running_from_remote(refreshed_at);
         self
     }
 
@@ -517,19 +631,12 @@ impl ReviewRunRecord {
         refreshed_at: OffsetDateTime,
         stale_after: Duration,
     ) -> Option<Self> {
-        if self.status != DispatchStatus::Preparing {
-            return None;
-        }
-
-        if refreshed_at - self.updated_at < stale_after {
-            return None;
-        }
-
-        self.status = DispatchStatus::Failed;
-        self.updated_at = refreshed_at;
-        self.finished_at = Some(refreshed_at);
-        self.error_message =
-            Some("Review preparation stopped before the remote agent launched.".to_owned());
+        let run = self.run.mark_abandoned_if_preparing_stale(
+            refreshed_at,
+            stale_after,
+            "Review preparation stopped before the remote agent launched.",
+        )?;
+        self.run = run;
         Some(self)
     }
 
@@ -540,14 +647,9 @@ impl ReviewRunRecord {
         refreshed_at: OffsetDateTime,
         finished_at: OffsetDateTime,
     ) -> Self {
-        self.status = DispatchStatus::Canceled;
-        self.updated_at = refreshed_at;
-        self.finished_at = Some(finished_at);
-        self.summary = Some(
-            self.summary
-                .unwrap_or_else(|| "Canceled from the web UI.".to_owned()),
-        );
-        self.error_message = None;
+        self.run = self
+            .run
+            .mark_canceled_from_remote(refreshed_at, finished_at);
         self
     }
 
@@ -559,16 +661,16 @@ impl ReviewRunRecord {
         refreshed_at: OffsetDateTime,
         finished_at: OffsetDateTime,
     ) -> Self {
-        self.status = outcome.status;
-        self.updated_at = refreshed_at;
-        self.summary = Some(outcome.summary);
+        self.run.status = outcome.status;
+        self.run.updated_at = refreshed_at;
+        self.run.summary = Some(outcome.summary);
         self.review_submitted = outcome.review_submitted;
         self.github_review_id = outcome.github_review_id;
         self.github_review_url = outcome.github_review_url;
-        self.worktree_path = Some(outcome.worktree_path);
-        self.notes = outcome.notes;
-        self.error_message = None;
-        self.finished_at = Some(finished_at);
+        self.run.worktree_path = Some(outcome.worktree_path);
+        self.run.notes = outcome.notes;
+        self.run.error_message = None;
+        self.run.finished_at = Some(finished_at);
         self
     }
 
@@ -580,41 +682,33 @@ impl ReviewRunRecord {
         finished_at: OffsetDateTime,
         error_message: impl Into<String>,
     ) -> Self {
-        self.status = DispatchStatus::Failed;
-        self.updated_at = refreshed_at;
-        self.finished_at = Some(finished_at);
-        self.error_message = Some(error_message.into());
+        self.run =
+            self.run
+                .mark_failed_from_remote_refresh(refreshed_at, finished_at, error_message);
         self
     }
 
     pub fn into_preparing(mut self, summary: &str) -> Self {
-        self.status = DispatchStatus::Preparing;
-        self.summary = Some(summary.to_owned());
-        self.updated_at = now_utc();
-        self.finished_at = None;
-        self.error_message = None;
+        self.run = self.run.into_preparing(summary);
         self
     }
 
     pub fn into_running(mut self) -> Self {
-        self.status = DispatchStatus::Running;
-        self.updated_at = now_utc();
-        self.finished_at = None;
-        self.summary = Some("The remote agent is reviewing the prepared pull request.".to_owned());
-        self.error_message = None;
+        self.run = self
+            .run
+            .into_running("The remote agent is reviewing the prepared pull request.");
         self
     }
 
     pub fn into_failed(mut self, error_message: String) -> Self {
-        self.status = DispatchStatus::Failed;
-        self.updated_at = now_utc();
-        self.finished_at = Some(self.updated_at);
-        self.error_message = Some(error_message);
+        self.run = self.run.into_failed(error_message);
         self
     }
 
     pub fn into_canceled_from_ui(self) -> Self {
-        self.into_locally_finalized(DispatchStatus::Canceled, "Canceled from the web UI.", None)
+        let mut record = self;
+        record.run = record.run.into_canceled_from_ui();
+        record
     }
 
     pub fn into_locally_finalized(
@@ -623,13 +717,9 @@ impl ReviewRunRecord {
         summary: &str,
         error_message: Option<&str>,
     ) -> Self {
-        let finished_at = now_utc();
-        self.status = status;
-        self.updated_at = finished_at;
-        self.finished_at = Some(finished_at);
-        self.summary = Some(summary.to_owned());
-        self.notes = None;
-        self.error_message = error_message.map(ToOwned::to_owned);
+        self.run = self
+            .run
+            .into_locally_finalized(status, summary, error_message);
         self
     }
 }
@@ -674,6 +764,86 @@ pub struct RemoteCleanupSummary {
 pub struct RemoteResetSummary {
     pub workspace_entries_removed: usize,
     pub registry_removed: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::time_utils::parse_iso_8601_millis;
+
+    fn timestamp() -> OffsetDateTime {
+        parse_iso_8601_millis("2026-04-05T10:00:00.000Z").expect("fixture timestamp should parse")
+    }
+
+    fn sample_run_state() -> RemoteRunState {
+        let dispatch_id = DispatchId::new("dispatch-1").expect("dispatch id should parse");
+        RemoteRunState {
+            dispatch_id: dispatch_id.clone(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
+            status: DispatchStatus::Running,
+            created_at: timestamp(),
+            updated_at: timestamp(),
+            finished_at: None,
+            remote_host: "198.51.100.10".to_owned(),
+            branch_name: Some(DispatchBranch::for_task(&dispatch_id)),
+            worktree_path: Some(
+                DispatchWorktreePath::new("/tmp/project-a/worktrees/dispatch-1")
+                    .expect("worktree should parse"),
+            ),
+            follow_up_request: Some("Continue the previous run.".to_owned()),
+            summary: Some("The remote agent is running.".to_owned()),
+            notes: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn task_dispatch_record_serializes_remote_run_fields_at_top_level() {
+        let record = TaskDispatchRecord {
+            run: sample_run_state(),
+            task_id: TaskId::new("task-1").expect("task id should parse"),
+            project: ProjectId::new("project-a").expect("project id should parse"),
+            pull_request_url: Some(
+                Url::parse("https://github.com/acme/project-a/pull/42").expect("url should parse"),
+            ),
+            review_request_head_oid: None,
+            review_request_user: None,
+        };
+
+        let value = serde_json::to_value(record).expect("record should serialize");
+
+        assert_eq!(value["dispatchId"], json!("dispatch-1"));
+        assert_eq!(value["preferredTool"], json!("codex"));
+        assert_eq!(value["status"], json!("running"));
+        assert_eq!(value["taskId"], json!("task-1"));
+        assert!(value.get("run").is_none());
+    }
+
+    #[test]
+    fn review_run_record_serializes_remote_run_fields_at_top_level() {
+        let record = ReviewRunRecord {
+            run: sample_run_state(),
+            review_id: ReviewId::new("review-1").expect("review id should parse"),
+            pull_request_url: Url::parse("https://github.com/acme/project-a/pull/42")
+                .expect("url should parse"),
+            repository_full_name: "acme/project-a".to_owned(),
+            workspace_key: WorkspaceKey::new("project-a").expect("workspace key should parse"),
+            target_head_oid: Some("abc123".to_owned()),
+            review_submitted: false,
+            github_review_id: None,
+            github_review_url: None,
+        };
+
+        let value = serde_json::to_value(record).expect("record should serialize");
+
+        assert_eq!(value["dispatchId"], json!("dispatch-1"));
+        assert_eq!(value["preferredTool"], json!("codex"));
+        assert_eq!(value["status"], json!("running"));
+        assert_eq!(value["reviewId"], json!("review-1"));
+        assert!(value.get("run").is_none());
+    }
 }
 
 mod iso_8601_timestamp {

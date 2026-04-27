@@ -33,9 +33,8 @@ pub(crate) async fn list_runs(
 ) -> Result<Json<RunsResponse>, ApiError> {
     let limit = query.limit;
     let dispatches = state
-        .remote_agent_services()
-        .dispatch()
-        .list_dispatches(limit)
+        .remote_run_queries()
+        .global_task_dispatches(limit)
         .await
         .map_err(ApiError::from_track_error)?;
     let tasks_by_id = state

@@ -1,4 +1,4 @@
-import { computed, type ComputedRef, type Ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 
 import {
   fetchDispatches,
@@ -8,6 +8,7 @@ import {
   fetchTaskRuns,
 } from '../api/client'
 import type {
+  DispatchStatus,
   ReviewRecord,
   ReviewRunRecord,
   ReviewSummary,
@@ -17,100 +18,106 @@ import type {
 } from '../types/task'
 
 interface UseRunStateOptions {
-  closeReviewDrawer: () => void
-  isReviewDrawerOpen: Ref<boolean>
-  isTaskDrawerOpen: Ref<boolean>
-  latestTaskDispatchesByTaskId: Ref<Record<string, TaskDispatch>>
-  reviews: Ref<ReviewSummary[]>
-  runs: Ref<RunRecord[]>
-  selectedReview: ComputedRef<ReviewRecord | null>
-  selectedReviewId: Ref<string | null>
-  selectedReviewRuns: Ref<ReviewRunRecord[]>
-  selectedTask: ComputedRef<Task | null>
-  selectedTaskId: Ref<string | null>
-  selectedTaskRuns: Ref<RunRecord[]>
   tasks: Ref<Task[]>
+}
+
+const ACTIVE_DISPATCH_STATUSES = new Set<DispatchStatus>(['preparing', 'running'])
+
+function isActiveDispatchStatus(status: DispatchStatus) {
+  return ACTIVE_DISPATCH_STATUSES.has(status)
 }
 
 function reviewSummaryTimestamp(summary: ReviewSummary) {
   return summary.latestRun?.createdAt ?? summary.review.updatedAt ?? summary.review.createdAt
 }
 
-function sortReviewSummaries(reviewSummaries: ReviewSummary[]) {
-  return reviewSummaries
+function taskRunTimestamp(run: RunRecord) {
+  return run.dispatch.createdAt
+}
+
+function reviewRunTimestamp(run: ReviewRunRecord) {
+  return run.createdAt
+}
+
+function sortByNewestTimestamp<T>(items: T[], timestamp: (item: T) => string) {
+  return items
     .slice()
-    .sort((left, right) => Date.parse(reviewSummaryTimestamp(right)) - Date.parse(reviewSummaryTimestamp(left)))
+    .sort((left, right) => Date.parse(timestamp(right)) - Date.parse(timestamp(left)))
+}
+
+function sortReviewSummaries(reviewSummaries: ReviewSummary[]) {
+  return sortByNewestTimestamp(reviewSummaries, reviewSummaryTimestamp)
+}
+
+export function sortTaskRunRecords(runs: RunRecord[]) {
+  return sortByNewestTimestamp(runs, taskRunTimestamp)
+}
+
+export function sortReviewRunRecords(runs: ReviewRunRecord[]) {
+  return sortByNewestTimestamp(runs, reviewRunTimestamp)
+}
+
+export function upsertTaskRunRecord(
+  runs: RunRecord[],
+  task: Task,
+  dispatch: TaskDispatch,
+) {
+  return sortTaskRunRecords([
+    { task, dispatch },
+    ...runs.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId),
+  ])
+}
+
+export function upsertReviewRunRecord(
+  runs: ReviewRunRecord[],
+  run: ReviewRunRecord,
+) {
+  return sortReviewRunRecords([
+    run,
+    ...runs.filter((entry) => entry.dispatchId !== run.dispatchId),
+  ])
 }
 
 /**
- * Owns the frontend's in-memory run and review projections.
+ * Owns the frontend's global run and review projections.
  *
- * The backend remains the source of truth, but the shell still needs a local
- * model that can answer "what is the latest run for this task?", merge fresh
- * optimistic responses into the visible history, and load drawer-scoped history
- * without clobbering a newer selection. Keeping those rules together avoids
- * duplicating temporal bookkeeping across mutations and polls.
+ * The backend remains the source of truth, but the shell still needs one local
+ * model that can answer "what is active?", "what is recent?", and "what is the
+ * latest dispatch for each visible task?" Keeping those rules here prevents
+ * route pages, mutations, and background polls from each inventing their own
+ * ordering and merge behavior.
  */
 export function useRunState(options: UseRunStateOptions) {
-  let selectedTaskRunsRequestVersion = 0
-  let selectedReviewRunsRequestVersion = 0
+  const reviews = ref<ReviewSummary[]>([])
+  const runs = ref<RunRecord[]>([])
+  const latestTaskDispatchesByTaskId = ref<Record<string, TaskDispatch>>({})
 
   const activeRuns = computed(() =>
-    options.runs.value
-      .filter((run) => run.dispatch.status === 'preparing' || run.dispatch.status === 'running')
-      .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt)),
+    sortTaskRunRecords(
+      runs.value.filter((run) => isActiveDispatchStatus(run.dispatch.status)),
+    ),
   )
 
   const activeReviewRuns = computed(() =>
-    options.reviews.value
-      .filter(
-        (summary) =>
-          summary.latestRun?.status === 'preparing' || summary.latestRun?.status === 'running',
-      )
-      .sort((left, right) => {
-        const leftCreatedAt = left.latestRun?.createdAt ?? left.review.updatedAt ?? left.review.createdAt
-        const rightCreatedAt = right.latestRun?.createdAt ?? right.review.updatedAt ?? right.review.createdAt
-        return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
-      }),
+    sortReviewSummaries(
+      reviews.value.filter((summary) =>
+        summary.latestRun ? isActiveDispatchStatus(summary.latestRun.status) : false,
+      ),
+    ),
   )
 
-  const recentRuns = computed(() =>
-    options.runs.value
-      .slice()
-      .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-      .slice(0, 40),
-  )
+  const recentRuns = computed(() => sortTaskRunRecords(runs.value).slice(0, 40))
 
   const recentReviewRuns = computed(() =>
-    options.reviews.value
-      .filter((summary) => Boolean(summary.latestRun))
-      .slice()
-      .sort((left, right) => {
-        const leftCreatedAt = left.latestRun?.createdAt ?? left.review.updatedAt ?? left.review.createdAt
-        const rightCreatedAt = right.latestRun?.createdAt ?? right.review.updatedAt ?? right.review.createdAt
-        return Date.parse(rightCreatedAt) - Date.parse(leftCreatedAt)
-      })
-      .slice(0, 40),
+    sortReviewSummaries(reviews.value.filter((summary) => Boolean(summary.latestRun))).slice(0, 40),
   )
 
-  function replaceSelectedTaskRuns(taskRuns: RunRecord[]) {
-    options.selectedTaskRuns.value = taskRuns
-      .slice()
-      .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
-  }
-
-  function replaceSelectedReviewRuns(reviewRuns: ReviewRunRecord[]) {
-    options.selectedReviewRuns.value = reviewRuns
-      .slice()
-      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-  }
-
   async function loadReviews() {
-    options.reviews.value = sortReviewSummaries(await fetchReviews())
+    reviews.value = sortReviewSummaries(await fetchReviews())
   }
 
   async function loadRuns() {
-    options.runs.value = await fetchRuns(200)
+    runs.value = sortTaskRunRecords(await fetchRuns(200))
   }
 
   async function loadLatestDispatchesForVisibleTasks() {
@@ -121,143 +128,77 @@ export function useRunState(options: UseRunStateOptions) {
       latestByTaskId[dispatch.taskId] = dispatch
     }
 
-    options.latestTaskDispatchesByTaskId.value = latestByTaskId
+    latestTaskDispatchesByTaskId.value = latestByTaskId
   }
 
-  async function loadSelectedTaskRunHistory() {
-    if (!options.isTaskDrawerOpen.value || !options.selectedTask.value) {
-      options.selectedTaskRuns.value = []
-      return
-    }
-
-    const requestVersion = ++selectedTaskRunsRequestVersion
-    const taskId = options.selectedTask.value.id
-    const taskRuns = await fetchTaskRuns(taskId)
-
-    if (
-      requestVersion !== selectedTaskRunsRequestVersion ||
-      !options.isTaskDrawerOpen.value ||
-      options.selectedTask.value?.id !== taskId
-    ) {
-      return
-    }
-
-    replaceSelectedTaskRuns(taskRuns)
+  async function loadTaskRuns(taskId: string) {
+    return sortTaskRunRecords(await fetchTaskRuns(taskId))
   }
 
-  async function loadSelectedReviewRunHistory() {
-    if (!options.isReviewDrawerOpen.value || !options.selectedReview.value) {
-      options.selectedReviewRuns.value = []
-      return
-    }
-
-    const requestVersion = ++selectedReviewRunsRequestVersion
-    const reviewId = options.selectedReview.value.id
-    const reviewRuns = await fetchReviewRuns(reviewId)
-
-    if (
-      requestVersion !== selectedReviewRunsRequestVersion ||
-      !options.isReviewDrawerOpen.value ||
-      options.selectedReview.value?.id !== reviewId
-    ) {
-      return
-    }
-
-    replaceSelectedReviewRuns(reviewRuns)
+  async function loadReviewRuns(reviewId: string) {
+    return sortReviewRunRecords(await fetchReviewRuns(reviewId))
   }
 
   function upsertRunRecord(task: Task, dispatch: TaskDispatch) {
-    const nextRecord: RunRecord = { task, dispatch }
-    options.runs.value = [nextRecord, ...options.runs.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId)]
-      .sort((left, right) => Date.parse(right.dispatch.createdAt) - Date.parse(left.dispatch.createdAt))
+    runs.value = upsertTaskRunRecord(runs.value, task, dispatch)
   }
 
   function upsertLatestTaskDispatch(dispatch: TaskDispatch) {
-    options.latestTaskDispatchesByTaskId.value = {
-      ...options.latestTaskDispatchesByTaskId.value,
+    latestTaskDispatchesByTaskId.value = {
+      ...latestTaskDispatchesByTaskId.value,
       [dispatch.taskId]: dispatch,
     }
   }
 
-  function upsertSelectedTaskRun(task: Task, dispatch: TaskDispatch) {
-    if (options.selectedTaskId.value !== task.id) {
-      return
-    }
-
-    replaceSelectedTaskRuns([
-      { task, dispatch },
-      ...options.selectedTaskRuns.value.filter((run) => run.dispatch.dispatchId !== dispatch.dispatchId),
-    ])
-  }
-
   function removeTaskRuns(taskId: string) {
-    options.runs.value = options.runs.value.filter((run) => run.task.id !== taskId)
-    const nextDispatches = { ...options.latestTaskDispatchesByTaskId.value }
+    runs.value = runs.value.filter((run) => run.task.id !== taskId)
+    const nextDispatches = { ...latestTaskDispatchesByTaskId.value }
     delete nextDispatches[taskId]
-    options.latestTaskDispatchesByTaskId.value = nextDispatches
-
-    if (options.selectedTaskId.value === taskId) {
-      options.selectedTaskRuns.value = []
-    }
+    latestTaskDispatchesByTaskId.value = nextDispatches
   }
 
   function upsertReviewSummary(review: ReviewRecord, latestRun?: ReviewRunRecord | null) {
-    const existingSummary = options.reviews.value.find((summary) => summary.review.id === review.id)
-    options.reviews.value = sortReviewSummaries([
+    const existingSummary = reviews.value.find((summary) => summary.review.id === review.id)
+    reviews.value = sortReviewSummaries([
       {
         review,
         latestRun: latestRun ?? existingSummary?.latestRun,
       },
-      ...options.reviews.value.filter((summary) => summary.review.id !== review.id),
+      ...reviews.value.filter((summary) => summary.review.id !== review.id),
     ])
   }
 
   function upsertLatestReviewRun(reviewId: string, latestRun: ReviewRunRecord) {
-    options.reviews.value = sortReviewSummaries(
-      options.reviews.value.map((summary) =>
+    reviews.value = sortReviewSummaries(
+      reviews.value.map((summary) =>
         summary.review.id === reviewId
           ? { ...summary, latestRun }
           : summary),
     )
   }
 
-  function upsertSelectedReviewRun(run: ReviewRunRecord) {
-    if (options.selectedReviewId.value !== run.reviewId) {
-      return
-    }
-
-    replaceSelectedReviewRuns([
-      run,
-      ...options.selectedReviewRuns.value.filter((entry) => entry.dispatchId !== run.dispatchId),
-    ])
-  }
-
   function removeReview(reviewId: string) {
-    options.reviews.value = options.reviews.value.filter((summary) => summary.review.id !== reviewId)
-
-    if (options.selectedReviewId.value === reviewId) {
-      options.closeReviewDrawer()
-    }
+    reviews.value = reviews.value.filter((summary) => summary.review.id !== reviewId)
   }
 
   return {
     activeReviewRuns,
     activeRuns,
+    latestTaskDispatchesByTaskId,
     loadLatestDispatchesForVisibleTasks,
+    loadReviewRuns,
     loadReviews,
     loadRuns,
-    loadSelectedReviewRunHistory,
-    loadSelectedTaskRunHistory,
+    loadTaskRuns,
     recentReviewRuns,
     recentRuns,
     removeReview,
     removeTaskRuns,
-    replaceSelectedReviewRuns,
+    reviews,
+    runs,
     upsertLatestReviewRun,
     upsertLatestTaskDispatch,
     upsertReviewSummary,
     upsertRunRecord,
-    upsertSelectedReviewRun,
-    upsertSelectedTaskRun,
   }
 }

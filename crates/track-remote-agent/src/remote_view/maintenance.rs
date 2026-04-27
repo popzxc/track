@@ -18,7 +18,7 @@ impl<'a> RemoteMaintenanceRepository<'a> {
         Self { workspace }
     }
 
-    pub fn cleanup_orphaned_artifacts(
+    pub async fn cleanup_orphaned_artifacts(
         &self,
         kept_worktree_paths: &[DispatchWorktreePath],
         kept_run_directories: &[DispatchRunDirectory],
@@ -29,7 +29,8 @@ impl<'a> RemoteMaintenanceRepository<'a> {
             kept_worktree_paths,
             kept_run_directories,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(RemoteArtifactCleanupSummary {
             worktrees_removed: counts.worktrees_removed,
@@ -37,7 +38,7 @@ impl<'a> RemoteMaintenanceRepository<'a> {
         })
     }
 
-    pub fn cleanup_reclaimable_review_workspaces(
+    pub async fn cleanup_reclaimable_review_workspaces(
         &self,
         workspace_keys: &[WorkspaceKey],
     ) -> Result<(), TrackError> {
@@ -56,14 +57,16 @@ impl<'a> RemoteMaintenanceRepository<'a> {
 
         CleanupReviewWorkspaceCachesAction::new(&self.workspace.ssh_client, &checkout_paths)
             .execute()
+            .await
     }
 
-    pub fn reset_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
+    pub async fn reset_workspace(&self) -> Result<RemoteResetSummary, TrackError> {
         ResetWorkspaceAction::new(
             &self.workspace.ssh_client,
             &self.workspace.remote_agent.workspace_root,
             &self.workspace.remote_agent.projects_registry_path,
         )
         .execute()
+        .await
     }
 }

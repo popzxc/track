@@ -53,7 +53,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
         .await
     }
 
-    pub fn load_snapshots_for_records(
+    pub async fn load_snapshots_for_records(
         &self,
         records: &[ReviewRunRecord],
     ) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
@@ -61,7 +61,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             .iter()
             .map(|record| runs::derive_review_run_directory(record, &self.workspace.remote_agent))
             .collect::<Vec<_>>();
-        let snapshots = runs::load_snapshots(&self.workspace.ssh_client, &run_directories)?;
+        let snapshots = runs::load_snapshots(&self.workspace.ssh_client, &run_directories).await?;
 
         Ok(run_directories
             .into_iter()
@@ -72,24 +72,24 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             .collect())
     }
 
-    pub fn load_snapshots_for_active_records(
+    pub async fn load_snapshots_for_active_records(
         &self,
         records: &[ReviewRunRecord],
     ) -> Result<BTreeMap<String, RemoteRunSnapshotView>, TrackError> {
         let active_records = records
             .iter()
-            .filter(|record| record.status.is_active())
+            .filter(|record| record.run.status.is_active())
             .cloned()
             .collect::<Vec<_>>();
         if active_records.is_empty() {
             return Ok(BTreeMap::new());
         }
 
-        let snapshots = self.load_snapshots_for_records(&active_records)?;
+        let snapshots = self.load_snapshots_for_records(&active_records).await?;
         Ok(active_records
             .into_iter()
             .zip(snapshots)
-            .map(|(record, snapshot)| (record.dispatch_id.to_string(), snapshot))
+            .map(|(record, snapshot)| (record.run.dispatch_id.to_string(), snapshot))
             .collect())
     }
 
@@ -105,7 +105,7 @@ impl<'a> ReviewRunRemoteRepository<'a> {
         ))
     }
 
-    pub fn list_worktrees(
+    pub async fn list_worktrees(
         &self,
         workspace_key: &WorkspaceKey,
     ) -> Result<Vec<RemoteWorktreeEntry>, TrackError> {
@@ -114,9 +114,10 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             &self.workspace.remote_agent,
             workspace_key,
         )
+        .await
     }
 
-    pub fn prepare_worktree(
+    pub async fn prepare_worktree(
         &self,
         dispatch_record: &ReviewRunRecord,
         checkout_path: &RemoteCheckoutPath,
@@ -124,10 +125,12 @@ impl<'a> ReviewRunRemoteRepository<'a> {
         target_head_oid: Option<&str>,
     ) -> Result<(), TrackError> {
         let branch_name = dispatch_record
+            .run
             .branch_name
             .as_ref()
             .expect("review run records should include branch names before remote launch");
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("review run records should include worktree paths before remote launch");
@@ -141,9 +144,10 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             target_head_oid,
         )
         .execute()
+        .await
     }
 
-    pub fn upload_run_files(
+    pub async fn upload_run_files(
         &self,
         dispatch_record: &ReviewRunRecord,
         prompt: &str,
@@ -156,22 +160,25 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             &run_directory.join(REMOTE_PROMPT_FILE_NAME),
             prompt,
         )
-        .execute()?;
+        .execute()
+        .await?;
         UploadRemoteFileAction::new(
             &self.workspace.ssh_client,
             &run_directory.join(REMOTE_SCHEMA_FILE_NAME),
             schema,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(run_directory)
     }
 
-    pub fn launch(
+    pub async fn launch(
         &self,
         dispatch_record: &ReviewRunRecord,
     ) -> Result<DispatchRunDirectory, TrackError> {
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("review run records should include worktree paths before remote launch");
@@ -181,32 +188,35 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             &self.workspace.ssh_client,
             &run_directory,
             worktree_path,
-            dispatch_record.preferred_tool,
+            dispatch_record.run.preferred_tool,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(run_directory)
     }
 
-    pub fn cancel(
+    pub async fn cancel(
         &self,
         dispatch_record: &ReviewRunRecord,
     ) -> Result<DispatchRunDirectory, TrackError> {
         let run_directory =
             runs::derive_review_run_directory(dispatch_record, &self.workspace.remote_agent);
-        CancelRemoteDispatchAction::new(&self.workspace.ssh_client, &run_directory).execute()?;
+        CancelRemoteDispatchAction::new(&self.workspace.ssh_client, &run_directory)
+            .execute()
+            .await?;
 
         Ok(run_directory)
     }
 
-    pub fn cleanup(
+    pub async fn cleanup(
         &self,
         review: &ReviewRecord,
         dispatch_history: &[ReviewRunRecord],
     ) -> Result<RemoteArtifactCleanupSummary, TrackError> {
         let branch_names = dispatch_history
             .iter()
-            .filter_map(|record| record.branch_name.clone())
+            .filter_map(|record| record.run.branch_name.clone())
             .collect::<Vec<_>>();
         let worktree_paths = unique_review_worktree_paths(dispatch_history);
         let run_directories =
@@ -222,7 +232,8 @@ impl<'a> ReviewRunRemoteRepository<'a> {
             &worktree_paths,
             &run_directories,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(RemoteArtifactCleanupSummary {
             worktrees_removed: counts.worktrees_removed,

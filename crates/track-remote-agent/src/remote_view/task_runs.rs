@@ -56,7 +56,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
         .await
     }
 
-    pub fn load_snapshots_for_records(
+    pub async fn load_snapshots_for_records(
         &self,
         records: &[TaskDispatchRecord],
     ) -> Result<Vec<RemoteRunSnapshotView>, TrackError> {
@@ -64,7 +64,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
             .iter()
             .map(|record| runs::derive_task_run_directory(record, &self.workspace.remote_agent))
             .collect::<Vec<_>>();
-        let snapshots = runs::load_snapshots(&self.workspace.ssh_client, &run_directories)?;
+        let snapshots = runs::load_snapshots(&self.workspace.ssh_client, &run_directories).await?;
 
         Ok(run_directories
             .into_iter()
@@ -75,24 +75,24 @@ impl<'a> TaskRunRemoteRepository<'a> {
             .collect())
     }
 
-    pub fn load_snapshots_for_active_records(
+    pub async fn load_snapshots_for_active_records(
         &self,
         records: &[TaskDispatchRecord],
     ) -> Result<BTreeMap<String, RemoteRunSnapshotView>, TrackError> {
         let active_records = records
             .iter()
-            .filter(|record| record.status.is_active())
+            .filter(|record| record.run.status.is_active())
             .cloned()
             .collect::<Vec<_>>();
         if active_records.is_empty() {
             return Ok(BTreeMap::new());
         }
 
-        let snapshots = self.load_snapshots_for_records(&active_records)?;
+        let snapshots = self.load_snapshots_for_records(&active_records).await?;
         Ok(active_records
             .into_iter()
             .zip(snapshots)
-            .map(|(record, snapshot)| (record.dispatch_id.to_string(), snapshot))
+            .map(|(record, snapshot)| (record.run.dispatch_id.to_string(), snapshot))
             .collect())
     }
 
@@ -109,7 +109,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
         ))
     }
 
-    pub fn list_worktrees(
+    pub async fn list_worktrees(
         &self,
         project_id: &ProjectId,
     ) -> Result<Vec<RemoteWorktreeEntry>, TrackError> {
@@ -118,9 +118,10 @@ impl<'a> TaskRunRemoteRepository<'a> {
             &self.workspace.remote_agent,
             project_id,
         )
+        .await
     }
 
-    pub fn prepare_worktree(
+    pub async fn prepare_worktree(
         &self,
         dispatch_record: &TaskDispatchRecord,
         checkout_path: &RemoteCheckoutPath,
@@ -128,10 +129,12 @@ impl<'a> TaskRunRemoteRepository<'a> {
         reuse_existing_worktree: bool,
     ) -> Result<(), TrackError> {
         let branch_name = dispatch_record
+            .run
             .branch_name
             .as_ref()
             .expect("task dispatch records should include branch names before remote launch");
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("task dispatch records should include worktree paths before remote launch");
@@ -144,6 +147,7 @@ impl<'a> TaskRunRemoteRepository<'a> {
                 worktree_path,
             )
             .execute()
+            .await
         } else {
             CreateWorktreeAction::new(
                 &self.workspace.ssh_client,
@@ -153,10 +157,11 @@ impl<'a> TaskRunRemoteRepository<'a> {
                 worktree_path,
             )
             .execute()
+            .await
         }
     }
 
-    pub fn upload_run_files(
+    pub async fn upload_run_files(
         &self,
         dispatch_record: &TaskDispatchRecord,
         prompt: &str,
@@ -169,22 +174,25 @@ impl<'a> TaskRunRemoteRepository<'a> {
             &run_directory.join(REMOTE_PROMPT_FILE_NAME),
             prompt,
         )
-        .execute()?;
+        .execute()
+        .await?;
         UploadRemoteFileAction::new(
             &self.workspace.ssh_client,
             &run_directory.join(REMOTE_SCHEMA_FILE_NAME),
             schema,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(run_directory)
     }
 
-    pub fn launch(
+    pub async fn launch(
         &self,
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<DispatchRunDirectory, TrackError> {
         let worktree_path = dispatch_record
+            .run
             .worktree_path
             .as_ref()
             .expect("task dispatch records should include worktree paths before remote launch");
@@ -194,25 +202,28 @@ impl<'a> TaskRunRemoteRepository<'a> {
             &self.workspace.ssh_client,
             &run_directory,
             worktree_path,
-            dispatch_record.preferred_tool,
+            dispatch_record.run.preferred_tool,
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(run_directory)
     }
 
-    pub fn cancel(
+    pub async fn cancel(
         &self,
         dispatch_record: &TaskDispatchRecord,
     ) -> Result<DispatchRunDirectory, TrackError> {
         let run_directory =
             runs::derive_task_run_directory(dispatch_record, &self.workspace.remote_agent);
-        CancelRemoteDispatchAction::new(&self.workspace.ssh_client, &run_directory).execute()?;
+        CancelRemoteDispatchAction::new(&self.workspace.ssh_client, &run_directory)
+            .execute()
+            .await?;
 
         Ok(run_directory)
     }
 
-    pub fn cleanup(
+    pub async fn cleanup(
         &self,
         checkout_path: &RemoteCheckoutPath,
         dispatch_history: &[TaskDispatchRecord],
@@ -228,7 +239,8 @@ impl<'a> TaskRunRemoteRepository<'a> {
                 RemoteTaskArtifactCleanupMode::DeleteTask => RemoteTaskCleanupMode::DeleteTask,
             },
         )
-        .execute()?;
+        .execute()
+        .await?;
 
         Ok(RemoteArtifactCleanupSummary {
             worktrees_removed: counts.worktrees_removed,
@@ -242,7 +254,7 @@ fn unique_task_worktree_paths(
 ) -> Vec<track_types::remote_layout::DispatchWorktreePath> {
     let mut paths = dispatch_history
         .iter()
-        .filter_map(|record| record.worktree_path.clone())
+        .filter_map(|record| record.run.worktree_path.clone())
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();

@@ -7,7 +7,9 @@ use track_types::errors::TrackError;
 use track_types::ids::{DispatchId, TaskId};
 use track_types::remote_layout::{DispatchBranch, DispatchWorktreePath};
 use track_types::time_utils::{format_iso_8601_millis, now_utc};
-use track_types::types::{DispatchStatus, RemoteAgentPreferredTool, Task, TaskDispatchRecord};
+use track_types::types::{
+    DispatchStatus, RemoteAgentPreferredTool, RemoteRunState, Task, TaskDispatchRecord,
+};
 use track_types::urls::Url;
 
 use crate::database::{DatabaseContext, DatabaseResultExt};
@@ -39,22 +41,24 @@ impl<'a> DispatchRepository<'a> {
     ) -> Result<TaskDispatchRecord, TrackError> {
         let timestamp = now_utc();
         let record = TaskDispatchRecord {
-            dispatch_id: dispatch_id.clone(),
+            run: RemoteRunState {
+                dispatch_id: dispatch_id.clone(),
+                preferred_tool,
+                status: DispatchStatus::Preparing,
+                created_at: timestamp,
+                updated_at: timestamp,
+                finished_at: None,
+                remote_host: remote_host.to_owned(),
+                branch_name: Some(branch_name.clone()),
+                worktree_path: Some(worktree_path.clone()),
+                follow_up_request: follow_up_request.map(ToOwned::to_owned),
+                summary: summary.map(ToOwned::to_owned),
+                notes: None,
+                error_message: None,
+            },
             task_id: task.id.clone(),
-            preferred_tool,
             project: task.project.clone(),
-            status: DispatchStatus::Preparing,
-            created_at: timestamp,
-            updated_at: timestamp,
-            finished_at: None,
-            remote_host: remote_host.to_owned(),
-            branch_name: Some(branch_name.clone()),
-            worktree_path: Some(worktree_path.clone()),
             pull_request_url: pull_request_url.cloned(),
-            follow_up_request: follow_up_request.map(ToOwned::to_owned),
-            summary: summary.map(ToOwned::to_owned),
-            notes: None,
-            error_message: None,
             review_request_head_oid: review_request_head_oid.map(ToOwned::to_owned),
             review_request_user: review_request_user.map(ToOwned::to_owned),
         };
@@ -66,46 +70,46 @@ impl<'a> DispatchRepository<'a> {
     pub async fn save_dispatch(&self, record: &TaskDispatchRecord) -> Result<(), TrackError> {
         let record = record.clone();
 
-        let mut connection = self.database.connect().await?;
-        let dispatch_id = record.dispatch_id.as_str();
+        let mut transaction = self.database.begin().await?;
+        let dispatch_id = record.run.dispatch_id.as_str();
         let task_id = record.task_id.as_str();
-        let preferred_tool = record.preferred_tool.as_str();
+        let preferred_tool = record.run.preferred_tool.as_str();
         let project = record.project.as_str();
-        let status = record.status.as_str();
-        let created_at = format_iso_8601_millis(record.created_at);
-        let updated_at = format_iso_8601_millis(record.updated_at);
-        let finished_at = record.finished_at.map(format_iso_8601_millis);
-        let remote_host = record.remote_host.as_str();
+        let status = record.run.status.as_str();
+        let created_at = format_iso_8601_millis(record.run.created_at);
+        let updated_at = format_iso_8601_millis(record.run.updated_at);
+        let finished_at = record.run.finished_at.map(format_iso_8601_millis);
+        let remote_host = record.run.remote_host.as_str();
         let branch_name = record
+            .run
             .branch_name
             .as_ref()
             .map(|value| value.clone().into_inner());
         let worktree_path = record
+            .run
             .worktree_path
             .as_ref()
             .map(|value| value.clone().into_inner());
         let branch_name_ref = branch_name.as_deref();
         let worktree_path_ref = worktree_path.as_deref();
         let pull_request_url = record.pull_request_url.as_ref().map(Url::as_str);
-        let follow_up_request = record.follow_up_request.as_deref();
-        let summary = record.summary.as_deref();
-        let notes = record.notes.as_deref();
-        let error_message = record.error_message.as_deref();
+        let follow_up_request = record.run.follow_up_request.as_deref();
+        let summary = record.run.summary.as_deref();
+        let notes = record.run.notes.as_deref();
+        let error_message = record.run.error_message.as_deref();
         let review_request_head_oid = record.review_request_head_oid.as_deref();
         let review_request_user = record.review_request_user.as_deref();
-        sqlx::query!(
+        sqlx::query(
             r#"
-            INSERT INTO task_dispatches (
-                dispatch_id, task_id, preferred_tool, project, status, created_at, updated_at,
-                finished_at, remote_host, branch_name, worktree_path, pull_request_url,
-                follow_up_request, summary, notes, error_message, review_request_head_oid,
-                review_request_user
+            INSERT INTO remote_runs (
+                dispatch_id, kind, preferred_tool, status, created_at, updated_at, finished_at,
+                remote_host, branch_name, worktree_path, follow_up_request, summary, notes,
+                error_message
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            VALUES (?1, 'task', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(dispatch_id) DO UPDATE SET
-                task_id = excluded.task_id,
+                kind = excluded.kind,
                 preferred_tool = excluded.preferred_tool,
-                project = excluded.project,
                 status = excluded.status,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
@@ -113,37 +117,62 @@ impl<'a> DispatchRepository<'a> {
                 remote_host = excluded.remote_host,
                 branch_name = excluded.branch_name,
                 worktree_path = excluded.worktree_path,
-                pull_request_url = excluded.pull_request_url,
                 follow_up_request = excluded.follow_up_request,
                 summary = excluded.summary,
                 notes = excluded.notes,
-                error_message = excluded.error_message,
+                error_message = excluded.error_message
+            "#,
+        )
+        .bind(dispatch_id)
+        .bind(preferred_tool)
+        .bind(status)
+        .bind(created_at)
+        .bind(updated_at)
+        .bind(finished_at)
+        .bind(remote_host)
+        .bind(branch_name_ref)
+        .bind(worktree_path_ref)
+        .bind(follow_up_request)
+        .bind(summary)
+        .bind(notes)
+        .bind(error_message)
+        .execute(&mut *transaction)
+        .await
+        .database_error_with(format!(
+            "Could not save the remote run lifecycle for task {}",
+            record.task_id
+        ))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO task_run_details (
+                dispatch_id, task_id, project, pull_request_url, review_request_head_oid,
+                review_request_user
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(dispatch_id) DO UPDATE SET
+                task_id = excluded.task_id,
+                project = excluded.project,
+                pull_request_url = excluded.pull_request_url,
                 review_request_head_oid = excluded.review_request_head_oid,
                 review_request_user = excluded.review_request_user
             "#,
-            dispatch_id,
-            task_id,
-            preferred_tool,
-            project,
-            status,
-            created_at,
-            updated_at,
-            finished_at,
-            remote_host,
-            branch_name_ref,
-            worktree_path_ref,
-            pull_request_url,
-            follow_up_request,
-            summary,
-            notes,
-            error_message,
-            review_request_head_oid,
-            review_request_user,
         )
-        .execute(&mut *connection)
+        .bind(dispatch_id)
+        .bind(task_id)
+        .bind(project)
+        .bind(pull_request_url)
+        .bind(review_request_head_oid)
+        .bind(review_request_user)
+        .execute(&mut *transaction)
         .await
         .database_error_with(format!(
-            "Could not save the dispatch record for task {}",
+            "Could not save the task dispatch details for task {}",
+            record.task_id
+        ))?;
+
+        transaction.commit().await.database_error_with(format!(
+            "Could not commit the dispatch record for task {}",
             record.task_id
         ))?;
 
@@ -163,34 +192,34 @@ impl<'a> DispatchRepository<'a> {
     ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
         let mut connection = self.database.connect().await?;
         let task_id_ref = task_id.as_str();
-        let rows = sqlx::query_as!(
-            records::TaskDispatchRow,
+        let rows = sqlx::query_as::<_, records::TaskDispatchRow>(
             r#"
             SELECT
-                dispatch_id AS "dispatch_id!",
-                task_id AS "task_id!",
-                preferred_tool AS "preferred_tool!",
-                project AS "project!",
-                status AS "status!",
-                created_at AS "created_at!",
-                updated_at AS "updated_at!",
-                finished_at AS "finished_at?",
-                remote_host AS "remote_host!",
-                branch_name AS "branch_name?",
-                worktree_path AS "worktree_path?",
-                pull_request_url AS "pull_request_url?",
-                follow_up_request AS "follow_up_request?",
-                summary AS "summary?",
-                notes AS "notes?",
-                error_message AS "error_message?",
-                review_request_head_oid AS "review_request_head_oid?",
-                review_request_user AS "review_request_user?"
-            FROM task_dispatches
-            WHERE task_id = ?1
-            ORDER BY created_at DESC
+                rr.dispatch_id,
+                td.task_id,
+                rr.preferred_tool,
+                td.project,
+                rr.status,
+                rr.created_at,
+                rr.updated_at,
+                rr.finished_at,
+                rr.remote_host,
+                rr.branch_name,
+                rr.worktree_path,
+                td.pull_request_url,
+                rr.follow_up_request,
+                rr.summary,
+                rr.notes,
+                rr.error_message,
+                td.review_request_head_oid,
+                td.review_request_user
+            FROM task_run_details td
+            JOIN remote_runs rr ON rr.dispatch_id = td.dispatch_id
+            WHERE rr.kind = 'task' AND td.task_id = ?1
+            ORDER BY rr.created_at DESC
             "#,
-            task_id_ref,
         )
+        .bind(task_id_ref)
         .fetch_all(&mut *connection)
         .await
         .database_error_with(format!(
@@ -231,30 +260,31 @@ impl<'a> DispatchRepository<'a> {
                 review_request_user
             FROM (
                 SELECT
-                    dispatch_id,
-                    task_id,
-                    preferred_tool,
-                    project,
-                    status,
-                    created_at,
-                    updated_at,
-                    finished_at,
-                    remote_host,
-                    branch_name,
-                    worktree_path,
-                    pull_request_url,
-                    follow_up_request,
-                    summary,
-                    notes,
-                    error_message,
-                    review_request_head_oid,
-                    review_request_user,
+                    rr.dispatch_id AS dispatch_id,
+                    td.task_id AS task_id,
+                    rr.preferred_tool AS preferred_tool,
+                    td.project AS project,
+                    rr.status AS status,
+                    rr.created_at AS created_at,
+                    rr.updated_at AS updated_at,
+                    rr.finished_at AS finished_at,
+                    rr.remote_host AS remote_host,
+                    rr.branch_name AS branch_name,
+                    rr.worktree_path AS worktree_path,
+                    td.pull_request_url AS pull_request_url,
+                    rr.follow_up_request AS follow_up_request,
+                    rr.summary AS summary,
+                    rr.notes AS notes,
+                    rr.error_message AS error_message,
+                    td.review_request_head_oid AS review_request_head_oid,
+                    td.review_request_user AS review_request_user,
                     ROW_NUMBER() OVER (
-                        PARTITION BY task_id
-                        ORDER BY created_at DESC, dispatch_id DESC
+                        PARTITION BY td.task_id
+                        ORDER BY rr.created_at DESC, rr.dispatch_id DESC
                     ) AS row_number
-                FROM task_dispatches
-                WHERE task_id IN (
+                FROM task_run_details td
+                JOIN remote_runs rr ON rr.dispatch_id = td.dispatch_id
+                WHERE rr.kind = 'task' AND td.task_id IN (
             "#,
         );
         {
@@ -298,61 +328,63 @@ impl<'a> DispatchRepository<'a> {
         let limit = limit.map(|value| value as i64);
         let mut connection = self.database.connect().await?;
         let rows = if let Some(limit) = limit {
-            sqlx::query_as!(
-                records::TaskDispatchRow,
+            sqlx::query_as::<_, records::TaskDispatchRow>(
                 r#"
                 SELECT
-                    dispatch_id AS "dispatch_id!",
-                    task_id AS "task_id!",
-                    preferred_tool AS "preferred_tool!",
-                    project AS "project!",
-                    status AS "status!",
-                    created_at AS "created_at!",
-                    updated_at AS "updated_at!",
-                    finished_at AS "finished_at?",
-                    remote_host AS "remote_host!",
-                    branch_name AS "branch_name?",
-                    worktree_path AS "worktree_path?",
-                    pull_request_url AS "pull_request_url?",
-                    follow_up_request AS "follow_up_request?",
-                    summary AS "summary?",
-                    notes AS "notes?",
-                    error_message AS "error_message?",
-                    review_request_head_oid AS "review_request_head_oid?",
-                    review_request_user AS "review_request_user?"
-                FROM task_dispatches
-                ORDER BY created_at DESC
+                    rr.dispatch_id,
+                    td.task_id,
+                    rr.preferred_tool,
+                    td.project,
+                    rr.status,
+                    rr.created_at,
+                    rr.updated_at,
+                    rr.finished_at,
+                    rr.remote_host,
+                    rr.branch_name,
+                    rr.worktree_path,
+                    td.pull_request_url,
+                    rr.follow_up_request,
+                    rr.summary,
+                    rr.notes,
+                    rr.error_message,
+                    td.review_request_head_oid,
+                    td.review_request_user
+                FROM task_run_details td
+                JOIN remote_runs rr ON rr.dispatch_id = td.dispatch_id
+                WHERE rr.kind = 'task'
+                ORDER BY rr.created_at DESC
                 LIMIT ?1
                 "#,
-                limit,
             )
+            .bind(limit)
             .fetch_all(&mut *connection)
             .await
         } else {
-            sqlx::query_as!(
-                records::TaskDispatchRow,
+            sqlx::query_as::<_, records::TaskDispatchRow>(
                 r#"
                 SELECT
-                    dispatch_id AS "dispatch_id!",
-                    task_id AS "task_id!",
-                    preferred_tool AS "preferred_tool!",
-                    project AS "project!",
-                    status AS "status!",
-                    created_at AS "created_at!",
-                    updated_at AS "updated_at!",
-                    finished_at AS "finished_at?",
-                    remote_host AS "remote_host!",
-                    branch_name AS "branch_name?",
-                    worktree_path AS "worktree_path?",
-                    pull_request_url AS "pull_request_url?",
-                    follow_up_request AS "follow_up_request?",
-                    summary AS "summary?",
-                    notes AS "notes?",
-                    error_message AS "error_message?",
-                    review_request_head_oid AS "review_request_head_oid?",
-                    review_request_user AS "review_request_user?"
-                FROM task_dispatches
-                ORDER BY created_at DESC
+                    rr.dispatch_id,
+                    td.task_id,
+                    rr.preferred_tool,
+                    td.project,
+                    rr.status,
+                    rr.created_at,
+                    rr.updated_at,
+                    rr.finished_at,
+                    rr.remote_host,
+                    rr.branch_name,
+                    rr.worktree_path,
+                    td.pull_request_url,
+                    rr.follow_up_request,
+                    rr.summary,
+                    rr.notes,
+                    rr.error_message,
+                    td.review_request_head_oid,
+                    td.review_request_user
+                FROM task_run_details td
+                JOIN remote_runs rr ON rr.dispatch_id = td.dispatch_id
+                WHERE rr.kind = 'task'
+                ORDER BY rr.created_at DESC
                 "#,
             )
             .fetch_all(&mut *connection)
@@ -365,11 +397,10 @@ impl<'a> DispatchRepository<'a> {
 
     pub async fn task_ids_with_history(&self) -> Result<Vec<TaskId>, TrackError> {
         let mut connection = self.database.connect().await?;
-        let rows = sqlx::query_as!(
-            records::TaskIdRow,
+        let rows = sqlx::query_as::<_, records::TaskIdRow>(
             r#"
-            SELECT DISTINCT task_id AS "task_id!"
-            FROM task_dispatches
+            SELECT DISTINCT task_id
+            FROM task_run_details
             ORDER BY task_id ASC
             "#,
         )
@@ -391,34 +422,34 @@ impl<'a> DispatchRepository<'a> {
         let mut connection = self.database.connect().await?;
         let task_id_ref = task_id.as_str();
         let dispatch_id_ref = dispatch_id.as_str();
-        let row = sqlx::query_as!(
-            records::TaskDispatchRow,
+        let row = sqlx::query_as::<_, records::TaskDispatchRow>(
             r#"
             SELECT
-                dispatch_id AS "dispatch_id!",
-                task_id AS "task_id!",
-                preferred_tool AS "preferred_tool!",
-                project AS "project!",
-                status AS "status!",
-                created_at AS "created_at!",
-                updated_at AS "updated_at!",
-                finished_at AS "finished_at?",
-                remote_host AS "remote_host!",
-                branch_name AS "branch_name?",
-                worktree_path AS "worktree_path?",
-                pull_request_url AS "pull_request_url?",
-                follow_up_request AS "follow_up_request?",
-                summary AS "summary?",
-                notes AS "notes?",
-                error_message AS "error_message?",
-                review_request_head_oid AS "review_request_head_oid?",
-                review_request_user AS "review_request_user?"
-            FROM task_dispatches
-            WHERE task_id = ?1 AND dispatch_id = ?2
+                rr.dispatch_id,
+                td.task_id,
+                rr.preferred_tool,
+                td.project,
+                rr.status,
+                rr.created_at,
+                rr.updated_at,
+                rr.finished_at,
+                rr.remote_host,
+                rr.branch_name,
+                rr.worktree_path,
+                td.pull_request_url,
+                rr.follow_up_request,
+                rr.summary,
+                rr.notes,
+                rr.error_message,
+                td.review_request_head_oid,
+                td.review_request_user
+            FROM task_run_details td
+            JOIN remote_runs rr ON rr.dispatch_id = td.dispatch_id
+            WHERE rr.kind = 'task' AND td.task_id = ?1 AND rr.dispatch_id = ?2
             "#,
-            task_id_ref,
-            dispatch_id_ref,
         )
+        .bind(task_id_ref)
+        .bind(dispatch_id_ref)
         .fetch_optional(&mut *connection)
         .await
         .database_error_with(format!(
@@ -434,10 +465,15 @@ impl<'a> DispatchRepository<'a> {
     ) -> Result<(), TrackError> {
         let mut connection = self.database.connect().await?;
         let task_id_ref = task_id.as_str();
-        sqlx::query!(
-            "DELETE FROM task_dispatches WHERE task_id = ?1",
-            task_id_ref
+        sqlx::query(
+            r#"
+            DELETE FROM remote_runs
+            WHERE dispatch_id IN (
+                SELECT dispatch_id FROM task_run_details WHERE task_id = ?1
+            )
+            "#,
         )
+        .bind(task_id_ref)
         .execute(&mut *connection)
         .await
         .database_error_with(format!(
@@ -513,10 +549,10 @@ mod tests {
             .expect("dispatch lookup should succeed")
             .expect("queued dispatch should be visible immediately");
 
-        assert_eq!(saved.dispatch_id, record.dispatch_id);
-        assert_eq!(saved.status, DispatchStatus::Preparing);
-        assert_eq!(saved.branch_name, record.branch_name);
-        assert_eq!(saved.worktree_path, record.worktree_path);
+        assert_eq!(saved.run.dispatch_id, record.run.dispatch_id);
+        assert_eq!(saved.run.status, DispatchStatus::Preparing);
+        assert_eq!(saved.run.branch_name, record.run.branch_name);
+        assert_eq!(saved.run.worktree_path, record.run.worktree_path);
     }
 
     #[tokio::test]
@@ -550,9 +586,9 @@ mod tests {
             "2026-04-05T10:00:00.000Z",
             "2026-04-05T11:00:00.000Z",
         );
-        updated.finished_at =
+        updated.run.finished_at =
             Some(parse_iso_8601_millis("2026-04-05T11:00:00.000Z").expect("fixture should parse"));
-        updated.summary = Some("Applied fix remotely".to_owned());
+        updated.run.summary = Some("Applied fix remotely".to_owned());
         updated.pull_request_url =
             Some(Url::parse("https://github.com/acme/project-a/pull/42").unwrap());
         repository
@@ -613,7 +649,7 @@ mod tests {
         assert_eq!(
             history
                 .iter()
-                .map(|record| record.dispatch_id.as_str())
+                .map(|record| record.run.dispatch_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dispatch-newer", "dispatch-older"],
         );
@@ -623,7 +659,7 @@ mod tests {
             .await
             .expect("latest dispatch should load")
             .expect("latest dispatch should exist");
-        assert_eq!(latest.dispatch_id, "dispatch-newer");
+        assert_eq!(latest.run.dispatch_id, "dispatch-newer");
     }
 
     #[tokio::test]
@@ -683,7 +719,7 @@ mod tests {
         assert_eq!(
             latest
                 .iter()
-                .map(|record| record.dispatch_id.as_str())
+                .map(|record| record.run.dispatch_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dispatch-a2", "dispatch-b1"],
         );
@@ -738,7 +774,7 @@ mod tests {
             .expect("dispatch list should load");
         assert_eq!(
             all.iter()
-                .map(|record| record.dispatch_id.as_str())
+                .map(|record| record.run.dispatch_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dispatch-3", "dispatch-2", "dispatch-1"],
         );
@@ -750,7 +786,7 @@ mod tests {
         assert_eq!(
             limited
                 .iter()
-                .map(|record| record.dispatch_id.as_str())
+                .map(|record| record.run.dispatch_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dispatch-3", "dispatch-2"],
         );
