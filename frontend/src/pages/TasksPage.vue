@@ -41,6 +41,7 @@ const router = useRouter()
 const shell = useTrackerShell()
 
 const selectedTaskRuns = ref<RunRecord[]>([])
+let selectedTaskRunsRequestVersion = 0
 
 const cancelingDispatchTaskId = ref<string | null>(null)
 const discardingDispatchTaskId = ref<string | null>(null)
@@ -199,19 +200,32 @@ async function selectTask(taskId: string) {
 }
 
 async function closeTaskDrawer() {
+  selectedTaskRunsRequestVersion += 1
   selectedTaskRuns.value = []
   selectedTaskId.value = null
 }
 
 async function loadSelectedTaskRunHistory() {
-  if (!selectedTaskId.value) {
+  const taskId = selectedTaskId.value
+  const requestVersion = ++selectedTaskRunsRequestVersion
+
+  if (!taskId) {
     selectedTaskRuns.value = []
     return
   }
 
   try {
-    selectedTaskRuns.value = await shell.loadTaskRuns(selectedTaskId.value)
+    const taskRuns = await shell.loadTaskRuns(taskId)
+    if (requestVersion !== selectedTaskRunsRequestVersion || selectedTaskId.value !== taskId) {
+      return
+    }
+
+    selectedTaskRuns.value = taskRuns
   } catch (error) {
+    if (requestVersion !== selectedTaskRunsRequestVersion || selectedTaskId.value !== taskId) {
+      return
+    }
+
     shell.setFriendlyError(error)
   }
 }

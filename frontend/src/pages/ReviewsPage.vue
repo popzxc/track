@@ -21,6 +21,7 @@ const router = useRouter()
 const shell = useTrackerShell()
 
 const selectedReviewRuns = ref<ReviewRunRecord[]>([])
+let selectedReviewRunsRequestVersion = 0
 const cancelingReviewId = ref<string | null>(null)
 const followingUpReviewId = ref<string | null>(null)
 const creatingReview = ref(false)
@@ -53,20 +54,33 @@ async function selectReview(reviewId: string) {
 }
 
 async function closeReviewDrawer() {
+  selectedReviewRunsRequestVersion += 1
   selectedReviewRuns.value = []
   followingUpReview.value = null
   await replaceRouteQuery(router, route, { review: null })
 }
 
 async function loadSelectedReviewRunHistory() {
-  if (!selectedReviewId.value) {
+  const reviewId = selectedReviewId.value
+  const requestVersion = ++selectedReviewRunsRequestVersion
+
+  if (!reviewId) {
     selectedReviewRuns.value = []
     return
   }
 
   try {
-    selectedReviewRuns.value = await shell.loadReviewRuns(selectedReviewId.value)
+    const reviewRuns = await shell.loadReviewRuns(reviewId)
+    if (requestVersion !== selectedReviewRunsRequestVersion || selectedReviewId.value !== reviewId) {
+      return
+    }
+
+    selectedReviewRuns.value = reviewRuns
   } catch (error) {
+    if (requestVersion !== selectedReviewRunsRequestVersion || selectedReviewId.value !== reviewId) {
+      return
+    }
+
     shell.setFriendlyError(error)
   }
 }
