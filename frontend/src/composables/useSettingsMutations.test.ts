@@ -16,7 +16,6 @@ function createSettingsMutationHarness() {
   const cleaningUpRemoteArtifacts = ref(false)
   const cleanupPendingConfirmation = ref(false)
   const cleanupSummary = ref(null)
-  const editingProject = ref(null)
   const editingRemoteAgentSetup = ref(true)
   const errorMessage = ref('')
   const remoteAgentSettings = ref(null)
@@ -43,7 +42,6 @@ function createSettingsMutationHarness() {
       cleaningUpRemoteArtifacts,
       cleanupPendingConfirmation,
       cleanupSummary,
-      editingProject,
       editingRemoteAgentSetup,
       errorMessage,
       refreshAll,

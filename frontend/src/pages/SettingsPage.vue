@@ -9,7 +9,6 @@ import { useSettingsMutations } from '../composables/useSettingsMutations'
 import { useTrackerShell } from '../composables/useTrackerShell'
 import { firstQueryValue, replaceRouteQuery } from '../router/query'
 import type {
-  ProjectInfo,
   RemoteAgentPreferredTool,
   RemoteCleanupSummary,
   RemoteResetSummary,
@@ -24,7 +23,6 @@ const cleanupSummary = ref<RemoteCleanupSummary | null>(null)
 const resetSummary = ref<RemoteResetSummary | null>(null)
 const cleaningUpRemoteArtifacts = ref(false)
 const resettingRemoteWorkspace = ref(false)
-const editingProject = ref<ProjectInfo | null>(null)
 
 const modal = computed(() => firstQueryValue(route.query.modal))
 const resumeTaskId = computed(() => firstQueryValue(route.query.resumeTask))
@@ -95,7 +93,6 @@ const {
   cleaningUpRemoteArtifacts,
   cleanupPendingConfirmation,
   cleanupSummary,
-  editingProject,
   editingRemoteAgentSetup,
   errorMessage: shell.errorMessage,
   refreshAll: shell.refreshAll,
