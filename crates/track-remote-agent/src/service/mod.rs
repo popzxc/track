@@ -1,11 +1,15 @@
 mod dispatch;
 mod lifecycle;
-mod remote_agent_services;
+mod maintenance;
 mod review;
+mod review_follow_up;
+mod runtime;
 
 pub use self::dispatch::RemoteDispatchService;
-pub use self::remote_agent_services::RemoteAgentRuntimeServices;
+pub use self::maintenance::RemoteWorkspaceMaintenanceService;
 pub use self::review::RemoteReviewService;
+pub use self::review_follow_up::ReviewFollowUpService;
+pub use self::runtime::RemoteAgentRuntimeServices;
 
 const REMOTE_FAILURE_LOG_TAIL_LINES: usize = 30;
 

@@ -46,7 +46,11 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
                         continue;
                     }
                 };
-                match runtime_services.reconcile_review_follow_up().await {
+                match runtime_services
+                    .review_follow_up()
+                    .reconcile_review_follow_up()
+                    .await
+                {
                     Ok(reconciliation) => reconciliation,
                     Err(error) => {
                         tracing::warn!(

@@ -260,6 +260,7 @@ pub(crate) async fn cleanup_remote_agent_artifacts(
         .remote_agent_runtime_services()
         .await
         .map_err(ApiError::from_track_error)?
+        .maintenance()
         .cleanup_unused_remote_artifacts()
         .await
         .map_err(ApiError::from_track_error)?;
@@ -284,6 +285,7 @@ pub(crate) async fn reset_remote_agent_workspace(
         .remote_agent_runtime_services()
         .await
         .map_err(ApiError::from_track_error)?
+        .maintenance()
         .reset_remote_workspace()
         .await
         .map_err(ApiError::from_track_error)?;
