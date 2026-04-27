@@ -83,13 +83,8 @@ pub(crate) async fn list_task_runs(
         .await
         .map_err(ApiError::from_track_error)?;
     let dispatches = state
-        .database
-        .dispatch_repository()
-        .dispatches_for_task(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
-    let dispatches = state
-        .refresh_task_dispatch_records_if_active(dispatches)
+        .remote_run_queries()
+        .task_dispatch_history(&id)
         .await
         .map_err(ApiError::from_track_error)?;
     let runs = dispatches

@@ -50,13 +50,8 @@ pub(crate) async fn list_reviews(
         .map(|review| review.id.clone())
         .collect::<Vec<_>>();
     let latest_runs = state
-        .database
-        .review_dispatch_repository()
-        .latest_dispatches_for_reviews(&review_ids)
-        .await
-        .map_err(ApiError::from_track_error)?;
-    let latest_runs = state
-        .refresh_review_run_records_if_active(latest_runs)
+        .remote_run_queries()
+        .latest_review_runs(&review_ids)
         .await
         .map_err(ApiError::from_track_error)?;
     let latest_runs_by_review_id = latest_runs
@@ -81,13 +76,8 @@ pub(crate) async fn list_review_runs(
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunsResponse>, ApiError> {
     let runs = state
-        .database
-        .review_dispatch_repository()
-        .dispatches_for_review(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
-    let runs = state
-        .refresh_review_run_records_if_active(runs)
+        .remote_run_queries()
+        .review_run_history(&id)
         .await
         .map_err(ApiError::from_track_error)?;
     tracing::info!(run_count = runs.len(), "Listed review run history");

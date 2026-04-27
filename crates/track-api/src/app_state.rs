@@ -6,9 +6,10 @@ use track_dal::database::DatabaseContext;
 
 use track_remote_agent::RemoteAgentRuntimeServices;
 use track_types::errors::{ErrorCode, TrackError};
-use track_types::types::{ActiveRemoteRun, RemoteRunOwner, ReviewRunRecord, TaskDispatchRecord};
+use track_types::types::{ActiveRemoteRun, RemoteRunOwner};
 
 use crate::backend_config::RemoteAgentConfigService;
+use crate::remote_run_query::RemoteRunQueryService;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -45,6 +46,10 @@ impl AppState {
         RemoteAgentRuntimeServices::new(remote_agent, &self.database)
     }
 
+    pub(crate) fn remote_run_queries(&self) -> RemoteRunQueryService<'_> {
+        RemoteRunQueryService::new(self)
+    }
+
     pub(crate) async fn remote_agent_operation_guard(&self) -> RwLockReadGuard<'_, ()> {
         self.remote_agent_config_gate.read().await
     }
@@ -70,38 +75,6 @@ impl AppState {
                 describe_active_remote_runs(&active_runs)
             ),
         ))
-    }
-
-    pub(crate) async fn refresh_task_dispatch_records_if_active(
-        &self,
-        records: Vec<TaskDispatchRecord>,
-    ) -> Result<Vec<TaskDispatchRecord>, TrackError> {
-        if records.iter().all(|record| !record.run.status.is_active()) {
-            return Ok(records);
-        }
-
-        let _remote_agent_operation_guard = self.remote_agent_operation_guard().await;
-        self.remote_agent_runtime_services()
-            .await?
-            .dispatch()
-            .refresh_active_dispatch_records(records)
-            .await
-    }
-
-    pub(crate) async fn refresh_review_run_records_if_active(
-        &self,
-        records: Vec<ReviewRunRecord>,
-    ) -> Result<Vec<ReviewRunRecord>, TrackError> {
-        if records.iter().all(|record| !record.run.status.is_active()) {
-            return Ok(records);
-        }
-
-        let _remote_agent_operation_guard = self.remote_agent_operation_guard().await;
-        self.remote_agent_runtime_services()
-            .await?
-            .review()
-            .refresh_active_review_dispatch_records(records)
-            .await
     }
 }
 
