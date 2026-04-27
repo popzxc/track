@@ -36,9 +36,9 @@ pub(in crate::service) trait RemoteRunLaunchAdapter: Sync {
 
     async fn cancel_remote_if_possible(&self, record: &Self::Record) -> Result<(), TrackError>;
 
-    fn into_running(&self, record: Self::Record) -> Self::Record;
+    fn mark_running(&self, record: Self::Record) -> Self::Record;
 
-    fn into_failed(&self, record: Self::Record, error_message: String) -> Self::Record;
+    fn mark_failed(&self, record: Self::Record, error_message: String) -> Self::Record;
 
     async fn load_context(&self, record: &Self::Record) -> Result<Self::Context, TrackError>;
 
@@ -190,7 +190,7 @@ where
                 }
             }
 
-            let record = adapter.into_running(record);
+            let record = adapter.mark_running(record);
             adapter.save_record(&record).await?;
             tracing::info!(
                 run_kind = messages.run_kind,
@@ -207,7 +207,7 @@ where
                 detail = messages.launch_failed,
                 "Remote run launch failed"
             );
-            let record = adapter.into_failed(record, error.to_string());
+            let record = adapter.mark_failed(record, error.to_string());
             adapter.save_record(&record).await?;
             Err(error)
         }
@@ -346,12 +346,12 @@ mod tests {
             Ok(())
         }
 
-        fn into_running(&self, mut record: Self::Record) -> Self::Record {
+        fn mark_running(&self, mut record: Self::Record) -> Self::Record {
             record.run = record.run.into_running("The test run is running.");
             record
         }
 
-        fn into_failed(&self, mut record: Self::Record, error_message: String) -> Self::Record {
+        fn mark_failed(&self, mut record: Self::Record, error_message: String) -> Self::Record {
             record.run = record.run.into_failed(error_message);
             record
         }
@@ -438,10 +438,7 @@ mod tests {
         assert_eq!(result.run.status, DispatchStatus::Preparing);
         assert_eq!(state.remote_launches, 0);
         assert!(
-            !state
-                .saved_statuses
-                .iter()
-                .any(|status| *status == DispatchStatus::Running),
+            !state.saved_statuses.contains(&DispatchStatus::Running),
             "deleted local runs must not be saved as running again"
         );
         assert!(

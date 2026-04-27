@@ -93,11 +93,11 @@ impl RemoteRunLaunchAdapter for ReviewRunLaunchAdapter<'_, '_> {
         self.service.cancel_remote_review_if_possible(record).await
     }
 
-    fn into_running(&self, record: Self::Record) -> Self::Record {
+    fn mark_running(&self, record: Self::Record) -> Self::Record {
         record.into_running()
     }
 
-    fn into_failed(&self, record: Self::Record, error_message: String) -> Self::Record {
+    fn mark_failed(&self, record: Self::Record, error_message: String) -> Self::Record {
         record.into_failed(error_message)
     }
 

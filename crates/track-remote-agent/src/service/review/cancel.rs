@@ -60,7 +60,7 @@ impl RemoteRunCancelAdapter for ReviewRunCancelAdapter<'_, '_, '_> {
         self.service.cancel_remote_review_if_possible(record).await
     }
 
-    fn into_canceled_from_ui(&self, record: Self::Record) -> Self::Record {
+    fn mark_canceled_from_ui(&self, record: Self::Record) -> Self::Record {
         record.into_canceled_from_ui()
     }
 

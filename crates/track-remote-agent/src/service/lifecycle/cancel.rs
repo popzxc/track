@@ -24,7 +24,7 @@ pub(in crate::service) trait RemoteRunCancelAdapter: Sync {
 
     async fn cancel_remote_if_possible(&self, record: &Self::Record) -> Result<(), TrackError>;
 
-    fn into_canceled_from_ui(&self, record: Self::Record) -> Self::Record;
+    fn mark_canceled_from_ui(&self, record: Self::Record) -> Self::Record;
 
     async fn save_record(&self, record: &Self::Record) -> Result<(), TrackError>;
 }
@@ -53,7 +53,7 @@ where
 
     adapter.cancel_remote_if_possible(&latest_record).await?;
 
-    let canceled_record = adapter.into_canceled_from_ui(latest_record);
+    let canceled_record = adapter.mark_canceled_from_ui(latest_record);
     adapter.save_record(&canceled_record).await?;
 
     tracing::info!(

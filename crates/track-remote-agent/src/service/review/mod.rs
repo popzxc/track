@@ -144,7 +144,7 @@ impl<'a> RemoteReviewService<'a> {
         match self
             .queue_review_dispatch(
                 &review,
-                &remote_agent,
+                remote_agent,
                 None,
                 Some(initial_target_head_oid.as_str()),
             )
@@ -209,7 +209,7 @@ impl<'a> RemoteReviewService<'a> {
         match self
             .queue_review_dispatch(
                 &review,
-                &remote_agent,
+                remote_agent,
                 Some(trimmed_follow_up_request),
                 Some(pull_request_metadata.head_oid.as_str()),
             )

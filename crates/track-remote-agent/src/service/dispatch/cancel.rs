@@ -62,7 +62,7 @@ impl RemoteRunCancelAdapter for TaskDispatchCancelAdapter<'_, '_, '_> {
             .await
     }
 
-    fn into_canceled_from_ui(&self, record: Self::Record) -> Self::Record {
+    fn mark_canceled_from_ui(&self, record: Self::Record) -> Self::Record {
         record.into_canceled_from_ui()
     }
 
