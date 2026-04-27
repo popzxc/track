@@ -437,6 +437,11 @@ impl<'a> RemoteReviewService<'a> {
                 *dispatch_record = saved_record;
                 return Ok(false);
             }
+        } else {
+            // If a user deletes the review or its local run history while the
+            // background launcher is preparing the remote workspace, the
+            // launch must stop instead of recreating the just-deleted row.
+            return Ok(false);
         }
 
         *dispatch_record = dispatch_record.clone().into_preparing(summary);

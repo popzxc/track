@@ -598,6 +598,11 @@ impl<'a> RemoteDispatchService<'a> {
                 *dispatch_record = saved_record;
                 return Ok(false);
             }
+        } else {
+            // If a user discards or deletes the local run while the background
+            // launcher is preparing the remote workspace, the launch must stop
+            // instead of recreating the just-deleted row.
+            return Ok(false);
         }
 
         *dispatch_record = dispatch_record.clone().into_preparing(summary);

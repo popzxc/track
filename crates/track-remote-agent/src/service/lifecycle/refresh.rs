@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use track_dal::database::DatabaseContext;
-use track_types::errors::TrackError;
+use track_types::errors::{ErrorCode, TrackError};
 use track_types::types::{DispatchStatus, RemoteRunState};
 
 use crate::{RemoteRunSnapshotView, RemoteWorkspace};
@@ -45,13 +45,6 @@ pub(in crate::service) trait RemoteRunRefreshAdapter: Sync {
         error_message: Option<&str>,
     ) -> Result<Self::Record, TrackError>;
 
-    fn mark_abandoned_if_preparing_stale(
-        &self,
-        record: Self::Record,
-        refreshed_at: OffsetDateTime,
-        stale_after: Duration,
-    ) -> Option<Self::Record>;
-
     fn mark_failed_from_remote_refresh(
         &self,
         record: Self::Record,
@@ -72,8 +65,6 @@ pub(in crate::service) struct RemoteRunRefreshMessages {
     pub(in crate::service) run_kind: &'static str,
     pub(in crate::service) unavailable_locally_summary: &'static str,
     pub(in crate::service) snapshot_load_failed_summary: Option<&'static str>,
-    pub(in crate::service) missing_snapshot_summary: &'static str,
-    pub(in crate::service) missing_snapshot_error: &'static str,
     pub(in crate::service) parse_error_blocked_summary: &'static str,
 }
 
@@ -82,7 +73,6 @@ pub(in crate::service) async fn refresh_active_remote_run_records<Adapter>(
     database: &DatabaseContext,
     adapter: &Adapter,
     records: Vec<Adapter::Record>,
-    stale_after: Duration,
 ) -> Result<Vec<Adapter::Record>, TrackError>
 where
     Adapter: RemoteRunRefreshAdapter,
@@ -125,13 +115,9 @@ where
         }
 
         let dispatch_id = adapter.run(&record).dispatch_id.as_str();
-        let Some(snapshot) = snapshots_by_dispatch_id.get(dispatch_id) else {
-            refreshed_records.push(
-                refresh_record_after_missing_snapshot(adapter, record, messages, stale_after)
-                    .await?,
-            );
-            continue;
-        };
+        let snapshot = snapshots_by_dispatch_id
+            .get(dispatch_id)
+            .ok_or_else(|| missing_snapshot_contract_error(messages.run_kind, dispatch_id))?;
 
         refreshed_records
             .push(refresh_record_from_present_snapshot(adapter, record, snapshot, messages).await?);
@@ -168,49 +154,6 @@ where
     }
 
     Ok(refreshed_records)
-}
-
-async fn refresh_record_after_missing_snapshot<Adapter>(
-    adapter: &Adapter,
-    record: Adapter::Record,
-    messages: RemoteRunRefreshMessages,
-    stale_after: Duration,
-) -> Result<Adapter::Record, TrackError>
-where
-    Adapter: RemoteRunRefreshAdapter,
-{
-    let dispatch_id = adapter.run(&record).dispatch_id.to_string();
-    if let Some(updated) = adapter.mark_abandoned_if_preparing_stale(
-        record.clone(),
-        track_types::time_utils::now_utc(),
-        stale_after,
-    ) {
-        adapter.save_record(&updated).await?;
-        tracing::info!(
-            run_kind = messages.run_kind,
-            dispatch_id = %adapter.run(&updated).dispatch_id,
-            status = ?adapter.run(&updated).status,
-            "Marked stale preparing remote run as abandoned during refresh"
-        );
-        return Ok(updated);
-    }
-
-    let updated = adapter
-        .finalize_locally(
-            &record,
-            DispatchStatus::Blocked,
-            messages.missing_snapshot_summary,
-            Some(messages.missing_snapshot_error),
-        )
-        .await?;
-    tracing::warn!(
-        run_kind = messages.run_kind,
-        dispatch_id = %dispatch_id,
-        status = ?adapter.run(&updated).status,
-        "Released active remote run because its snapshot is missing"
-    );
-
-    Ok(updated)
 }
 
 async fn refresh_record_from_present_snapshot<Adapter>(
@@ -281,5 +224,224 @@ where
                 Ok(updated)
             }
         }
+    }
+}
+
+fn missing_snapshot_contract_error(run_kind: &str, dispatch_id: &str) -> TrackError {
+    TrackError::new(
+        ErrorCode::InternalError,
+        format!(
+            "Remote {run_kind} refresh adapter did not return a snapshot entry for active run {dispatch_id}. Adapters must return an explicit missing snapshot instead of omitting active runs.",
+        ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use tempfile::TempDir;
+    use track_config::runtime::RemoteAgentRuntimeConfig;
+    use track_dal::database::DatabaseContext;
+    use track_types::ids::DispatchId;
+    use track_types::time_utils::now_utc;
+    use track_types::types::RemoteAgentPreferredTool;
+
+    use crate::service::remote_agent_services::RemoteAgentConfigProvider;
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct StaticConfigProvider {
+        remote_agent: RemoteAgentRuntimeConfig,
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteAgentConfigProvider for StaticConfigProvider {
+        async fn load_remote_agent_runtime_config(
+            &self,
+        ) -> Result<Option<RemoteAgentRuntimeConfig>, TrackError> {
+            Ok(Some(self.remote_agent.clone()))
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TestRecord {
+        run: RemoteRunState,
+    }
+
+    #[derive(Debug, Default)]
+    struct TestRefreshState {
+        saved_records: usize,
+        finalized_records: usize,
+        interpreted_snapshots: usize,
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestRefreshAdapter {
+        state: Arc<Mutex<TestRefreshState>>,
+    }
+
+    impl TestRefreshAdapter {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(Mutex::new(TestRefreshState::default())),
+            }
+        }
+
+        fn state(&self) -> std::sync::MutexGuard<'_, TestRefreshState> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteRunRefreshAdapter for TestRefreshAdapter {
+        type Record = TestRecord;
+
+        fn messages(&self) -> RemoteRunRefreshMessages {
+            RemoteRunRefreshMessages {
+                run_kind: "test_run",
+                unavailable_locally_summary:
+                    "Remote reconciliation is unavailable for the test run.",
+                snapshot_load_failed_summary: None,
+                parse_error_blocked_summary: "The test run snapshot could not be parsed.",
+            }
+        }
+
+        fn run<'record>(&self, record: &'record Self::Record) -> &'record RemoteRunState {
+            &record.run
+        }
+
+        async fn load_snapshots(
+            &self,
+            _workspace: &RemoteWorkspace,
+            _records: &[Self::Record],
+        ) -> Result<BTreeMap<String, RemoteRunSnapshotView>, TrackError> {
+            Ok(BTreeMap::new())
+        }
+
+        async fn save_record(&self, _record: &Self::Record) -> Result<(), TrackError> {
+            self.state().saved_records += 1;
+            Ok(())
+        }
+
+        async fn finalize_locally(
+            &self,
+            record: &Self::Record,
+            status: DispatchStatus,
+            _summary: &str,
+            _error_message: Option<&str>,
+        ) -> Result<Self::Record, TrackError> {
+            self.state().finalized_records += 1;
+            let mut updated = record.clone();
+            updated.run.status = status;
+            Ok(updated)
+        }
+
+        fn mark_failed_from_remote_refresh(
+            &self,
+            mut record: Self::Record,
+            refreshed_at: OffsetDateTime,
+            finished_at: OffsetDateTime,
+            error_message: String,
+        ) -> Self::Record {
+            record.run = record.run.mark_failed_from_remote_refresh(
+                refreshed_at,
+                finished_at,
+                error_message,
+            );
+            record
+        }
+
+        fn refresh_record_from_snapshot(
+            &self,
+            record: Self::Record,
+            _snapshot: &RemoteRunSnapshotView,
+        ) -> Result<Self::Record, TrackError> {
+            self.state().interpreted_snapshots += 1;
+            Ok(record)
+        }
+    }
+
+    fn test_record() -> TestRecord {
+        let timestamp = now_utc();
+        TestRecord {
+            run: RemoteRunState {
+                dispatch_id: DispatchId::new("dispatch-1").expect("dispatch id should parse"),
+                preferred_tool: RemoteAgentPreferredTool::Codex,
+                status: DispatchStatus::Preparing,
+                created_at: timestamp,
+                updated_at: timestamp,
+                finished_at: None,
+                remote_host: "198.51.100.10".to_owned(),
+                branch_name: None,
+                worktree_path: None,
+                follow_up_request: None,
+                summary: None,
+                notes: None,
+                error_message: None,
+            },
+        }
+    }
+
+    fn test_remote_agent(directory: &TempDir) -> RemoteAgentRuntimeConfig {
+        let managed_key_path = directory.path().join("id_ed25519");
+        fs::write(&managed_key_path, "test-key").expect("managed key should be created");
+
+        RemoteAgentRuntimeConfig {
+            host: "198.51.100.10".to_owned(),
+            user: "track".to_owned(),
+            port: 22,
+            workspace_root: "~/workspace".to_owned(),
+            projects_registry_path: "~/workspace/projects.json".to_owned(),
+            preferred_tool: RemoteAgentPreferredTool::Codex,
+            shell_prelude: Some("export PATH=/usr/local/bin:$PATH".to_owned()),
+            review_follow_up: None,
+            managed_key_path,
+            managed_known_hosts_path: directory.path().join("known_hosts"),
+        }
+    }
+
+    async fn test_database(database_path: PathBuf) -> DatabaseContext {
+        DatabaseContext::initialized(Some(database_path))
+            .await
+            .expect("test database should initialize")
+    }
+
+    #[tokio::test]
+    async fn omitted_active_snapshot_is_a_refresh_adapter_contract_error() {
+        let directory = TempDir::new().expect("tempdir should be created");
+        let database = test_database(directory.path().join("track.sqlite")).await;
+        let config_provider = StaticConfigProvider {
+            remote_agent: test_remote_agent(&directory),
+        };
+        let adapter = TestRefreshAdapter::new();
+
+        let error = refresh_active_remote_run_records(
+            &config_provider,
+            &database,
+            &adapter,
+            vec![test_record()],
+        )
+        .await
+        .expect_err("omitted active snapshot should fail the adapter contract");
+
+        assert_eq!(error.code, ErrorCode::InternalError);
+        assert!(error
+            .message()
+            .contains("did not return a snapshot entry for active run dispatch-1"));
+        assert!(error
+            .message()
+            .contains("return an explicit missing snapshot"));
+
+        let state = adapter.state();
+        assert_eq!(state.saved_records, 0);
+        assert_eq!(state.finalized_records, 0);
+        assert_eq!(state.interpreted_snapshots, 0);
     }
 }

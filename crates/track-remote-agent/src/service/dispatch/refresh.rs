@@ -25,7 +25,6 @@ pub(super) async fn refresh_active_dispatch_records(
         service.database,
         &TaskDispatchRefreshAdapter { service },
         records,
-        PREPARING_STALE_AFTER,
     )
     .await
 }
@@ -46,9 +45,6 @@ impl RemoteRunRefreshAdapter for TaskDispatchRefreshAdapter<'_, '_> {
             snapshot_load_failed_summary: Some(
                 "Remote reconciliation could not reach the remote machine, so active runs were released locally.",
             ),
-            missing_snapshot_summary:
-                "Remote reconciliation could not find this run anymore, so it was released locally.",
-            missing_snapshot_error: "Remote dispatch snapshot is missing.",
             parse_error_blocked_summary:
                 "Remote reconciliation could not confirm this run, so it was released locally.",
         }
@@ -86,15 +82,6 @@ impl RemoteRunRefreshAdapter for TaskDispatchRefreshAdapter<'_, '_> {
         self.service
             .finalize_dispatch_locally(record, status, summary, error_message)
             .await
-    }
-
-    fn mark_abandoned_if_preparing_stale(
-        &self,
-        record: Self::Record,
-        refreshed_at: time::OffsetDateTime,
-        stale_after: time::Duration,
-    ) -> Option<Self::Record> {
-        record.mark_abandoned_if_preparing_stale(refreshed_at, stale_after)
     }
 
     fn mark_failed_from_remote_refresh(
