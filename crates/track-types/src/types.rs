@@ -103,9 +103,60 @@ impl DispatchStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "preparing" => Some(Self::Preparing),
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "canceled" => Some(Self::Canceled),
+            "failed" => Some(Self::Failed),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+
     pub fn is_active(self) -> bool {
         matches!(self, Self::Preparing | Self::Running)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteRunKind {
+    Task,
+    Review,
+}
+
+impl RemoteRunKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Review => "review",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "task" => Some(Self::Task),
+            "review" => Some(Self::Review),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteRunOwner {
+    Task(TaskId),
+    Review(ReviewId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRemoteRun {
+    pub dispatch_id: DispatchId,
+    pub kind: RemoteRunKind,
+    pub owner: RemoteRunOwner,
+    pub status: DispatchStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

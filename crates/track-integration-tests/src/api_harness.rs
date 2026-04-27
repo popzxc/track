@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -82,11 +81,7 @@ impl ApiHarness {
             .expect("remote-agent config should save");
 
         let app = build_app(
-            AppState {
-                config_service: config_service.clone(),
-                database: database.clone(),
-                task_change_version: Arc::new(AtomicU64::new(0)),
-            },
+            AppState::new(config_service.clone(), database.clone()),
             &static_root,
         );
 

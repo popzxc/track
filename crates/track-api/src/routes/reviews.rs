@@ -95,12 +95,15 @@ pub(crate) async fn create_review(
     let input = serde_json::from_slice::<CreateReviewInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let (review, run) = state
-        .remote_agent_services()
-        .review()
-        .create_review(input)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let (review, run) = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .review()
+            .create_review(input)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
 
     spawn_review_launch(state.clone(), run.clone());
@@ -131,12 +134,15 @@ pub(crate) async fn follow_up_review(
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let run = state
-        .remote_agent_services()
-        .review()
-        .queue_follow_up_review_dispatch(&id, &input.request)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let run = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .review()
+            .queue_follow_up_review_dispatch(&id, &input.request)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
 
     spawn_review_launch(state.clone(), run.clone());
@@ -160,12 +166,15 @@ pub(crate) async fn delete_review(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<DeleteReviewResponse>, ApiError> {
-    state
-        .remote_agent_services()
-        .review()
-        .delete_review(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .review()
+            .delete_review(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    }
     crate::app::bump_task_change_version(&state);
     tracing::info!("Deleted review");
 
@@ -177,12 +186,15 @@ pub(crate) async fn cancel_review_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<ReviewId>,
 ) -> Result<Json<ReviewRunRecord>, ApiError> {
-    let canceled_dispatch = state
-        .remote_agent_services()
-        .review()
-        .cancel_dispatch(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let canceled_dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .review()
+            .cancel_dispatch(&id)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     tracing::info!(
         dispatch_id = %canceled_dispatch.run.dispatch_id,
         "Canceled review dispatch from API"

@@ -115,6 +115,11 @@ pub(crate) async fn patch_remote_agent_settings(
 ) -> Result<Json<RemoteAgentSettingsResponse>, ApiError> {
     let input = serde_json::from_slice::<UpdateRemoteAgentSettingsInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+    let _config_mutation_guard = state.remote_agent_config_mutation_guard().await;
+    state
+        .ensure_remote_agent_config_can_change()
+        .await
+        .map_err(ApiError::from_track_error)?;
     let existing_remote_agent = state
         .config_service
         .load_remote_agent_config()
@@ -163,6 +168,11 @@ pub(crate) async fn put_remote_agent_settings(
 ) -> Result<Json<RemoteAgentSettingsResponse>, ApiError> {
     let input = serde_json::from_slice::<PutRemoteAgentInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
+    let _config_mutation_guard = state.remote_agent_config_mutation_guard().await;
+    state
+        .ensure_remote_agent_config_can_change()
+        .await
+        .map_err(ApiError::from_track_error)?;
 
     let remote_agent = state
         .config_service
@@ -245,6 +255,7 @@ fn remote_agent_settings_response(
 pub(crate) async fn cleanup_remote_agent_artifacts(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteCleanupResponse>, ApiError> {
+    let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
     let summary = state
         .remote_agent_services()
         .cleanup_unused_remote_artifacts()
@@ -266,6 +277,7 @@ pub(crate) async fn cleanup_remote_agent_artifacts(
 pub(crate) async fn reset_remote_agent_workspace(
     State(state): State<AppState>,
 ) -> Result<Json<RemoteResetResponse>, ApiError> {
+    let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
     let summary = state
         .remote_agent_services()
         .reset_remote_workspace()

@@ -13,6 +13,7 @@ use track_types::errors::{ErrorCode, TrackError};
 
 use crate::dispatch_repository::DispatchRepository;
 use crate::project_repository::ProjectRepository;
+use crate::remote_run_repository::RemoteRunRepository;
 use crate::review_dispatch_repository::ReviewDispatchRepository;
 use crate::review_repository::ReviewRepository;
 use crate::settings_repository::SettingsRepository;
@@ -88,6 +89,10 @@ impl DatabaseContext {
 
     pub fn project_repository(&self) -> ProjectRepository<'_> {
         ProjectRepository::new(self)
+    }
+
+    pub fn remote_run_repository(&self) -> RemoteRunRepository<'_> {
+        RemoteRunRepository::new(self)
     }
 
     pub fn review_dispatch_repository(&self) -> ReviewDispatchRepository<'_> {

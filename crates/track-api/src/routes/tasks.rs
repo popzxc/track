@@ -6,7 +6,7 @@ use track_types::ids::{ProjectId, TaskId};
 use track_types::task_sort::sort_tasks;
 use track_types::time_utils::now_utc;
 use track_types::types::{
-    RemoteAgentPreferredTool, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
+    RemoteAgentPreferredTool, Status, Task, TaskCreateInput, TaskDispatchRecord, TaskSource,
     TaskUpdateInput,
 };
 
@@ -148,12 +148,22 @@ pub(crate) async fn patch_task(
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
     let validated_input = input.validate().map_err(ApiError::from_track_error)?;
 
-    let updated_task = state
-        .remote_agent_services()
-        .dispatch()
-        .update_task(&id, validated_input)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let updated_task = if validated_input.status == Some(Status::Closed) {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .dispatch()
+            .update_task(&id, validated_input)
+            .await
+            .map_err(ApiError::from_track_error)?
+    } else {
+        state
+            .remote_agent_services()
+            .dispatch()
+            .update_task(&id, validated_input)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
     tracing::info!(status = ?updated_task.status, project = %updated_task.project, "Patched task");
 
@@ -165,12 +175,15 @@ pub(crate) async fn delete_task(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<DeleteTaskResponse>, ApiError> {
-    state
-        .remote_agent_services()
-        .dispatch()
-        .delete_task(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .dispatch()
+            .delete_task(&id)
+            .await
+            .map_err(ApiError::from_track_error)?;
+    }
     crate::app::bump_task_change_version(&state);
     tracing::info!("Deleted task");
 
@@ -190,12 +203,15 @@ pub(crate) async fn dispatch_task(
             .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?
     };
 
-    let dispatch = state
-        .remote_agent_services()
-        .dispatch()
-        .queue_dispatch(&id, input.preferred_tool)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .dispatch()
+            .queue_dispatch(&id, input.preferred_tool)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
     tracing::info!(
@@ -217,12 +233,15 @@ pub(crate) async fn follow_up_task(
     let input = serde_json::from_slice::<FollowUpRequestInput>(&body)
         .map_err(|_| ApiError::invalid_json("Request body is not valid JSON."))?;
 
-    let dispatch = state
-        .remote_agent_services()
-        .dispatch()
-        .queue_follow_up_dispatch(&id, &input.request)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .dispatch()
+            .queue_follow_up_dispatch(&id, &input.request)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     crate::app::bump_task_change_version(&state);
 
     spawn_dispatch_launch(state.clone(), dispatch.clone());
@@ -240,12 +259,15 @@ pub(crate) async fn cancel_task_dispatch(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<TaskId>,
 ) -> Result<Json<TaskDispatchRecord>, ApiError> {
-    let canceled_dispatch = state
-        .remote_agent_services()
-        .dispatch()
-        .cancel_dispatch(&id)
-        .await
-        .map_err(ApiError::from_track_error)?;
+    let canceled_dispatch = {
+        let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+        state
+            .remote_agent_services()
+            .dispatch()
+            .cancel_dispatch(&id)
+            .await
+            .map_err(ApiError::from_track_error)?
+    };
     tracing::info!(
         dispatch_id = %canceled_dispatch.run.dispatch_id,
         "Canceled task dispatch from API"

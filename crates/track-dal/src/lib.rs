@@ -8,6 +8,7 @@
 pub mod database;
 pub mod dispatch_repository;
 pub mod project_repository;
+pub mod remote_run_repository;
 pub mod review_dispatch_repository;
 pub mod review_repository;
 pub mod settings_repository;

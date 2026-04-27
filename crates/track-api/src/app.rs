@@ -30,10 +30,14 @@ pub fn spawn_remote_review_follow_up_reconciler(state: AppState) {
             let reconciliation_run_id =
                 format!("review-follow-up-{}", now_utc().unix_timestamp_nanos());
 
-            let reconciliation = match state
-                .remote_agent_services()
-                .reconcile_review_follow_up()
-                .await
+            let reconciliation = match async {
+                let _remote_agent_operation_guard = state.remote_agent_operation_guard().await;
+                state
+                    .remote_agent_services()
+                    .reconcile_review_follow_up()
+                    .await
+            }
+            .await
             {
                 Ok(reconciliation) => reconciliation,
                 Err(error) => {

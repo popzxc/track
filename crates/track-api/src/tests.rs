@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -84,11 +83,7 @@ async fn database(directory: &TempDir) -> DatabaseContext {
 }
 
 fn app_state(config_service: Arc<RemoteAgentConfigService>, database: DatabaseContext) -> AppState {
-    AppState {
-        config_service,
-        database,
-        task_change_version: Arc::new(AtomicU64::new(0)),
-    }
+    AppState::new(config_service, database)
 }
 
 async fn register_project(database: &DatabaseContext, canonical_name: &str) {
@@ -1137,4 +1132,92 @@ async fn puts_remote_agent_config_for_a_fresh_install() {
         fs::read_to_string(&known_hosts_path).expect("known_hosts should be readable"),
         "github.com ssh-ed25519 AAAA"
     );
+}
+
+#[tokio::test]
+async fn rejects_remote_agent_config_changes_while_remote_runs_are_active() {
+    let directory = TempDir::new().expect("tempdir should be created");
+    let _environment = TestEnvironment::new(&directory);
+    let static_root = static_root(&directory);
+    let database = database(&directory).await;
+    let config_service = configured_remote_agent_config_service(&directory).await;
+    register_project(&database, "project-a").await;
+
+    let task = database
+        .task_repository()
+        .create_task(TaskCreateInput {
+            project: ProjectId::new("project-a").unwrap(),
+            priority: Priority::High,
+            description: "Keep remote config stable while this runs".to_owned(),
+            source: Some(TaskSource::Web),
+        })
+        .await
+        .expect("task should be created")
+        .task;
+    let dispatch_id = DispatchId::new("dispatch-active-config-guard").unwrap();
+    database
+        .dispatch_repository()
+        .create_dispatch(
+            &task,
+            &dispatch_id,
+            "192.0.2.25",
+            RemoteAgentPreferredTool::Codex,
+            &DispatchBranch::for_task(&dispatch_id),
+            &DispatchWorktreePath::for_task("/tmp/track", &task.project, &dispatch_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("active dispatch should be created");
+
+    let app = build_app(app_state(config_service, database.clone()), &static_root);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/remote-agent")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"preferredTool":"claude","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","reviewFollowUp":{"enabled":false}}"#,
+                ))
+                .expect("patch request should build"),
+        )
+        .await
+        .expect("patch request should succeed");
+    assert_eq!(patch_response.status(), StatusCode::CONFLICT);
+    let patch_body = axum::body::to_bytes(patch_response.into_body(), usize::MAX)
+        .await
+        .expect("patch response body should be readable");
+    let patch_json: serde_json::Value =
+        serde_json::from_slice(&patch_body).expect("patch response should be valid json");
+    assert_eq!(patch_json["error"]["code"], "REMOTE_AGENT_CONFIG_BUSY");
+    assert!(patch_json["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("dispatch-active-config-guard")));
+
+    let put_response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/remote-agent")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"host":"192.0.2.99","user":"builder","port":22,"workspaceRoot":"~/workspace","projectsRegistryPath":"~/track-projects.json","preferredTool":"codex","shellPrelude":"export PATH=\"$HOME/.cargo/bin:$PATH\"","sshPrivateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n"}"#,
+                ))
+                .expect("put request should build"),
+        )
+        .await
+        .expect("put request should succeed");
+    assert_eq!(put_response.status(), StatusCode::CONFLICT);
+    let put_body = axum::body::to_bytes(put_response.into_body(), usize::MAX)
+        .await
+        .expect("put response body should be readable");
+    let put_json: serde_json::Value =
+        serde_json::from_slice(&put_body).expect("put response should be valid json");
+    assert_eq!(put_json["error"]["code"], "REMOTE_AGENT_CONFIG_BUSY");
 }

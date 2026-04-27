@@ -48,6 +48,7 @@ impl ApiError {
             | ErrorCode::RemoteAgentNotConfigured
             | ErrorCode::ProjectWriteFailed
             | ErrorCode::TaskWriteFailed => StatusCode::BAD_REQUEST,
+            ErrorCode::RemoteAgentConfigBusy => StatusCode::CONFLICT,
             ErrorCode::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::ProjectNotFound | ErrorCode::DispatchNotFound => StatusCode::NOT_FOUND,
             ErrorCode::RemoteDispatchFailed => StatusCode::BAD_GATEWAY,
