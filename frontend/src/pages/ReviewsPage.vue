@@ -8,6 +8,7 @@ import ReviewFollowUpModal from '../components/ReviewFollowUpModal.vue'
 import ReviewRequestModal from '../components/ReviewRequestModal.vue'
 import ReviewsPageContent from '../components/ReviewsPage.vue'
 import { cancelReview, createReview, deleteReview, followUpReview } from '../api/client'
+import { upsertReviewRunRecord } from '../composables/useRunState'
 import { replaceRouteQuery, firstQueryValue } from '../router/query'
 import { useTrackerShell } from '../composables/useTrackerShell'
 import type {
@@ -100,7 +101,7 @@ async function confirmReviewDelete() {
     const deletedReviewId = reviewPendingDeletion.value.id
     await deleteReview(deletedReviewId)
     reviewPendingDeletion.value = null
-    shell.removeReview(selectedReviewId, selectedReviewRuns, deletedReviewId)
+    shell.removeReview(deletedReviewId)
 
     if (selectedReviewId.value === deletedReviewId) {
       await closeReviewDrawer()
@@ -114,6 +115,14 @@ async function confirmReviewDelete() {
   }
 }
 
+function upsertSelectedReviewRun(run: ReviewRunRecord) {
+  if (selectedReviewId.value !== run.reviewId) {
+    return
+  }
+
+  selectedReviewRuns.value = upsertReviewRunRecord(selectedReviewRuns.value, run)
+}
+
 async function cancelReviewRunRequest(review: ReviewRecord) {
   cancelingReviewId.value = review.id
   shell.errorMessage.value = ''
@@ -121,7 +130,7 @@ async function cancelReviewRunRequest(review: ReviewRecord) {
   try {
     const run = await cancelReview(review.id)
     shell.upsertLatestReviewRun(review.id, run)
-    shell.upsertSelectedReviewRun(selectedReviewId, selectedReviewRuns, run)
+    upsertSelectedReviewRun(run)
   } catch (error) {
     shell.setFriendlyError(error)
   } finally {
@@ -147,7 +156,7 @@ async function submitReviewFollowUp(payload: Parameters<typeof followUpReview>[1
       },
       run,
     )
-    shell.upsertSelectedReviewRun(selectedReviewId, selectedReviewRuns, run)
+    upsertSelectedReviewRun(run)
     followingUpReview.value = null
     await shell.refreshAll()
   } catch (error) {

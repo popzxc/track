@@ -16,6 +16,7 @@ import {
   followUpTask,
   updateTask,
 } from '../api/client'
+import { upsertTaskRunRecord } from '../composables/useRunState'
 import { useTrackerShell } from '../composables/useTrackerShell'
 import { taskTitle } from '../features/tasks/description'
 import {
@@ -290,13 +291,29 @@ async function confirmDelete() {
       await closeTaskDrawer()
     }
 
-    shell.removeTaskRuns(selectedTaskId, selectedTaskRuns, deletedTaskId)
+    removeTaskRuns(deletedTaskId)
     await shell.refreshAll()
   } catch (error) {
     shell.setFriendlyError(error)
   } finally {
     shell.saving.value = false
     clearTaskLifecycleMutation()
+  }
+}
+
+function upsertSelectedTaskRun(task: Task, dispatch: TaskDispatch) {
+  if (selectedTaskId.value !== task.id) {
+    return
+  }
+
+  selectedTaskRuns.value = upsertTaskRunRecord(selectedTaskRuns.value, task, dispatch)
+}
+
+function removeTaskRuns(taskId: string) {
+  shell.removeTaskRuns(taskId)
+
+  if (selectedTaskId.value === taskId) {
+    selectedTaskRuns.value = []
   }
 }
 
@@ -343,7 +360,7 @@ async function startRemoteRun(
     const dispatch = await dispatchTask(task.id, { preferredTool })
     shell.upsertRunRecord(task, dispatch)
     shell.upsertLatestTaskDispatch(dispatch)
-    shell.upsertSelectedTaskRun(selectedTaskId, selectedTaskRuns, task, dispatch)
+    upsertSelectedTaskRun(task, dispatch)
   } catch (error) {
     await shell.refreshAll().catch(() => undefined)
     shell.setFriendlyError(error)
@@ -360,7 +377,7 @@ async function cancelRemoteRun(task: Task) {
     const dispatch = await cancelDispatch(task.id)
     shell.upsertRunRecord(task, dispatch)
     shell.upsertLatestTaskDispatch(dispatch)
-    shell.upsertSelectedTaskRun(selectedTaskId, selectedTaskRuns, task, dispatch)
+    upsertSelectedTaskRun(task, dispatch)
   } catch (error) {
     await shell.refreshAll().catch(() => undefined)
     shell.setFriendlyError(error)
@@ -375,7 +392,7 @@ async function discardRunHistory(task: Task) {
 
   try {
     await discardDispatch(task.id)
-    shell.removeTaskRuns(selectedTaskId, selectedTaskRuns, task.id)
+    removeTaskRuns(task.id)
   } catch (error) {
     await shell.refreshAll().catch(() => undefined)
     shell.setFriendlyError(error)
@@ -397,7 +414,7 @@ async function submitFollowUp(payload: TaskFollowUpInput) {
     const dispatch = await followUpTask(task.id, payload)
     shell.upsertRunRecord(task, dispatch)
     shell.upsertLatestTaskDispatch(dispatch)
-    shell.upsertSelectedTaskRun(selectedTaskId, selectedTaskRuns, task, dispatch)
+    upsertSelectedTaskRun(task, dispatch)
     followingUpTask.value = null
     await shell.refreshAll()
   } catch (error) {
